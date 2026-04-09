@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Mail, Users, Settings, Activity, Send, 
   RefreshCw, CheckCircle, AlertCircle, Wand2, 
@@ -11,7 +11,16 @@ import {
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, query, deleteDoc } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import {
+  normalizeEmail,
+  isValidEmail,
+  splitCsvRows,
+  parseCsvLine,
+  toContactFromRow,
+  applyTaskPrioritization,
+  parseInboxScoreSummary
+} from './utils/dataParsers.mjs';
 
 // Firebase Initialization
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
@@ -19,6 +28,29 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const CONFIG_STORAGE_KEY = 'salesdirector.config.v1';
+const PERSISTED_CONFIG_KEYS = [
+  'apiBaseUrl',
+  'companyUrl',
+  'senderName',
+  'replyTo',
+  'autoBcc',
+  'signature',
+  'smtpHost',
+  'smtpPort',
+  'smtpSecure',
+  'smtpUser',
+  'imapHost',
+  'imapPort',
+  'maxDailyEmails',
+  'sendDelay',
+  'activeHoursStart',
+  'activeHoursEnd',
+  'timezone',
+  'defaultTone',
+  'defaultLength',
+  'selectedAI'
+];
 
 // Main Application Component
 export default function App() {
@@ -50,6 +82,8 @@ export default function App() {
   ]);
   
   const [config, setConfig] = useState({
+    apiBaseUrl: '',
+    proxySecret: '',
     companyUrl: '',
     hubspotToken: '',
     senderName: '',
@@ -71,6 +105,7 @@ export default function App() {
     defaultTone: 'Professional',
     defaultLength: 'Concise',
     selectedAI: 'gemini',
+    geminiKey: '',
     openaiKey: '',
     anthropicKey: '',
     xaiKey: '',
@@ -92,6 +127,11 @@ export default function App() {
     length: 'Concise',
     suggestedSubjects: []
   });
+  const [configErrors, setConfigErrors] = useState({});
+  const [composerErrors, setComposerErrors] = useState({});
+  const notificationTimerRef = useRef(null);
+  const activeAIRequestRef = useRef(null);
+  const hasLoadedLocalConfigRef = useRef(false);
 
   // Firebase Auth & Data Sync
   useEffect(() => {
@@ -143,17 +183,139 @@ export default function App() {
     }));
   }, [config.defaultTone, config.defaultLength]);
 
+  useEffect(() => {
+    if (hasLoadedLocalConfigRef.current) return;
+    hasLoadedLocalConfigRef.current = true;
+
+    if (typeof window === 'undefined') return;
+
+    try {
+      const raw = window.localStorage.getItem(CONFIG_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        const safeConfig = {};
+        PERSISTED_CONFIG_KEYS.forEach((key) => {
+          if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+            safeConfig[key] = parsed[key];
+          }
+        });
+        setConfig(prev => ({ ...prev, ...safeConfig }));
+      }
+    } catch {
+      // Ignore malformed local storage data and continue with defaults.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoadedLocalConfigRef.current || typeof window === 'undefined') return;
+    try {
+      const safeConfig = {};
+      PERSISTED_CONFIG_KEYS.forEach((key) => {
+        safeConfig[key] = config[key];
+      });
+      window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(safeConfig));
+    } catch {
+      // Ignore local storage write failures (private mode/quota).
+    }
+  }, [config]);
+
+  useEffect(() => {
+    return () => {
+      if (notificationTimerRef.current) {
+        clearTimeout(notificationTimerRef.current);
+      }
+      if (activeAIRequestRef.current) {
+        activeAIRequestRef.current.abort();
+      }
+    };
+  }, []);
+
   const showNotification = (message, type = 'success') => {
+    if (notificationTimerRef.current) {
+      clearTimeout(notificationTimerRef.current);
+    }
     setNotification({ message, type });
-    setTimeout(() => setNotification(null), 3000);
+    notificationTimerRef.current = setTimeout(() => {
+      setNotification(null);
+      notificationTimerRef.current = null;
+    }, 3000);
+  };
+
+  const getApiBaseUrl = () => (config.apiBaseUrl || '').trim().replace(/\/+$/, '');
+
+  const getComposerFieldError = (name, value) => {
+    const trimmed = (value || '').trim();
+    if (name === 'to' && trimmed && !isValidEmail(normalizeEmail(trimmed))) {
+      return 'Enter a valid recipient email address.';
+    }
+    return '';
+  };
+
+  const getConfigFieldError = (name, value, nextConfig) => {
+    const trimmed = String(value || '').trim();
+
+    if (name === 'apiBaseUrl' && trimmed && !/^https?:\/\/.+/i.test(trimmed)) {
+      return 'Use a full URL starting with http:// or https://';
+    }
+
+    if (name === 'companyUrl' && trimmed && !/^https?:\/\/.+/i.test(trimmed)) {
+      return 'Use a full URL starting with http:// or https://';
+    }
+
+    if ((name === 'replyTo' || name === 'autoBcc' || name === 'smtpUser') && trimmed && !isValidEmail(trimmed)) {
+      return 'Enter a valid email address.';
+    }
+
+    if (name === 'maxDailyEmails') {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 5000) {
+        return 'Enter a whole number between 1 and 5000.';
+      }
+    }
+
+    if (name === 'sendDelay') {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 3600) {
+        return 'Enter a whole number between 0 and 3600 seconds.';
+      }
+    }
+
+    const start = nextConfig.activeHoursStart;
+    const end = nextConfig.activeHoursEnd;
+    if ((name === 'activeHoursStart' || name === 'activeHoursEnd') && start && end && start >= end) {
+      return 'Start time must be earlier than end time.';
+    }
+
+    return '';
   };
 
   const handleConfigChange = (e) => {
-    setConfig({ ...config, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    setConfig(prev => {
+      const nextConfig = { ...prev, [name]: value };
+      setConfigErrors(prevErrors => {
+        const nextErrors = { ...prevErrors, [name]: getConfigFieldError(name, value, nextConfig) };
+
+        if (name === 'activeHoursStart' || name === 'activeHoursEnd') {
+          const rangeError = (nextConfig.activeHoursStart && nextConfig.activeHoursEnd && nextConfig.activeHoursStart >= nextConfig.activeHoursEnd)
+            ? 'Start time must be earlier than end time.'
+            : '';
+          nextErrors.activeHoursStart = rangeError;
+          nextErrors.activeHoursEnd = rangeError;
+        }
+
+        return nextErrors;
+      });
+
+      return nextConfig;
+    });
   };
 
   const handleComposerChange = (e) => {
-    setComposerState({ ...composerState, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    setComposerErrors(prev => ({ ...prev, [name]: getComposerFieldError(name, value) }));
+    setComposerState(prev => ({ ...prev, [name]: value }));
   };
 
   const insertMergeTag = (tag) => {
@@ -161,11 +323,69 @@ export default function App() {
     if (textArea) {
       const startPos = textArea.selectionStart;
       const endPos = textArea.selectionEnd;
-      const newBody = composerState.body.substring(0, startPos) + tag + composerState.body.substring(endPos);
-      setComposerState({ ...composerState, body: newBody });
+      setComposerState(prev => {
+        const newBody = prev.body.substring(0, startPos) + tag + prev.body.substring(endPos);
+        return { ...prev, body: newBody };
+      });
     } else {
-      setComposerState({ ...composerState, body: composerState.body + tag });
+      setComposerState(prev => ({ ...prev, body: prev.body + tag }));
     }
+  };
+
+  const clearSavedPreferences = () => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(CONFIG_STORAGE_KEY);
+    }
+    showNotification('Saved local settings cleared.', 'success');
+  };
+
+  const callHubSpotAPI = async ({ resource, method = 'GET', query = '', body }) => {
+    const proxyBaseUrl = getApiBaseUrl();
+
+    if (proxyBaseUrl) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (config.proxySecret) {
+        headers['x-proxy-secret'] = config.proxySecret;
+      }
+
+      const proxyPath = resource === 'contacts' ? '/api/hubspot/contacts' : '/api/hubspot/emails';
+      const proxyQuery = query ? `?${query}` : '';
+
+      const response = await fetch(`${proxyBaseUrl}${proxyPath}${proxyQuery}`, {
+        method,
+        headers,
+        ...(body ? { body: JSON.stringify(body) } : {})
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || `HubSpot proxy request failed: ${response.status}`);
+      }
+      return data;
+    }
+
+    if (!config.hubspotToken) {
+      throw new Error('Please configure your HubSpot Access Token in Settings first.');
+    }
+
+    const directPath = resource === 'contacts'
+      ? `/crm/v3/objects/contacts${query ? `?${query}` : ''}`
+      : '/crm/v3/objects/emails';
+
+    const response = await fetch(`https://api.hubapi.com${directPath}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${config.hubspotToken}`,
+        'Content-Type': 'application/json'
+      },
+      ...(body ? { body: JSON.stringify(body) } : {})
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.message || `HubSpot API error: ${response.status}`);
+    }
+    return data;
   };
 
   // --- Task Management Logic ---
@@ -182,17 +402,17 @@ export default function App() {
       time: '',
       rationale: ''
     };
-    setTasks([newTask, ...tasks]);
+    setTasks(prev => [newTask, ...prev]);
     setNewTaskInput('');
     showNotification("Task added.");
   };
 
   const toggleTaskStatus = (taskId) => {
-    setTasks(tasks.map(t => t.id === taskId ? { ...t, status: t.status === 'pending' ? 'completed' : 'pending' } : t));
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: t.status === 'pending' ? 'completed' : 'pending' } : t));
   };
   
   const deleteTask = (taskId) => {
-    setTasks(tasks.filter(t => t.id !== taskId));
+    setTasks(prev => prev.filter(t => t.id !== taskId));
     showNotification("Task removed.");
   };
 
@@ -214,16 +434,23 @@ export default function App() {
   };
 
   const saveContact = async () => {
-    if (!user || !editingContact.email) {
+    const normalizedEmail = normalizeEmail(editingContact?.email || '');
+
+    if (!user || !normalizedEmail) {
       showNotification("Email is required to save a contact.", "error");
       return;
     }
+    if (!isValidEmail(normalizedEmail)) {
+      showNotification("Please provide a valid email address.", "error");
+      return;
+    }
+
     setLoading(true);
     try {
-      const contactData = { ...editingContact };
+      const contactData = { ...editingContact, email: normalizedEmail };
       delete contactData._isNew; 
       
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', contactData.email);
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', normalizedEmail);
       await setDoc(docRef, contactData, { merge: true });
       showNotification(`Contact ${editingContact._isNew ? 'added' : 'updated'} successfully!`);
       setIsContactModalOpen(false);
@@ -240,7 +467,7 @@ export default function App() {
     if (!user || !contactToDelete) return;
     setLoading(true);
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', contactToDelete.email));
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', normalizeEmail(contactToDelete.email)));
       showNotification("Contact deleted securely.");
       setContactToDelete(null);
     } catch (err) {
@@ -252,7 +479,7 @@ export default function App() {
   };
 
   const openDossier = (contact) => {
-    const contactThreads = threads[contact.email]?.messages || [];
+    const contactThreads = threads[normalizeEmail(contact.email)]?.messages || [];
     const historyString = contactThreads.length > 0 
       ? contactThreads.map(m => `[${new Date(m.date).toLocaleDateString()}] ${m.direction === 'outbound' ? 'You' : 'Prospect'} wrote:\nSubject: ${m.subject || 'No Subject'}\n${m.body}`).join('\n\n')
       : '';
@@ -261,9 +488,24 @@ export default function App() {
   };
 
   // --- AI Integration Logic ---
-  const callGeminiAPI = async (promptText) => {
-    const apiKey = ""; // Injected by environment
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const callGeminiAPI = async (promptText, options = {}) => {
+    const { abortPrevious = true } = options;
+    const proxyBaseUrl = getApiBaseUrl();
+    const usingProxy = Boolean(proxyBaseUrl);
+    const apiKey = (config.geminiKey || '').trim();
+    if (!usingProxy && !apiKey) {
+      throw new Error("Add your Gemini API key in Settings before using AI features.");
+    }
+
+    if (abortPrevious && activeAIRequestRef.current) {
+      activeAIRequestRef.current.abort();
+    }
+    const controller = new AbortController();
+    activeAIRequestRef.current = controller;
+
+    const url = usingProxy
+      ? `${proxyBaseUrl}/api/gemini`
+      : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
     
     const payload = {
       contents: [{ parts: [{ text: promptText }] }],
@@ -272,33 +514,62 @@ export default function App() {
       }
     };
 
+    const proxyPayload = {
+      promptText,
+      systemInstruction: payload.systemInstruction
+    };
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (usingProxy && config.proxySecret) {
+      headers['x-proxy-secret'] = config.proxySecret;
+    }
+
     let retries = 5;
     let delay = 1000;
 
-    while (retries > 0) {
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const data = await response.json();
-        return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
-      } catch (error) {
-        retries--;
-        if (retries === 0) {
-          throw new Error("Failed to generate AI response after multiple attempts.");
+    try {
+      while (retries > 0) {
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(usingProxy ? proxyPayload : payload),
+            signal: controller.signal
+          });
+          
+          if (!response.ok) {
+            const failed = await response.json().catch(() => ({}));
+            throw new Error(failed.error || 'Network response was not ok');
+          }
+          
+          const data = await response.json();
+          return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
+        } catch (error) {
+          if (error?.name === 'AbortError') {
+            throw new Error("AI request cancelled.");
+          }
+
+          retries--;
+          if (retries === 0) {
+            throw new Error("Failed to generate AI response after multiple attempts.");
+          }
+          await new Promise(res => setTimeout(res, delay));
+          delay *= 2;
         }
-        await new Promise(res => setTimeout(res, delay));
-        delay *= 2;
+      }
+    } finally {
+      if (activeAIRequestRef.current === controller) {
+        activeAIRequestRef.current = null;
       }
     }
   };
 
   const handleAIAction = async (actionType) => {
+    if (loading) {
+      showNotification("Please wait for the current action to finish.", "error");
+      return;
+    }
+
     setLoading(true);
     let prompt = "";
 
@@ -321,7 +592,7 @@ export default function App() {
             const parts = l.split('||').map(p => p.trim());
             return { id: Date.now() + i, contact: parts[0] || 'Unknown', company: parts[1] || 'Unknown', type: parts[2] || 'Follow up', status: 'pending', priority: null, time: '', rationale: '' };
           });
-          setTasks([...newTasks, ...tasks]);
+          setTasks(prev => [...newTasks, ...prev]);
           showNotification("Smart Action Plan generated!");
         } else {
           throw new Error("Failed to parse task format.");
@@ -349,23 +620,7 @@ export default function App() {
         const lines = result.split('\n').filter(l => l.includes('||'));
         
         if (lines.length > 0) {
-          const updatedTasks = [...tasks];
-          lines.forEach(l => {
-            const parts = l.split('||').map(p => p.trim());
-            const taskId = parseInt(parts[0]);
-            const taskIndex = updatedTasks.findIndex(t => t.id === taskId);
-            if (taskIndex !== -1) {
-              updatedTasks[taskIndex].priority = parseInt(parts[1]) || 50;
-              updatedTasks[taskIndex].time = parts[2] || '';
-              updatedTasks[taskIndex].rationale = parts[3] || '';
-            }
-          });
-          updatedTasks.sort((a, b) => {
-            if (a.status === 'completed' && b.status !== 'completed') return 1;
-            if (a.status !== 'completed' && b.status === 'completed') return -1;
-            return (b.priority || 0) - (a.priority || 0);
-          });
-          setTasks(updatedTasks);
+          setTasks(prev => applyTaskPrioritization(lines, prev));
           showNotification("Tasks successfully prioritized and scheduled!");
         } else {
           showNotification("Failed to parse AI schedule.", "error");
@@ -490,7 +745,7 @@ export default function App() {
       } else if (actionType === 'analyzeInbox') {
         const updatedInbox = [...inboxEmails];
         for (let i = 0; i < updatedInbox.length; i++) {
-          if (updatedInbox[i].needsResponse && !updatedInbox[i].aiScore) {
+          if (updatedInbox[i].needsResponse && updatedInbox[i].aiScore === null) {
             prompt = `Analyze this sales email from a prospect:
             From: ${updatedInbox[i].fromName}
             Subject: ${updatedInbox[i].subject}
@@ -501,10 +756,10 @@ export default function App() {
             CRITICAL: NO EMOJIS.`;
             
             const result = await callGeminiAPI(prompt);
-            const match = result.match(/Score:\s*(\d+)\s*\|\|\s*Summary:\s*(.*)/i);
-            if (match) {
-              updatedInbox[i].aiScore = parseInt(match[1]);
-              updatedInbox[i].aiSummary = match[2].trim();
+            const parsed = parseInboxScoreSummary(result);
+            if (parsed) {
+              updatedInbox[i].aiScore = parsed.score;
+              updatedInbox[i].aiSummary = parsed.summary;
             }
           }
         }
@@ -520,7 +775,7 @@ export default function App() {
   };
 
   const handleHubSpotSync = async () => {
-    if (!config.hubspotToken) {
+    if (!config.hubspotToken && !getApiBaseUrl()) {
       showNotification("Please configure your HubSpot Access Token in Settings first.", "error");
       return;
     }
@@ -530,24 +785,20 @@ export default function App() {
     }
     setLoading(true);
     try {
-      const response = await fetch('https://api.hubapi.com/crm/v3/objects/contacts?properties=firstname,lastname,company,email,hs_lead_status,jobtitle,phone,lifecyclestage', {
+      const properties = 'firstname,lastname,company,email,hs_lead_status,jobtitle,phone,lifecyclestage';
+      const data = await callHubSpotAPI({
+        resource: 'contacts',
         method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${config.hubspotToken}`,
-          'Content-Type': 'application/json'
-        }
+        query: `properties=${encodeURIComponent(properties)}`
       });
 
-      if (!response.ok) throw new Error(`HubSpot API error: ${response.status}`);
-      
-      const data = await response.json();
       if (data.results && data.results.length > 0) {
         const mappedContacts = data.results.map(c => ({
           hubspotId: c.id,
           name: `${c.properties.firstname || ''} ${c.properties.lastname || ''}`.trim() || 'Unknown',
           company: c.properties.company || 'Unknown',
           jobTitle: c.properties.jobtitle || '',
-          email: c.properties.email || '',
+          email: normalizeEmail(c.properties.email || ''),
           phone: c.properties.phone || '',
           stage: c.properties.lifecyclestage || 'Lead',
           status: c.properties.hs_lead_status || 'New',
@@ -565,7 +816,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("HubSpot Sync Error:", error);
-      showNotification("Failed to connect to HubSpot. Check CORS / Token.", "error");
+      showNotification(error.message || "Failed to connect to HubSpot. Check CORS / Token.", "error");
     } finally {
       setLoading(false);
     }
@@ -576,37 +827,71 @@ export default function App() {
     if (!file) return;
     if (!user) return;
     setLoading(true);
-    
-    setTimeout(async () => {
-      const newContacts = [
-        { name: 'Alex Wong', company: 'Nexus Innovations', jobTitle: 'VP of Sales', email: 'alex@nexus.example.com', phone: '555-0102', stage: 'Lead', linkedin: 'https://linkedin.com/in/alexw', notes: 'Met at SaaStr conference.', status: 'New' },
-        { name: 'Samantha Carter', company: 'Stargate Tech', jobTitle: 'CTO', email: 'sam@stargate.example.com', phone: '555-0987', stage: 'Opportunity', linkedin: '', notes: '', status: 'Warm' }
-      ];
-      
+
+    (async () => {
       try {
-        for (const c of newContacts) {
+        const csvText = await file.text();
+        const lines = splitCsvRows(csvText);
+
+        if (lines.length < 2) {
+          showNotification('CSV appears empty or missing data rows.', 'error');
+          return;
+        }
+
+        const headers = parseCsvLine(lines[0]).map(h => h.toLowerCase().trim());
+        if (!headers.includes('email') && !headers.includes('e-mail')) {
+          showNotification('CSV is missing an email column.', 'error');
+          return;
+        }
+
+        const contactsToImport = lines
+          .slice(1)
+          .map(line => parseCsvLine(line))
+          .map(values => toContactFromRow(headers, values))
+          .filter(Boolean);
+
+        const uniqueContacts = Array.from(new Map(contactsToImport.map(c => [c.email, c])).values());
+
+        if (uniqueContacts.length === 0) {
+          showNotification('No valid contacts found in CSV. Ensure an email column exists.', 'error');
+          return;
+        }
+
+        for (const c of uniqueContacts) {
           const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', c.email);
           await setDoc(docRef, c, { merge: true });
         }
-        showNotification("Successfully imported and saved 2 contacts from CSV");
+
+        showNotification(`Successfully imported and saved ${uniqueContacts.length} contacts from CSV`);
       } catch (err) {
-        showNotification("Failed to save to database", "error");
+        showNotification('Failed to parse or save CSV contacts.', 'error');
+      } finally {
+        setLoading(false);
+        e.target.value = '';
       }
-      setLoading(false);
-      e.target.value = null;
-    }, 1500);
+    })();
   };
 
   const handleSendEmail = async () => {
-    if (!composerState.to || !composerState.body) {
+    const recipientEmail = normalizeEmail(composerState.to || '');
+
+    if (composerErrors.to) {
+      showNotification(composerErrors.to, 'error');
+      return;
+    }
+    if (!recipientEmail || !composerState.body) {
       showNotification("Please specify a recipient and message body.", "error");
+      return;
+    }
+    if (!isValidEmail(recipientEmail)) {
+      showNotification("Please enter a valid recipient email address.", "error");
       return;
     }
     if (!user) return;
 
     setLoading(true);
     try {
-      const threadRef = doc(db, 'artifacts', appId, 'users', user.uid, 'threads', composerState.to);
+      const threadRef = doc(db, 'artifacts', appId, 'users', user.uid, 'threads', recipientEmail);
       const newMessage = {
         date: new Date().toISOString(),
         subject: composerState.subject,
@@ -614,40 +899,36 @@ export default function App() {
         direction: 'outbound'
       };
 
-      const existingThread = threads[composerState.to]?.messages || [];
+      const existingThread = threads[recipientEmail]?.messages || [];
       await setDoc(threadRef, {
-        contactEmail: composerState.to,
+        contactEmail: recipientEmail,
         messages: [...existingThread, newMessage]
       }, { merge: true });
 
-      if (config.hubspotToken && composerState.hubspotId) {
-        const hubspotResponse = await fetch('https://api.hubapi.com/crm/v3/objects/emails', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${config.hubspotToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            properties: {
-              hs_timestamp: new Date().toISOString(),
-              hs_email_direction: "EMAIL",
-              hs_email_status: "SENT",
-              hs_email_subject: composerState.subject,
-              hs_email_text: composerState.body,
-            },
-            associations: [
-              {
-                to: { id: composerState.hubspotId },
-                types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 198 }]
-              }
-            ]
-          })
-        });
-
-        if (!hubspotResponse.ok) {
-          showNotification("Saved locally, but failed to log to HubSpot", "error");
-        } else {
+      if ((config.hubspotToken || getApiBaseUrl()) && composerState.hubspotId) {
+        try {
+          await callHubSpotAPI({
+            resource: 'emails',
+            method: 'POST',
+            body: {
+              properties: {
+                hs_timestamp: new Date().toISOString(),
+                hs_email_direction: 'EMAIL',
+                hs_email_status: 'SENT',
+                hs_email_subject: composerState.subject,
+                hs_email_text: composerState.body,
+              },
+              associations: [
+                {
+                  to: { id: composerState.hubspotId },
+                  types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 198 }]
+                }
+              ]
+            }
+          });
           showNotification("Email sent, saved, and logged in HubSpot!");
+        } catch {
+          showNotification("Saved locally, but failed to log to HubSpot", "error");
         }
       } else {
         showNotification(`Email sent successfully and thread saved!`);
@@ -1225,13 +1506,16 @@ export default function App() {
                 />
               </div>
 
-              <div className="flex px-4 py-3 border-b border-zinc-100 dark:border-zinc-800 items-center">
+              <div className="flex px-4 py-3 border-b border-zinc-100 dark:border-zinc-800 items-start">
                 <span className="text-zinc-500 dark:text-zinc-400 w-20 text-sm font-bold">To:</span>
-                <input 
-                  type="text" name="to" value={composerState.to} onChange={handleComposerChange}
-                  className="flex-1 outline-none text-sm text-black dark:text-white bg-transparent" 
-                  placeholder="recipient@example.com"
-                />
+                <div className="flex-1">
+                  <input 
+                    type="text" name="to" value={composerState.to} onChange={handleComposerChange}
+                    className="w-full outline-none text-sm text-black dark:text-white bg-transparent" 
+                    placeholder="recipient@example.com"
+                  />
+                  {composerErrors.to && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{composerErrors.to}</p>}
+                </div>
               </div>
 
               <div className="flex px-4 py-3 items-center relative">
@@ -1339,7 +1623,7 @@ export default function App() {
               </div>
               <button 
                 onClick={handleSendEmail}
-                disabled={loading}
+                disabled={loading || Boolean(composerErrors.to)}
                 className="flex items-center bg-black dark:bg-white text-white dark:text-black px-6 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition font-bold disabled:opacity-50 shadow-sm"
               >
                 <Send className="w-4 h-4 mr-2" />
@@ -1352,12 +1636,109 @@ export default function App() {
     </div>
   );
 
-  const renderSettings = () => (
-    <div className="p-8 max-w-4xl mx-auto w-full space-y-8">
-      <div>
-        <h2 className="text-2xl font-bold text-black dark:text-white mb-6">Integrations & Settings</h2>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+  const renderSettings = () => {
+    const diagnostics = [
+      {
+        label: 'Auth Session',
+        ok: Boolean(user),
+        detail: user ? `Connected (${user.uid.slice(0, 8)}...)` : 'Not signed in yet'
+      },
+      {
+        label: 'Proxy Mode',
+        ok: Boolean(getApiBaseUrl()),
+        detail: getApiBaseUrl() ? `Routing via ${getApiBaseUrl()}` : 'Not configured (direct API mode)'
+      },
+      {
+        label: 'Gemini AI Access',
+        ok: Boolean(config.geminiKey) || Boolean(getApiBaseUrl()),
+        detail: getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.geminiKey ? 'Key loaded for this session' : 'Missing key')
+      },
+      {
+        label: 'HubSpot Integration',
+        ok: Boolean(config.hubspotToken) || Boolean(getApiBaseUrl()),
+        detail: getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.hubspotToken ? 'Token configured' : 'Token missing')
+      },
+      {
+        label: 'SMTP Readiness',
+        ok: Boolean(config.smtpHost && config.smtpUser && config.smtpPass),
+        detail: config.smtpHost && config.smtpUser && config.smtpPass ? 'Host/user/password present' : 'Missing required fields'
+      },
+      {
+        label: 'IMAP Readiness',
+        ok: Boolean(config.imapHost && config.imapPort),
+        detail: config.imapHost && config.imapPort ? 'Host/port present' : 'Missing host or port'
+      }
+    ];
+
+    return (
+      <div className="p-8 max-w-4xl mx-auto w-full space-y-8">
+        <div>
+          <h2 className="text-2xl font-bold text-black dark:text-white mb-6">Integrations & Settings</h2>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {/* System Health */}
+            <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center text-black dark:text-white">
+                  <Activity className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+                  <h3 className="text-lg font-bold">System Health</h3>
+                </div>
+                <button
+                  onClick={clearSavedPreferences}
+                  className="text-xs bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 px-3 py-1.5 rounded-md hover:bg-zinc-200 dark:hover:bg-zinc-700 transition"
+                >
+                  Clear Saved Local Settings
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {diagnostics.map((item) => (
+                  <div key={item.label} className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex items-start">
+                    {item.ok ? (
+                      <CheckCircle className="w-4 h-4 mr-2 mt-0.5 text-emerald-600" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 mr-2 mt-0.5 text-amber-600" />
+                    )}
+                    <div>
+                      <p className="text-sm font-bold text-black dark:text-white">{item.label}</p>
+                      <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">{item.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-4">
+                Security note: API keys and tokens are intentionally not persisted in local storage.
+              </p>
+
+              <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
+                <h4 className="text-sm font-bold text-black dark:text-white mb-3">Secure Proxy Routing</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Proxy Base URL</label>
+                    <input
+                      type="text"
+                      name="apiBaseUrl"
+                      value={config.apiBaseUrl}
+                      onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                      placeholder="http://localhost:8787"
+                    />
+                    {configErrors.apiBaseUrl && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.apiBaseUrl}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Proxy Shared Secret (Optional)</label>
+                    <input
+                      type="password"
+                      name="proxySecret"
+                      value={config.proxySecret}
+                      onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                      placeholder="Matches PROXY_SHARED_SECRET"
+                    />
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Kept in memory only for this session.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
           {/* Company Profile Config */}
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
             <div className="flex items-center mb-4 text-black dark:text-white">
@@ -1374,6 +1755,7 @@ export default function App() {
                 className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 placeholder="https://yourcompany.com"
               />
+              {configErrors.companyUrl && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.companyUrl}</p>}
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Providing your website helps the AI model understand your company, products, and value proposition for better email generation.</p>
             </div>
           </div>
@@ -1407,6 +1789,7 @@ export default function App() {
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     placeholder="e.g., jane@yourcompany.com"
                   />
+                  {configErrors.replyTo && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.replyTo}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Auto-BCC (CRM)</label>
@@ -1418,6 +1801,7 @@ export default function App() {
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     placeholder="bcc@hubspot.com"
                   />
+                  {configErrors.autoBcc && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.autoBcc}</p>}
                 </div>
               </div>
               <div>
@@ -1499,6 +1883,7 @@ export default function App() {
                     type="text" name="smtpUser" value={config.smtpUser} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" placeholder="user@example.com"
                   />
+                  {configErrors.smtpUser && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.smtpUser}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">SMTP Password</label>
@@ -1544,6 +1929,7 @@ export default function App() {
                     type="number" name="maxDailyEmails" value={config.maxDailyEmails} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
+                  {configErrors.maxDailyEmails && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.maxDailyEmails}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Send Delay (sec)</label>
@@ -1551,6 +1937,7 @@ export default function App() {
                     type="number" name="sendDelay" value={config.sendDelay} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
+                  {configErrors.sendDelay && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.sendDelay}</p>}
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-2">
@@ -1560,6 +1947,7 @@ export default function App() {
                     type="time" name="activeHoursStart" value={config.activeHoursStart} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
+                  {configErrors.activeHoursStart && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.activeHoursStart}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">End Time</label>
@@ -1567,6 +1955,7 @@ export default function App() {
                     type="time" name="activeHoursEnd" value={config.activeHoursEnd} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
+                  {configErrors.activeHoursEnd && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.activeHoursEnd}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Timezone</label>
@@ -1633,6 +2022,7 @@ export default function App() {
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {[
+                { label: 'Gemini API Key (Google AI Studio)', name: 'geminiKey' },
                 { label: 'OpenAI API Key (ChatGPT)', name: 'openaiKey' },
                 { label: 'Anthropic API Key (Claude)', name: 'anthropicKey' },
                 { label: 'xAI API Key (Grok)', name: 'xaiKey' },
@@ -1656,7 +2046,8 @@ export default function App() {
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div className={`flex h-screen font-sans overflow-hidden transition-colors ${isDarkMode ? 'dark bg-zinc-950' : 'bg-white'}`}>
@@ -1764,12 +2155,12 @@ export default function App() {
       </div>
 
       {/* CRM Create/Edit Modal Overlay */}
-      {isContactModalOpen && (
+      {isContactModalOpen && editingContact && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-zinc-900 w-full max-w-md rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
             <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center bg-zinc-50 dark:bg-zinc-950/50">
               <h2 className="text-xl font-bold text-black dark:text-white">{editingContact._isNew ? 'Add Contact' : 'Edit Contact'}</h2>
-              <button onClick={() => setIsContactModalOpen(false)} className="text-zinc-400 hover:text-black dark:hover:text-white transition">
+              <button onClick={() => { setIsContactModalOpen(false); setEditingContact(null); }} className="text-zinc-400 hover:text-black dark:hover:text-white transition">
                 <X className="w-6 h-6" />
               </button>
             </div>
@@ -1817,7 +2208,7 @@ export default function App() {
               </div>
             </div>
             <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-end space-x-3">
-              <button onClick={() => setIsContactModalOpen(false)} className="px-4 py-2 text-sm font-bold text-zinc-600 dark:text-zinc-400 hover:text-black dark:hover:text-white transition">Cancel</button>
+              <button onClick={() => { setIsContactModalOpen(false); setEditingContact(null); }} className="px-4 py-2 text-sm font-bold text-zinc-600 dark:text-zinc-400 hover:text-black dark:hover:text-white transition">Cancel</button>
               <button onClick={saveContact} disabled={loading} className="px-6 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50">Save</button>
             </div>
           </div>
