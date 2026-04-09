@@ -40,6 +40,13 @@ npm run dev
 - npm run dist:mac:ci: Build unsigned macOS DMG (CI-safe)
 - npm run dist:mac:signed: Build signed/notarized macOS DMG (requires signing env)
 
+## GitHub CI DMG
+
+- Unsigned DMG workflow: [.github/workflows/build-macos-dmg.yml](.github/workflows/build-macos-dmg.yml)
+- Triggers: push to main, pull request to main, v* tags, and manual dispatch
+- Output artifact: macos-dmg
+- Signed/notarized workflow: [.github/workflows/release-macos-signed.yml](.github/workflows/release-macos-signed.yml)
+
 ## Documentation Map
 
 - New user onboarding in 15-30 minutes: [ONBOARDING.md](ONBOARDING.md)

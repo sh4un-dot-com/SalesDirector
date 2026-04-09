@@ -99,6 +99,19 @@ For signed and notarized releases, follow [MAC_SIGNING_SETUP.md](MAC_SIGNING_SET
 
 Before publishing a production build, run through [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
+### GitHub CI DMG Build (Recommended)
+
+Unsigned DMG builds run via [build-macos-dmg.yml](.github/workflows/build-macos-dmg.yml) on:
+
+- Push to main
+- Pull request targeting main
+- Push tag matching v*
+- Manual workflow_dispatch
+
+After completion, download the DMG from the workflow artifact named macos-dmg.
+
+For signed/notarized DMG, use [release-macos-signed.yml](.github/workflows/release-macos-signed.yml) with required secrets configured.
+
 ## 9. Troubleshooting
 
 ### HubSpot sync fails
