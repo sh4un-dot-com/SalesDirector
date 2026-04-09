@@ -42,9 +42,13 @@ npm run dev
 
 ## Documentation Map
 
+- New user onboarding in 15-30 minutes: [ONBOARDING.md](ONBOARDING.md)
+- Printable trainer handout and onboarding runbook: [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md)
 - Setup and environment: [SETUP.md](SETUP.md)
 - User workflows and feature usage: [USER_MANUAL.md](USER_MANUAL.md)
 - HubSpot token, scopes, and troubleshooting: [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md)
+- Production launch and release gates: [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)
+- Error matrix and issue triage: [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md)
 - Optional secure proxy setup: [PROXY_SETUP.md](PROXY_SETUP.md)
 - macOS signing and notarization setup: [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md)
 

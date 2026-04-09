@@ -2,6 +2,33 @@
 
 This manual explains day-to-day usage of SalesDirector.
 
+If this is your first day using the app, start with [ONBOARDING.md](ONBOARDING.md) for a role-based 15-30 minute setup path.
+
+## Role-Based Quickstart
+
+### Sales Rep (First 10 Minutes)
+
+1. Open Settings and add your sender name, reply-to address, and signature.
+2. Add your AI key or configure proxy routing.
+3. Go to CRM and Contacts, then sync HubSpot or import CSV.
+4. Open a contact dossier and click Draft Outreach.
+5. In AI Outreach, generate draft plus subject options, then send.
+
+### Sales Manager (Pipeline and Team Hygiene)
+
+1. Verify every rep has sender profile and safety limits configured.
+2. Standardize tone/length defaults in Settings before campaigns.
+3. Ensure reps use contact dossiers so outbound sends stay linked to thread history.
+4. Review Smart Inbox scores daily to prioritize follow-up order.
+
+### RevOps or Admin (System Owner)
+
+1. Decide direct mode versus proxy mode for credentials.
+2. Configure HubSpot private app token and scopes.
+3. Confirm auth, HubSpot, AI, SMTP, and IMAP readiness under System Health.
+4. Run release validation using [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
+5. Use [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md) for incident triage.
+
 ## Main Navigation
 
 - Dashboard: KPI snapshot and action planning
@@ -140,3 +167,5 @@ Shows readiness for:
 - Invalid email warnings: check recipient or reply-to format.
 - HubSpot errors: verify token/scopes or proxy setup.
 - Proxy auth errors: shared secret mismatch.
+
+For deeper issue-by-issue triage, use [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).

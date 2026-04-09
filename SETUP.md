@@ -58,6 +58,8 @@ Open the Settings tab and configure:
 - HubSpot private app token (direct mode) or proxy URL
 - Sending safety defaults
 
+For team onboarding sessions, use [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md).
+
 Validation rules are implemented in [salesdirector.jsx](salesdirector.jsx#L255).
 
 ## 6. Direct Mode vs Proxy Mode
@@ -95,6 +97,8 @@ Unsigned DMG workflow is available in CI.
 
 For signed and notarized releases, follow [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md).
 
+Before publishing a production build, run through [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
+
 ## 9. Troubleshooting
 
 ### HubSpot sync fails
@@ -114,3 +118,5 @@ For signed and notarized releases, follow [MAC_SIGNING_SETUP.md](MAC_SIGNING_SET
 ### Firestore/auth errors
 
 - Confirm Firebase runtime config is provided and project rules permit access.
+
+For expanded issue mapping and faster diagnosis, see [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
