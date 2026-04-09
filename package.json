@@ -1,0 +1,57 @@
+{
+  "name": "salesdirector",
+  "version": "1.0.0",
+  "description": "SalesDirector desktop app",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build:web": "vite build",
+    "preview": "vite preview",
+    "test": "node --test tests/*.test.mjs",
+    "dev:desktop": "concurrently -k \"vite --host 127.0.0.1 --port 5173\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "start:desktop": "npm run build:web && electron .",
+    "dist:mac": "npm run build:web && electron-builder --mac dmg --publish never",
+    "dist:mac:ci": "npm run build:web && electron-builder --mac dmg --publish never",
+    "dist:mac:signed": "npm run build:web && electron-builder --mac dmg --publish never"
+  },
+  "build": {
+    "appId": "com.akitaengineering.salesdirector",
+    "productName": "SalesDirector",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.business",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "electron/entitlements.mac.plist",
+      "entitlementsInherit": "electron/entitlements.mac.plist"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
+  },
+  "dependencies": {
+    "firebase": "^12.0.0",
+    "lucide-react": "^0.462.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.3",
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
+    "electron": "^32.1.2",
+    "electron-builder": "^25.1.8",
+    "vite": "^5.4.10",
+    "wait-on": "^8.0.1"
+  }
+}
