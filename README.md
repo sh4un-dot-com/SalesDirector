@@ -1,12 +1,14 @@
 # SalesDirector
 
-SalesDirector is an AI-assisted outbound sales workspace built with React, Firebase, and optional HubSpot + proxy integrations. It helps teams manage contacts, generate outreach drafts, prioritize tasks, and track thread history from one interface.
+SalesDirector is an AI-assisted outbound sales workspace built with React, optional Firebase, and optional HubSpot + proxy integrations. It helps teams manage contacts, generate outreach drafts, prioritize tasks, and track thread history from one interface.
 
 ## What It Includes
 
 - AI outreach drafting, polishing, analysis, objection handling, and sequence generation
 - Smart Inbox scoring with AI summaries
-- Contact management with Firestore-backed storage
+- Contact management with encrypted desktop local storage (and optional Firebase-backed mode)
+- Desktop-only encrypted local database (AES-256-GCM) with passphrase unlock
+- One-time migration of legacy browser-encrypted local data into desktop encrypted storage
 - HubSpot contact sync and email engagement logging
 - CSV contact import with parsing and deduplication
 - Optional secure proxy to keep API keys and tokens off the frontend
@@ -20,13 +22,27 @@ SalesDirector is an AI-assisted outbound sales workspace built with React, Fireb
 npm install
 ```
 
-2. Run web mode.
+2. Run desktop mode (recommended for encrypted local storage).
+
+```powershell
+npm run dev:desktop
+```
+
+3. Optional web preview mode.
 
 ```powershell
 npm run dev
 ```
 
-3. Open the app and complete initial settings in the Settings tab.
+4. Open the app and complete initial settings in the Settings tab.
+
+## Desktop Encrypted Local Database
+
+- Encrypted local storage is available in desktop runtime only.
+- In browser preview, encrypted DB controls are intentionally disabled.
+- In Settings, open Encrypted Local Database and enter a passphrase to Create and Unlock.
+- Passphrase is never stored by the app.
+- If legacy browser-encrypted data exists, the first successful desktop unlock will migrate it into the desktop encrypted database and remove the legacy browser payload.
 
 ## Scripts
 
@@ -70,11 +86,13 @@ npm run dev
 
 - Sensitive values like API keys and tokens are intentionally not persisted to local storage.
 - In proxy mode, keep credentials on the server and configure only proxy URL and optional shared secret in the client.
+- Local CRM/task/thread/inbox data in desktop mode is encrypted at rest and protected by a user passphrase.
 - Do not commit real tokens, SMTP passwords, or signing material.
 
 ## Current Functional Boundaries
 
-- Outbound send currently saves to Firestore thread history and can log to HubSpot when a HubSpot contact ID is present.
+- Outbound send saves to encrypted desktop local history in local mode, or Firestore in Firebase-backed mode.
+- HubSpot logging occurs when a HubSpot contact ID is present and integration is configured.
 - SMTP and IMAP settings are captured and validated in the UI for readiness status.
 
 ## Testing

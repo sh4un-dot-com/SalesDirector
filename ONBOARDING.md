@@ -4,6 +4,12 @@ This is the fastest path to get a new user productive in SalesDirector.
 
 If you are running a live onboarding session, use [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md) as the one-page trainer script.
 
+## Release Update: Local Storage Model
+
+- Local data persistence now uses desktop-only encrypted storage in Electron runtime.
+- Browser preview is still useful for UI checks, but encrypted local DB controls are disabled there.
+- On first desktop unlock, legacy browser-encrypted local payloads are migrated automatically when decrypted with the correct passphrase.
+
 ## Who Should Use This
 
 - New Sales Reps starting outreach
@@ -18,15 +24,24 @@ If you are running a live onboarding session, use [TEAM_TRAINING_SOP.md](TEAM_TR
 npm install
 ```
 
-2. Start app.
+2. Start app in desktop mode (recommended).
+
+```powershell
+npm run dev:desktop
+```
+
+3. Optional: start web preview mode for UI-only checks.
 
 ```powershell
 npm run dev
 ```
 
-3. Open Settings and confirm System Health indicators for:
+4. Open Settings and unlock Encrypted Local Database with passphrase.
+
+5. Confirm System Health indicators for:
 
 - Auth Session
+- Local Encrypted DB
 - Gemini AI Access or Proxy Mode
 - HubSpot Integration
 - SMTP and IMAP readiness (if required for your workflow)

@@ -2,9 +2,16 @@
 
 Purpose: Run a repeatable 30-minute onboarding session for Sales Reps, Managers, and RevOps/Admin.
 
+## Release Update: Trainer Notes
+
+- Encrypted local data storage is desktop-only and requires Electron runtime.
+- Launch training in desktop mode for all storage and migration validation steps.
+- Browser preview does not expose encrypted DB controls and should be treated as UI-only.
+
 ## Session Prep (Trainer)
 
 - Confirm app starts locally.
+- Launch app in desktop mode (npm run dev:desktop).
 - Confirm demo user can access Settings, Contacts, Outreach, and Inbox.
 - Prepare one valid HubSpot contact or a CSV sample with email column.
 - Decide whether demo uses direct mode or proxy mode.

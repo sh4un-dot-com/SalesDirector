@@ -38,15 +38,31 @@ If this is your first day using the app, start with [ONBOARDING.md](ONBOARDING.m
 - AI Outreach: Build and refine outbound emails
 - Settings: Integrations, safety controls, and provider keys
 
+Header controls:
+
+- Dark mode toggle in the top-right header persists your preference across app restarts.
+
 ## Daily Workflow
 
-1. Configure integrations in Settings.
-2. In CRM and Contacts, sync HubSpot contacts or import CSV.
-3. Open a contact dossier and click Draft Outreach.
-4. In AI Outreach, generate subject and body using AI actions.
-5. Send and save thread history.
-6. Review Smart Inbox and prioritize replies.
-7. Use Tasks and Calendar to schedule next actions.
+1. In desktop mode, unlock Encrypted Local Database in Settings.
+2. Configure integrations in Settings.
+3. In CRM and Contacts, sync HubSpot contacts or import CSV.
+4. Open a contact dossier and click Draft Outreach.
+5. In AI Outreach, generate subject and body using AI actions.
+6. Send and save thread history.
+7. Review Smart Inbox and prioritize replies.
+8. Use Tasks and Calendar to schedule next actions.
+
+Note:
+
+- Browser preview mode does not have access to desktop encrypted local storage.
+
+## Local Data Storage
+
+- Local data in desktop mode is stored in an encrypted local database.
+- The database is unlocked with your passphrase from Settings.
+- The passphrase is never stored.
+- If you previously used legacy browser-encrypted local data, the app performs a one-time migration on first successful desktop unlock.
 
 ## Contacts and CRM
 
@@ -106,7 +122,8 @@ Parsing is handled by [utils/dataParsers.mjs](utils/dataParsers.mjs#L121).
 
 When you click Send Email:
 
-- The outbound message is saved to Firestore thread history.
+- In local desktop mode, outbound message history is saved to the encrypted local database.
+- In Firebase-backed mode, outbound message history is saved to Firestore thread history.
 - If a HubSpot contact ID is present and HubSpot is configured, the app also logs an email engagement to HubSpot.
 
 HubSpot logging details are in [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md).
@@ -118,11 +135,19 @@ HubSpot logging details are in [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md).
 Shows readiness for:
 
 - Auth session
+- Local encrypted DB status
 - Proxy mode
 - Gemini access
 - HubSpot integration
 - SMTP readiness
 - IMAP readiness
+
+### Encrypted Local Database
+
+- Create and unlock database with passphrase
+- Lock database
+- Reset encrypted database on this device
+- Shows active backend and current lock/unlock state
 
 ### Secure Proxy Routing
 
@@ -159,6 +184,7 @@ Shows readiness for:
 ## Data and Security
 
 - Sensitive secrets are not persisted to local storage.
+- Local operational data (contacts, threads, tasks, inbox) is encrypted at rest in desktop mode.
 - Non-sensitive preferences are persisted for convenience.
 - You can clear saved local settings from Settings.
 

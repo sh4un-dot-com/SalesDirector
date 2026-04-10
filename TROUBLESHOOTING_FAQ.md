@@ -13,6 +13,8 @@ This guide maps common symptoms to likely causes and fixes.
 | Proxy returns 429 | Rate limit exceeded | Reduce request burst or increase proxy rate-limit env values |
 | CSV import loads 0 contacts | Missing or invalid email column | Ensure email or e-mail column has valid addresses |
 | Email saved locally but not in HubSpot | No hubspotId in composer | Start draft from a synced contact dossier |
+| Encrypted DB controls are disabled | Running browser preview, not desktop runtime | Launch using npm run dev:desktop or npm run start:desktop |
+| Local DB unlock fails after moving to desktop mode | Incorrect passphrase for existing encrypted payload | Retry with the original passphrase used for legacy local data |
 | Build warnings about large chunks | Bundle size threshold exceeded | Split heavy modules or configure chunking in build settings |
 
 ## FAQ
@@ -58,6 +60,21 @@ System Health marks readiness based on required fields:
 - IMAP readiness expects imapHost and imapPort.
 
 Fill those fields in Settings and re-check diagnostics.
+
+### Why are encrypted local DB controls disabled in Settings?
+
+Encrypted local database operations are desktop-only. Browser preview intentionally cannot access Electron local file storage.
+
+Use one of these commands:
+
+- npm run dev:desktop
+- npm run start:desktop
+
+### What happens to my old browser-encrypted local data?
+
+On first successful desktop unlock, if a legacy browser-encrypted payload is detected and passphrase decryption succeeds, the app migrates it into the desktop encrypted database and removes the legacy browser payload.
+
+If migration fails, verify the passphrase matches what was used for the previous encrypted local data.
 
 ### What does "Context access might be invalid" mean in signed workflow diagnostics?
 
