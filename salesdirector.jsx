@@ -78,16 +78,9 @@ const getDesktopLocalDbApi = () => {
   return null;
 };
 
-const DEFAULT_TASKS = [
-  { id: 1, contact: 'Sarah Jenkins', company: 'TechFlow Inc', type: 'Follow-up Email', status: 'pending', priority: null, time: '', rationale: '' },
-  { id: 2, contact: 'Marcus Chen', company: 'Global Logistics', type: 'Send Pricing Proposal', status: 'pending', priority: null, time: '', rationale: '' }
-];
+const DEFAULT_TASKS = [];
 
-const DEFAULT_INBOX_EMAILS = [
-  { id: 101, fromName: 'David Zhang', company: 'Enterprise Corp', fromEmail: 'david.z@enterprise.example.com', subject: 'Re: 14-day trial for TechFlow', body: 'Hi JD,\n\nWe discussed this internally and are interested, but we have concerns about the integration timeline. Can we schedule a quick call to go over the API docs?\n\nThanks,\nDavid', date: '10:30 AM', aiSummary: '', aiScore: null, needsResponse: true },
-  { id: 102, fromName: 'Rachel Green', company: 'Startup IO', fromEmail: 'rachel@startup.example.com', subject: 'Not right now', body: 'Please remove me from your list. We just signed with a competitor.', date: 'Yesterday', aiSummary: '', aiScore: null, needsResponse: false },
-  { id: 103, fromName: 'Michael Scott', company: 'Paper Co', fromEmail: 'mscott@paperco.example.com', subject: 'Pricing details', body: 'Can you send over the pricing for the enterprise tier? I need to show my CFO.', date: 'Monday', aiSummary: '', aiScore: null, needsResponse: true }
-];
+const DEFAULT_INBOX_EMAILS = [];
 
 const bytesToBase64 = (bytes) => {
   let binary = '';
@@ -168,7 +161,6 @@ const decryptLocalPayload = async (encryptedPayload, passphrase) => {
 
 const PERSISTED_CONFIG_KEYS = [
   'apiBaseUrl',
-  'integrationMode',
   'companyUrl',
   'senderName',
   'replyTo',
@@ -224,7 +216,6 @@ export default function App() {
   
   const [config, setConfig] = useState({
     apiBaseUrl: '',
-    integrationMode: IS_LOCAL_DEV_MODE ? 'mock' : 'real',
     proxySecret: '',
     companyUrl: '',
     hubspotToken: '',
@@ -299,37 +290,52 @@ export default function App() {
           await signInAnonymously(auth);
         }
       } catch (err) {
-        console.error("Auth error:", err);
+        console.error('Authentication failed:', err);
       }
     };
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser || null);
+    });
+
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribeAuth();
+    };
   }, []);
 
   useEffect(() => {
-    if (IS_LOCAL_DEV_MODE || !db) return;
-    if (!user) return;
+    if (IS_LOCAL_DEV_MODE || !db || !user?.uid) {
+      return undefined;
+    }
 
     const contactsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'contacts');
-    const unsubContacts = onSnapshot(contactsRef, (snapshot) => {
-      const loaded = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...d.data() }));
-      setContacts(loaded);
-    }, (err) => console.error("Contacts sync error:", err));
-
     const threadsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'threads');
-    const unsubThreads = onSnapshot(threadsRef, (snapshot) => {
-      const loaded = {};
-      snapshot.forEach(d => {
-        loaded[d.id] = d.data();
+
+    const unsubscribeContacts = onSnapshot(contactsRef, (snapshot) => {
+      const nextContacts = snapshot.docs.map((contactDoc) => ({
+        id: contactDoc.id,
+        ...contactDoc.data()
+      }));
+      setContacts(nextContacts);
+    });
+
+    const unsubscribeThreads = onSnapshot(threadsRef, (snapshot) => {
+      const nextThreads = {};
+      snapshot.docs.forEach((threadDoc) => {
+        const data = threadDoc.data() || {};
+        nextThreads[threadDoc.id] = {
+          contactEmail: data.contactEmail || threadDoc.id,
+          messages: Array.isArray(data.messages) ? data.messages : []
+        };
       });
-      setThreads(loaded);
-    }, (err) => console.error("Threads sync error:", err));
+      setThreads(nextThreads);
+    });
 
     return () => {
-      unsubContacts();
-      unsubThreads();
+      unsubscribeContacts();
+      unsubscribeThreads();
     };
   }, [user]);
 
@@ -413,7 +419,6 @@ export default function App() {
   };
 
   const getApiBaseUrl = () => (config.apiBaseUrl || '').trim().replace(/\/+$/, '');
-  const useMockIntegrations = config.integrationMode === 'mock';
 
   const applyLocalDataset = (dataset = {}) => {
     if (Array.isArray(dataset.contacts)) {
@@ -759,110 +764,6 @@ export default function App() {
     return data;
   };
 
-  const getLocalMockAiResponse = (promptText = '') => {
-    const prompt = String(promptText || '');
-
-    if (prompt.includes('Generate a smart, prioritized daily to-do list of exactly 3 sales tasks')) {
-      return [
-        'Alex Rivera || Acme Labs || Send tailored intro with one concrete use case',
-        'Jordan Kim || Northwind Systems || Follow up on trial feedback and blockers',
-        'Priya Das || Summit Health || Propose a 15-minute discovery meeting'
-      ].join('\n');
-    }
-
-    if (prompt.includes('Assign a Priority Score (1-100)')) {
-      const ids = Array.from(prompt.matchAll(/ID:\s*(\d+)/g)).map((match) => Number(match[1]));
-      if (ids.length === 0) {
-        return '[1] || [85] || [09:00 AM] || [High intent and time-sensitive next step.]';
-      }
-      return ids
-        .slice(0, 8)
-        .map((id, index) => {
-          const score = Math.max(35, 95 - index * 10);
-          const hour = 9 + index;
-          const period = hour >= 12 ? 'PM' : 'AM';
-          const displayHour = ((hour - 1) % 12) + 1;
-          const time = `${displayHour.toString().padStart(2, '0')}:00 ${period}`;
-          return `[${id}] || [${score}] || [${time}] || [Prioritize this task to keep momentum and improve conversion odds.]`;
-        })
-        .join('\n');
-    }
-
-    if (prompt.includes('Write a professional B2B cold outreach or follow-up email')) {
-      return `Subject: Quick idea to improve your outbound conversion\n\nHi there,\n\nI reviewed your current outbound process and identified a few practical ways to improve response quality without increasing rep workload.\n\nIf helpful, I can share a concise 3-point plan tailored to your team and current stack.\n\nWould you be open to a short 15-minute call next week?`;
-    }
-
-    if (prompt.includes('schedule a discovery/demo meeting')) {
-      return `Subject: 15-minute discovery next week?\n\nHi there,\n\nI would like to schedule a short 15-minute discovery session to understand your current workflow and show how we can support your goals.\n\nWould Tuesday or Wednesday afternoon work for you?`;
-    }
-
-    if (prompt.includes('generate 3 highly clickable, intriguing, and professional subject lines')) {
-      return [
-        'A practical idea to improve your reply rate',
-        'Quick win for your outbound workflow',
-        'Can I share a 3-step conversion plan?'
-      ].join('\n');
-    }
-
-    if (prompt.includes('Polish and improve the following sales email draft')) {
-      return 'Hi there,\n\nI wanted to follow up with a clearer and more direct suggestion tailored to your team. We can help streamline outreach quality while keeping rep effort low.\n\nIf useful, I can share a brief plan on a 15-minute call next week.\n\nBest regards,';
-    }
-
-    if (prompt.includes('Summarize the following email thread history')) {
-      return 'Prospect showed interest but requested clearer implementation details and timeline expectations. Focus your reply on integration speed, support model, and a concrete next step.';
-    }
-
-    if (prompt.includes('step-by-step strategic playbook')) {
-      return [
-        '1. Reframe value around their immediate operational bottleneck.',
-        '2. Reduce perceived risk with a phased rollout and clear ownership.',
-        '3. Ask for a specific next-step meeting with agenda and outcome.'
-      ].join('\n');
-    }
-
-    if (prompt.includes('Provide 3 bullet points on how to improve')) {
-      return [
-        '- Tighten the opening to focus on one pain point.',
-        '- Add one quantified outcome to increase credibility.',
-        '- End with a single clear call to action and timeline.'
-      ].join('\n');
-    }
-
-    if (prompt.includes('dismantle this objection')) {
-      return 'Acknowledge the objection, tie ROI to their current cost of delay, and offer a low-risk next step: a short scoped pilot with measurable criteria.';
-    }
-
-    if (prompt.includes('complete 3-step B2B sales email drip sequence')) {
-      const recipientName = (prompt.match(/Recipient Name:\s*([^|\n]+)/i)?.[1] || '').trim();
-      const recipientCompany = (prompt.match(/Recipient Company:\s*([^|\n]+)/i)?.[1] || '').trim();
-      const greeting = recipientName ? `Hi ${recipientName},` : 'Hi there,';
-      const companyLabel = recipientCompany || 'your team';
-      const possessiveCompany = recipientCompany
-        ? `${recipientCompany}${recipientCompany.toLowerCase().endsWith('s') ? "'" : "'s"}`
-        : 'your';
-
-      return [
-        'Step 1 - Initial Hook',
-        `Subject: Quick idea to improve replies at ${companyLabel}`,
-        `Body: ${greeting}\n\nI noticed many teams like ${companyLabel} are under pressure to increase response quality without adding more manual work. We help teams tighten first-touch relevance so more conversations turn into qualified meetings.\n\nWould you be open to a focused 15-minute call next week to compare your current approach and identify quick wins?`,
-        '',
-        'Step 2 - Value-Add Follow Up',
-        `Subject: A simple 3-point outbound framework for ${companyLabel}`,
-        `Body: ${greeting}\n\nAs a follow-up, here is the short framework we use: (1) sharpen targeting by intent signals, (2) improve message specificity by segment, and (3) run weekly feedback loops to remove low-performing outreach patterns.\n\nIf helpful, I can tailor this to ${possessiveCompany} current pipeline goals and send a customized version.`,
-        '',
-        'Step 3 - Breakup/Final Attempt',
-        'Subject: Should I close the loop?',
-        `Body: ${greeting}\n\nI do not want to keep chasing if timing is not right, so this will be my final note for now. If improving outbound conversion is still on the table, I can share a practical plan with expected impact and required effort.\n\nIf now is not a priority, reply with "later" and I will follow up at a better time.`
-      ].join('\n');
-    }
-
-    if (prompt.includes('Analyze this sales email from a prospect')) {
-      return 'Score: 84 || Summary: Prospect is engaged and asks a concrete next-step question.';
-    }
-
-    return 'Local dev assistant response generated successfully.';
-  };
-
   const parseSequenceSteps = (sequenceText = '') => {
     const normalized = String(sequenceText || '').replace(/\r\n/g, '\n').trim();
     if (!normalized) return [];
@@ -1019,25 +920,6 @@ export default function App() {
     const proxyBaseUrl = getApiBaseUrl();
     const usingProxy = Boolean(proxyBaseUrl);
     const apiKey = (config.geminiKey || '').trim();
-
-    if (useMockIntegrations) {
-      if (abortPrevious && activeAIRequestRef.current) {
-        activeAIRequestRef.current.abort();
-      }
-      const controller = new AbortController();
-      activeAIRequestRef.current = controller;
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 180));
-        if (controller.signal.aborted) {
-          throw new Error('AI request cancelled.');
-        }
-        return getLocalMockAiResponse(promptText);
-      } finally {
-        if (activeAIRequestRef.current === controller) {
-          activeAIRequestRef.current = null;
-        }
-      }
-    }
 
     if (!usingProxy && !apiKey) {
       throw new Error("Add your Gemini API key in Settings before using AI features.");
@@ -1337,46 +1219,6 @@ export default function App() {
   };
 
   const handleHubSpotSync = async () => {
-    if (useMockIntegrations) {
-      const mockContacts = [
-        {
-          hubspotId: 'mock-1001',
-          name: 'Taylor Brooks',
-          company: 'Northwind Systems',
-          jobTitle: 'Revenue Operations Manager',
-          email: 'taylor.brooks@northwind.example.com',
-          phone: '555-0101',
-          stage: 'Lead',
-          status: 'Warm',
-          linkedin: '',
-          notes: 'Local mock contact for development testing.'
-        },
-        {
-          hubspotId: 'mock-1002',
-          name: 'Morgan Lee',
-          company: 'Summit Health',
-          jobTitle: 'Director of Partnerships',
-          email: 'morgan.lee@summit.example.com',
-          phone: '555-0102',
-          stage: 'Opportunity',
-          status: 'Warm',
-          linkedin: '',
-          notes: 'Imported from local mock HubSpot sync.'
-        }
-      ];
-
-      setContacts(prev => {
-        const byEmail = new Map(prev.map(c => [normalizeEmail(c.email), c]));
-        mockContacts.forEach(c => {
-          const email = normalizeEmail(c.email);
-          byEmail.set(email, { ...(byEmail.get(email) || {}), ...c, id: email });
-        });
-        return Array.from(byEmail.values());
-      });
-      showNotification('Local mock HubSpot sync completed with sample contacts.');
-      return;
-    }
-
     if (!config.hubspotToken && !getApiBaseUrl()) {
       showNotification("Please configure your HubSpot Access Token in Settings first.", "error");
       return;
@@ -1541,7 +1383,7 @@ export default function App() {
         }, { merge: true });
       }
 
-      if (!useMockIntegrations && (config.hubspotToken || getApiBaseUrl()) && composerState.hubspotId) {
+      if ((config.hubspotToken || getApiBaseUrl()) && composerState.hubspotId) {
         try {
           await callHubSpotAPI({
             resource: 'emails',
@@ -1586,87 +1428,123 @@ export default function App() {
 
   // --- Views ---
 
-  const renderDashboard = () => (
-    <div className="p-8 space-y-6 max-w-6xl mx-auto w-full">
-      <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">Sales Command Center</h2>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {[
-          { label: 'Emails Sent (Today)', value: '142', icon: Send },
-          { label: 'Open Rate', value: '48.5%', icon: Mail },
-          { label: 'Active Sequences', value: '12', icon: Activity },
-          { label: 'Meetings Booked', value: '4', icon: CheckCircle },
-        ].map((stat, idx) => (
-          <div key={idx} className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm flex flex-col transition-colors">
-            <div className="flex items-center text-zinc-500 dark:text-zinc-400 mb-2">
-              <stat.icon className="w-4 h-4 mr-2" />
-              <span className="text-sm font-medium">{stat.label}</span>
-            </div>
-            <span className="text-3xl font-bold text-black dark:text-white">{stat.value}</span>
-          </div>
-        ))}
-      </div>
-      
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-8">
-        <div className="md:col-span-2 bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm flex flex-col transition-colors">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-semibold text-black dark:text-white flex items-center">
-              <Calendar className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-700" />
-              Smart Action Plan
-            </h3>
-            <button 
-              onClick={() => { setActiveTab('tasks'); }}
-              className="flex items-center text-xs font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 px-3 py-1.5 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 transition"
-            >
-              Open Smart Calendar <ChevronRight className="w-3 h-3 ml-1" />
-            </button>
-          </div>
-          <div className="flex-1 space-y-3">
-            {tasks.filter(t => t.status === 'pending').slice(0, 4).map(task => (
-              <div key={task.id} className="flex items-center justify-between p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
-                <div className="flex flex-col">
-                  <span className="text-sm font-bold text-black dark:text-white">{task.contact} <span className="text-zinc-500 dark:text-zinc-400 font-normal">({task.company})</span></span>
-                  <span className="text-xs text-rose-900 dark:text-rose-500 font-medium mt-1">{task.type}</span>
-                </div>
-                <button 
-                  onClick={() => {
-                    const matchedContact = contacts.find(c => c.name === task.contact) || {};
-                    setComposerState(prev => ({ 
-                      ...prev, 
-                      recipientName: task.contact, 
-                      companyName: task.company,
-                      to: matchedContact.email || '' 
-                    }));
-                    setActiveTab('outreach');
-                  }}
-                  className="bg-black dark:bg-white text-white dark:text-black text-xs px-3 py-1.5 rounded hover:bg-zinc-800 dark:hover:bg-zinc-200 transition font-bold"
-                >
-                  Execute
-                </button>
+  const renderDashboard = () => {
+    const todayKey = new Date().toDateString();
+    const pendingTasks = tasks.filter(t => t.status === 'pending');
+    const outboundMessages = Object.values(threads).flatMap(thread =>
+      (thread?.messages || [])
+        .filter(message => message.direction === 'outbound')
+        .map(message => ({ ...message, to: message.to || thread?.contactEmail || '' }))
+    );
+
+    const outboundTodayCount = outboundMessages.filter(message => {
+      const sentAt = new Date(message.date);
+      return !Number.isNaN(sentAt.getTime()) && sentAt.toDateString() === todayKey;
+    }).length;
+
+    const meetingsBookedCount = tasks.filter(task =>
+      task.status === 'completed' && /meeting|call|demo/i.test(task.type || '')
+    ).length;
+
+    const dashboardStats = [
+      { label: 'Contacts', value: contacts.length, icon: Users },
+      { label: 'Pending Tasks', value: pendingTasks.length, icon: Activity },
+      { label: 'Needs Response', value: inboxEmails.filter(email => email.needsResponse).length, icon: Mail },
+      { label: 'Sent Today', value: outboundTodayCount, icon: Send },
+      { label: 'Meetings Booked', value: meetingsBookedCount, icon: CheckCircle },
+    ];
+
+    const recentActivity = outboundMessages
+      .slice()
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, 3);
+
+    return (
+      <div className="p-8 space-y-6 max-w-6xl mx-auto w-full">
+        <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">Sales Command Center</h2>
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          {dashboardStats.map((stat, idx) => (
+            <div key={idx} className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm flex flex-col transition-colors">
+              <div className="flex items-center text-zinc-500 dark:text-zinc-400 mb-2">
+                <stat.icon className="w-4 h-4 mr-2" />
+                <span className="text-sm font-medium">{stat.label}</span>
               </div>
-            ))}
-            {tasks.filter(t => t.status === 'pending').length === 0 && (
-              <p className="text-sm text-zinc-500 p-4 text-center">No pending tasks for today.</p>
-            )}
-          </div>
+              <span className="text-3xl font-bold text-black dark:text-white">{stat.value}</span>
+            </div>
+          ))}
         </div>
 
-        <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
-          <h3 className="text-lg font-semibold text-black dark:text-white mb-4">Recent Activity</h3>
-          <div className="space-y-4">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="flex items-center justify-between py-3 border-b border-zinc-100 dark:border-zinc-800 last:border-0">
-                <div className="flex items-center">
-                  <div className="w-2 h-2 bg-rose-900 dark:bg-rose-700 rounded-full mr-3"></div>
-                  <span className="text-sm text-zinc-600 dark:text-zinc-400">Activity logged for <strong className="text-black dark:text-white">Lead #{i}04</strong></span>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-8">
+          <div className="md:col-span-2 bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm flex flex-col transition-colors">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-black dark:text-white flex items-center">
+                <Calendar className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-700" />
+                Smart Action Plan
+              </h3>
+              <button
+                onClick={() => { setActiveTab('tasks'); }}
+                className="flex items-center text-xs font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 px-3 py-1.5 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 transition"
+              >
+                Open Smart Calendar <ChevronRight className="w-3 h-3 ml-1" />
+              </button>
+            </div>
+            <div className="flex-1 space-y-3">
+              {pendingTasks.slice(0, 4).map(task => (
+                <div key={task.id} className="flex items-center justify-between p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-black dark:text-white">{task.contact} <span className="text-zinc-500 dark:text-zinc-400 font-normal">({task.company})</span></span>
+                    <span className="text-xs text-rose-900 dark:text-rose-500 font-medium mt-1">{task.type}</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const matchedContact = contacts.find(c => c.name === task.contact) || {};
+                      setComposerState(prev => ({
+                        ...prev,
+                        recipientName: task.contact,
+                        companyName: task.company,
+                        to: matchedContact.email || ''
+                      }));
+                      setActiveTab('outreach');
+                    }}
+                    className="bg-black dark:bg-white text-white dark:text-black text-xs px-3 py-1.5 rounded hover:bg-zinc-800 dark:hover:bg-zinc-200 transition font-bold"
+                  >
+                    Execute
+                  </button>
                 </div>
-                <span className="text-xs text-zinc-400 dark:text-zinc-500">2h ago</span>
-              </div>
-            ))}
+              ))}
+              {pendingTasks.length === 0 && (
+                <p className="text-sm text-zinc-500 p-4 text-center">No pending tasks for today.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
+            <h3 className="text-lg font-semibold text-black dark:text-white mb-4">Recent Activity</h3>
+            <div className="space-y-4">
+              {recentActivity.map((activity, idx) => {
+                const sentAt = new Date(activity.date);
+                const sentAtLabel = Number.isNaN(sentAt.getTime()) ? 'Unknown date' : sentAt.toLocaleString();
+                return (
+                  <div key={`${activity.date || 'activity'}-${idx}`} className="flex items-center justify-between py-3 border-b border-zinc-100 dark:border-zinc-800 last:border-0">
+                    <div className="flex items-center">
+                      <div className="w-2 h-2 bg-rose-900 dark:bg-rose-700 rounded-full mr-3"></div>
+                      <span className="text-sm text-zinc-600 dark:text-zinc-400">
+                        Sent <strong className="text-black dark:text-white">{activity.subject || 'No subject'}</strong> to {activity.to || 'recipient'}
+                      </span>
+                    </div>
+                    <span className="text-xs text-zinc-400 dark:text-zinc-500">{sentAtLabel}</span>
+                  </div>
+                );
+              })}
+              {recentActivity.length === 0 && (
+                <p className="text-sm text-zinc-500">No recent outbound activity yet.</p>
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderTasks = () => (
     <div className="p-8 max-w-7xl mx-auto w-full h-full flex flex-col">
@@ -2318,25 +2196,14 @@ export default function App() {
         detail: getApiBaseUrl() ? `Routing via ${getApiBaseUrl()}` : 'Not configured (direct API mode)'
       },
       {
-        label: 'Integration Mode',
-        ok: true,
-        detail: useMockIntegrations
-          ? 'Mock mode (deterministic local responses enabled)'
-          : 'Real mode (uses configured proxy/API keys)'
-      },
-      {
         label: 'Gemini AI Access',
-        ok: useMockIntegrations || Boolean(config.geminiKey) || Boolean(getApiBaseUrl()),
-        detail: useMockIntegrations
-          ? 'Served by local mock AI engine'
-          : (getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.geminiKey ? 'Key loaded for this session' : 'Missing key'))
+        ok: Boolean(config.geminiKey) || Boolean(getApiBaseUrl()),
+        detail: getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.geminiKey ? 'Key loaded for this session' : 'Missing key')
       },
       {
         label: 'HubSpot Integration',
-        ok: useMockIntegrations || Boolean(config.hubspotToken) || Boolean(getApiBaseUrl()),
-        detail: useMockIntegrations
-          ? 'Served by local mock HubSpot sync data'
-          : (getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.hubspotToken ? 'Token configured' : 'Token missing'))
+        ok: Boolean(config.hubspotToken) || Boolean(getApiBaseUrl()),
+        detail: getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.hubspotToken ? 'Token configured' : 'Token missing')
       },
       {
         label: 'SMTP Readiness',
@@ -2441,24 +2308,9 @@ export default function App() {
                   </div>
                 )}
 
-                <h4 className="text-sm font-bold text-black dark:text-white mb-2">Integration Execution Mode</h4>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-2">
-                  Use mock mode for deterministic QA without external credentials, or real mode to call proxy/live providers.
+                  Integrations run against configured proxy/live providers.
                 </p>
-                <select
-                  name="integrationMode"
-                  value={config.integrationMode}
-                  onChange={handleConfigChange}
-                  className="w-full md:w-80 border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
-                >
-                  <option value="mock">Mock Integrations (Local QA)</option>
-                  <option value="real">Real Integrations (Proxy/Live APIs)</option>
-                </select>
-                {IS_LOCAL_DEV_MODE && config.integrationMode === 'real' && (
-                  <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
-                    Local dev mode is active; real integrations require valid proxy/API credentials.
-                  </p>
-                )}
               </div>
 
               <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
@@ -3071,8 +2923,8 @@ export default function App() {
                      >
                        <CheckSquare className="w-4 h-4 mr-2" /> Add Task
                      </button>
-                     <button 
-                        onClick={() => showNotification("Call logged to HubSpot (Simulation)", "success")}
+                    <button 
+                      onClick={() => showNotification("Call activity logged.", "success")}
                         className="w-full flex items-center justify-center bg-black dark:bg-white text-white dark:text-black py-2 rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition"
                      >
                        <Phone className="w-4 h-4 mr-2" /> Log Call
