@@ -23,14 +23,152 @@ import {
 } from './utils/dataParsers.mjs';
 
 // Firebase Initialization
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+const parseRuntimeJson = (value, fallback = {}) => {
+  try {
+    if (!value) return fallback;
+    if (typeof value === 'string') return JSON.parse(value);
+    if (typeof value === 'object') return value;
+  } catch {
+    // Ignore malformed runtime JSON and use fallback.
+  }
+  return fallback;
+};
+
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? parseRuntimeJson(__firebase_config, {}) : {};
+
+let app = null;
+let auth = null;
+let db = null;
+let firebaseReady = false;
+
+if (firebaseConfig && typeof firebaseConfig === 'object' && firebaseConfig.apiKey) {
+  try {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+    firebaseReady = true;
+  } catch (err) {
+    console.warn('Running in local dev mode (Firebase init failed):', err?.message || err);
+  }
+} else {
+  console.warn('Running in local dev mode (Firebase config missing).');
+}
+
+const IS_LOCAL_DEV_MODE = !firebaseReady;
+const LOCAL_DEV_USER = { uid: 'local-dev-user', isLocalDev: true };
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const CONFIG_STORAGE_KEY = 'salesdirector.config.v1';
+const THEME_STORAGE_KEY = 'salesdirector.theme.v1';
+const LOCAL_DB_STORAGE_KEY = 'salesdirector.localdb.enc.v1';
+const LOCAL_DB_ENCRYPTION_VERSION = 1;
+const LOCAL_DB_PBKDF2_ITERATIONS = 250000;
+
+const getDesktopLocalDbApi = () => {
+  if (typeof window === 'undefined') return null;
+  const localDbApi = window.salesDirectorDesktop?.localDb;
+  if (
+    localDbApi &&
+    typeof localDbApi.status === 'function' &&
+    typeof localDbApi.save === 'function' &&
+    typeof localDbApi.load === 'function' &&
+    typeof localDbApi.reset === 'function'
+  ) {
+    return localDbApi;
+  }
+  return null;
+};
+
+const DEFAULT_TASKS = [
+  { id: 1, contact: 'Sarah Jenkins', company: 'TechFlow Inc', type: 'Follow-up Email', status: 'pending', priority: null, time: '', rationale: '' },
+  { id: 2, contact: 'Marcus Chen', company: 'Global Logistics', type: 'Send Pricing Proposal', status: 'pending', priority: null, time: '', rationale: '' }
+];
+
+const DEFAULT_INBOX_EMAILS = [
+  { id: 101, fromName: 'David Zhang', company: 'Enterprise Corp', fromEmail: 'david.z@enterprise.example.com', subject: 'Re: 14-day trial for TechFlow', body: 'Hi JD,\n\nWe discussed this internally and are interested, but we have concerns about the integration timeline. Can we schedule a quick call to go over the API docs?\n\nThanks,\nDavid', date: '10:30 AM', aiSummary: '', aiScore: null, needsResponse: true },
+  { id: 102, fromName: 'Rachel Green', company: 'Startup IO', fromEmail: 'rachel@startup.example.com', subject: 'Not right now', body: 'Please remove me from your list. We just signed with a competitor.', date: 'Yesterday', aiSummary: '', aiScore: null, needsResponse: false },
+  { id: 103, fromName: 'Michael Scott', company: 'Paper Co', fromEmail: 'mscott@paperco.example.com', subject: 'Pricing details', body: 'Can you send over the pricing for the enterprise tier? I need to show my CFO.', date: 'Monday', aiSummary: '', aiScore: null, needsResponse: true }
+];
+
+const bytesToBase64 = (bytes) => {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+};
+
+const base64ToBytes = (value) => {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+};
+
+const deriveEncryptionKey = async (passphrase, salt, iterations = LOCAL_DB_PBKDF2_ITERATIONS) => {
+  const encoder = new TextEncoder();
+  const keyMaterial = await window.crypto.subtle.importKey(
+    'raw',
+    encoder.encode(passphrase),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+
+  return window.crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+};
+
+const encryptLocalPayload = async (payload, passphrase) => {
+  if (!window?.crypto?.subtle) {
+    throw new Error('Web Crypto API is unavailable.');
+  }
+
+  const encoder = new TextEncoder();
+  const salt = window.crypto.getRandomValues(new Uint8Array(16));
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveEncryptionKey(passphrase, salt);
+  const plaintext = encoder.encode(JSON.stringify(payload));
+  const encrypted = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
+
+  return {
+    v: LOCAL_DB_ENCRYPTION_VERSION,
+    i: LOCAL_DB_PBKDF2_ITERATIONS,
+    s: bytesToBase64(salt),
+    iv: bytesToBase64(iv),
+    d: bytesToBase64(new Uint8Array(encrypted))
+  };
+};
+
+const decryptLocalPayload = async (encryptedPayload, passphrase) => {
+  if (!window?.crypto?.subtle) {
+    throw new Error('Web Crypto API is unavailable.');
+  }
+
+  if (!encryptedPayload || typeof encryptedPayload !== 'object') {
+    throw new Error('Encrypted payload is invalid.');
+  }
+
+  const iterations = Number(encryptedPayload.i) || LOCAL_DB_PBKDF2_ITERATIONS;
+  const salt = base64ToBytes(encryptedPayload.s || '');
+  const iv = base64ToBytes(encryptedPayload.iv || '');
+  const cipher = base64ToBytes(encryptedPayload.d || '');
+  const key = await deriveEncryptionKey(passphrase, salt, iterations);
+  const decrypted = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, cipher);
+  const decoded = new TextDecoder().decode(decrypted);
+  return parseRuntimeJson(decoded, {});
+};
+
 const PERSISTED_CONFIG_KEYS = [
   'apiBaseUrl',
+  'integrationMode',
   'companyUrl',
   'senderName',
   'replyTo',
@@ -58,7 +196,17 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('outreach');
   const [loading, setLoading] = useState(false);
   const [notification, setNotification] = useState(null);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+      if (savedTheme === 'dark') return true;
+      if (savedTheme === 'light') return false;
+      return window.matchMedia?.('(prefers-color-scheme: dark)')?.matches || false;
+    } catch {
+      return false;
+    }
+  });
   
   // CRM Modals
   const [selectedContact, setSelectedContact] = useState(null);
@@ -69,20 +217,14 @@ export default function App() {
   // App State
   const [contacts, setContacts] = useState([]);
   const [threads, setThreads] = useState({});
-  const [tasks, setTasks] = useState([
-    { id: 1, contact: 'Sarah Jenkins', company: 'TechFlow Inc', type: 'Follow-up Email', status: 'pending', priority: null, time: '', rationale: '' },
-    { id: 2, contact: 'Marcus Chen', company: 'Global Logistics', type: 'Send Pricing Proposal', status: 'pending', priority: null, time: '', rationale: '' }
-  ]);
+  const [tasks, setTasks] = useState(() => DEFAULT_TASKS.map((task) => ({ ...task })));
   const [newTaskInput, setNewTaskInput] = useState('');
 
-  const [inboxEmails, setInboxEmails] = useState([
-    { id: 101, fromName: 'David Zhang', company: 'Enterprise Corp', fromEmail: 'david.z@enterprise.example.com', subject: 'Re: 14-day trial for TechFlow', body: 'Hi JD,\n\nWe discussed this internally and are interested, but we have concerns about the integration timeline. Can we schedule a quick call to go over the API docs?\n\nThanks,\nDavid', date: '10:30 AM', aiSummary: '', aiScore: null, needsResponse: true },
-    { id: 102, fromName: 'Rachel Green', company: 'Startup IO', fromEmail: 'rachel@startup.example.com', subject: 'Not right now', body: 'Please remove me from your list. We just signed with a competitor.', date: 'Yesterday', aiSummary: '', aiScore: null, needsResponse: false },
-    { id: 103, fromName: 'Michael Scott', company: 'Paper Co', fromEmail: 'mscott@paperco.example.com', subject: 'Pricing details', body: 'Can you send over the pricing for the enterprise tier? I need to show my CFO.', date: 'Monday', aiSummary: '', aiScore: null, needsResponse: true }
-  ]);
+  const [inboxEmails, setInboxEmails] = useState(() => DEFAULT_INBOX_EMAILS.map((email) => ({ ...email })));
   
   const [config, setConfig] = useState({
     apiBaseUrl: '',
+    integrationMode: IS_LOCAL_DEV_MODE ? 'mock' : 'real',
     proxySecret: '',
     companyUrl: '',
     hubspotToken: '',
@@ -132,9 +274,22 @@ export default function App() {
   const notificationTimerRef = useRef(null);
   const activeAIRequestRef = useRef(null);
   const hasLoadedLocalConfigRef = useRef(false);
+  const [localDbPassphraseInput, setLocalDbPassphraseInput] = useState('');
+  const [localDbPassphrase, setLocalDbPassphrase] = useState('');
+  const [localDbUnlocked, setLocalDbUnlocked] = useState(false);
+  const [localDbHasEncryptedData, setLocalDbHasEncryptedData] = useState(false);
+  const [localDbStatusMessage, setLocalDbStatusMessage] = useState('');
+  const [localDbBackend, setLocalDbBackend] = useState('initializing');
+  const localDbReadyRef = useRef(false);
+  const localDbSaveTimerRef = useRef(null);
 
   // Firebase Auth & Data Sync
   useEffect(() => {
+    if (IS_LOCAL_DEV_MODE || !auth) {
+      setUser(LOCAL_DEV_USER);
+      return undefined;
+    }
+
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -152,7 +307,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (IS_LOCAL_DEV_MODE || !db) return;
     if (!user) return;
+
     const contactsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'contacts');
     const unsubContacts = onSnapshot(contactsRef, (snapshot) => {
       const loaded = [];
@@ -182,6 +339,15 @@ export default function App() {
       length: config.defaultLength 
     }));
   }, [config.defaultTone, config.defaultLength]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, isDarkMode ? 'dark' : 'light');
+    } catch {
+      // Ignore local storage write failures.
+    }
+  }, [isDarkMode]);
 
   useEffect(() => {
     if (hasLoadedLocalConfigRef.current) return;
@@ -225,6 +391,9 @@ export default function App() {
       if (notificationTimerRef.current) {
         clearTimeout(notificationTimerRef.current);
       }
+      if (localDbSaveTimerRef.current) {
+        clearTimeout(localDbSaveTimerRef.current);
+      }
       if (activeAIRequestRef.current) {
         activeAIRequestRef.current.abort();
       }
@@ -243,6 +412,207 @@ export default function App() {
   };
 
   const getApiBaseUrl = () => (config.apiBaseUrl || '').trim().replace(/\/+$/, '');
+  const useMockIntegrations = config.integrationMode === 'mock';
+
+  const applyLocalDataset = (dataset = {}) => {
+    if (Array.isArray(dataset.contacts)) {
+      setContacts(dataset.contacts);
+    }
+    if (dataset.threads && typeof dataset.threads === 'object') {
+      setThreads(dataset.threads);
+    }
+    if (Array.isArray(dataset.tasks)) {
+      setTasks(dataset.tasks);
+    }
+    if (Array.isArray(dataset.inboxEmails)) {
+      setInboxEmails(dataset.inboxEmails);
+    }
+  };
+
+  const persistLocalEncryptedDatabase = async (passphraseOverride = '') => {
+    if (!IS_LOCAL_DEV_MODE || typeof window === 'undefined') return;
+
+    const passphrase = String(passphraseOverride || localDbPassphrase || '').trim();
+    if (!passphrase) return;
+
+    const desktopLocalDb = getDesktopLocalDbApi();
+    if (!desktopLocalDb) {
+      throw new Error('Desktop encrypted database unavailable. Launch the desktop app to use local storage.');
+    }
+
+    const payload = {
+      contacts,
+      threads,
+      tasks,
+      inboxEmails,
+      savedAt: new Date().toISOString()
+    };
+
+    await desktopLocalDb.save({ passphrase, data: payload });
+    setLocalDbBackend('electron-encrypted-file');
+    setLocalDbHasEncryptedData(true);
+    setLocalDbStatusMessage(`Encrypted desktop database saved at ${new Date().toLocaleTimeString()}.`);
+  };
+
+  const unlockLocalEncryptedDatabase = async () => {
+    if (!IS_LOCAL_DEV_MODE) {
+      showNotification('Encrypted local database is only used in local mode.', 'error');
+      return;
+    }
+
+    if (typeof window === 'undefined') {
+      showNotification('Browser storage is unavailable in this environment.', 'error');
+      return;
+    }
+
+    const passphrase = String(localDbPassphraseInput || '').trim();
+    if (passphrase.length < 8) {
+      showNotification('Use at least 8 characters for the local database passphrase.', 'error');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const desktopLocalDb = getDesktopLocalDbApi();
+      if (!desktopLocalDb) {
+        throw new Error('Desktop encrypted database unavailable. Launch the desktop app to continue.');
+      }
+
+      const status = await desktopLocalDb.status();
+      const hasDesktopData = Boolean(status?.exists);
+      let migratedFromLegacyBrowserPayload = false;
+
+      setLocalDbBackend(status?.backend || 'electron-encrypted-file');
+      setLocalDbHasEncryptedData(hasDesktopData);
+
+      if (hasDesktopData) {
+        const loaded = await desktopLocalDb.load({ passphrase });
+        applyLocalDataset(loaded?.data || {});
+      } else {
+        const legacyRaw = window.localStorage.getItem(LOCAL_DB_STORAGE_KEY);
+        if (legacyRaw) {
+          const legacyEncryptedPayload = parseRuntimeJson(legacyRaw, {});
+          const legacyDecryptedPayload = await decryptLocalPayload(legacyEncryptedPayload, passphrase);
+          applyLocalDataset(legacyDecryptedPayload || {});
+          migratedFromLegacyBrowserPayload = true;
+        }
+      }
+
+      setLocalDbPassphrase(passphrase);
+      setLocalDbUnlocked(true);
+      localDbReadyRef.current = true;
+
+      await persistLocalEncryptedDatabase(passphrase);
+      if (migratedFromLegacyBrowserPayload) {
+        window.localStorage.removeItem(LOCAL_DB_STORAGE_KEY);
+        setLocalDbStatusMessage('Legacy browser encrypted payload migrated to desktop encrypted database.');
+        showNotification('Legacy local data migrated and database unlocked.');
+      } else if (hasDesktopData) {
+        setLocalDbStatusMessage('Encrypted desktop database unlocked.');
+        showNotification('Encrypted local database unlocked.');
+      } else {
+        setLocalDbStatusMessage('New encrypted desktop database created and unlocked.');
+        showNotification('Encrypted local database created and unlocked.');
+      }
+    } catch (err) {
+      console.error(err);
+      setLocalDbPassphrase('');
+      setLocalDbUnlocked(false);
+      localDbReadyRef.current = false;
+      setLocalDbStatusMessage('Unable to decrypt local database. Check your passphrase.');
+      showNotification('Could not unlock local database. Check your passphrase.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const lockLocalEncryptedDatabase = () => {
+    setLocalDbPassphrase('');
+    setLocalDbUnlocked(false);
+    localDbReadyRef.current = false;
+    setLocalDbStatusMessage(
+      localDbHasEncryptedData
+        ? 'Encrypted local database locked.'
+        : 'No encrypted local database found on this device.'
+    );
+    showNotification('Encrypted local database locked.');
+  };
+
+  const resetLocalEncryptedDatabase = async () => {
+    if (typeof window === 'undefined') return;
+    const confirmed = window.confirm('This will permanently delete encrypted local CRM, thread, task, and inbox data on this device. Continue?');
+    if (!confirmed) return;
+
+    const desktopLocalDb = getDesktopLocalDbApi();
+    if (!desktopLocalDb) {
+      showNotification('Desktop encrypted database unavailable. Launch the desktop app to reset local storage.', 'error');
+      return;
+    }
+
+    await desktopLocalDb.reset();
+    window.localStorage.removeItem(LOCAL_DB_STORAGE_KEY);
+    setLocalDbBackend('electron-encrypted-file');
+    setContacts([]);
+    setThreads({});
+    setTasks(DEFAULT_TASKS.map((task) => ({ ...task })));
+    setInboxEmails(DEFAULT_INBOX_EMAILS.map((email) => ({ ...email })));
+    setLocalDbPassphrase('');
+    setLocalDbPassphraseInput('');
+    setLocalDbUnlocked(false);
+    setLocalDbHasEncryptedData(false);
+    localDbReadyRef.current = false;
+    setLocalDbStatusMessage('Encrypted local database removed from this device.');
+    showNotification('Encrypted local database cleared.', 'success');
+  };
+
+  useEffect(() => {
+    if (!IS_LOCAL_DEV_MODE || typeof window === 'undefined') return;
+
+    (async () => {
+      const desktopLocalDb = getDesktopLocalDbApi();
+      if (desktopLocalDb) {
+        const status = await desktopLocalDb.status();
+        const hasEncryptedData = Boolean(status?.exists);
+        setLocalDbBackend(status?.backend || 'electron-encrypted-file');
+        setLocalDbHasEncryptedData(hasEncryptedData);
+        setLocalDbStatusMessage(
+          hasEncryptedData
+            ? 'Encrypted desktop database detected. Enter passphrase to unlock.'
+            : 'No encrypted desktop database yet. Create one with a passphrase.'
+        );
+        return;
+      }
+
+      setLocalDbBackend('desktop-unavailable');
+      setLocalDbHasEncryptedData(false);
+      setLocalDbStatusMessage('Desktop encrypted database unavailable in browser preview. Launch the desktop app to use local encrypted storage.');
+    })().catch((err) => {
+      console.error(err);
+      setLocalDbStatusMessage('Failed to initialize encrypted local database status.');
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!IS_LOCAL_DEV_MODE || !localDbUnlocked || !localDbPassphrase || !localDbReadyRef.current) return;
+
+    if (localDbSaveTimerRef.current) {
+      clearTimeout(localDbSaveTimerRef.current);
+    }
+
+    localDbSaveTimerRef.current = setTimeout(() => {
+      persistLocalEncryptedDatabase().catch((err) => {
+        console.error(err);
+        setLocalDbStatusMessage('Encrypted local database autosave failed.');
+      });
+    }, 120);
+
+    return () => {
+      if (localDbSaveTimerRef.current) {
+        clearTimeout(localDbSaveTimerRef.current);
+        localDbSaveTimerRef.current = null;
+      }
+    };
+  }, [contacts, threads, tasks, inboxEmails, localDbUnlocked, localDbPassphrase]);
 
   const getComposerFieldError = (name, value) => {
     const trimmed = (value || '').trim();
@@ -388,6 +758,102 @@ export default function App() {
     return data;
   };
 
+  const getLocalMockAiResponse = (promptText = '') => {
+    const prompt = String(promptText || '');
+
+    if (prompt.includes('Generate a smart, prioritized daily to-do list of exactly 3 sales tasks')) {
+      return [
+        'Alex Rivera || Acme Labs || Send tailored intro with one concrete use case',
+        'Jordan Kim || Northwind Systems || Follow up on trial feedback and blockers',
+        'Priya Das || Summit Health || Propose a 15-minute discovery meeting'
+      ].join('\n');
+    }
+
+    if (prompt.includes('Assign a Priority Score (1-100)')) {
+      const ids = Array.from(prompt.matchAll(/ID:\s*(\d+)/g)).map((match) => Number(match[1]));
+      if (ids.length === 0) {
+        return '[1] || [85] || [09:00 AM] || [High intent and time-sensitive next step.]';
+      }
+      return ids
+        .slice(0, 8)
+        .map((id, index) => {
+          const score = Math.max(35, 95 - index * 10);
+          const hour = 9 + index;
+          const period = hour >= 12 ? 'PM' : 'AM';
+          const displayHour = ((hour - 1) % 12) + 1;
+          const time = `${displayHour.toString().padStart(2, '0')}:00 ${period}`;
+          return `[${id}] || [${score}] || [${time}] || [Prioritize this task to keep momentum and improve conversion odds.]`;
+        })
+        .join('\n');
+    }
+
+    if (prompt.includes('Write a professional B2B cold outreach or follow-up email')) {
+      return `Subject: Quick idea to improve your outbound conversion\n\nHi there,\n\nI reviewed your current outbound process and identified a few practical ways to improve response quality without increasing rep workload.\n\nIf helpful, I can share a concise 3-point plan tailored to your team and current stack.\n\nWould you be open to a short 15-minute call next week?`;
+    }
+
+    if (prompt.includes('schedule a discovery/demo meeting')) {
+      return `Subject: 15-minute discovery next week?\n\nHi there,\n\nI would like to schedule a short 15-minute discovery session to understand your current workflow and show how we can support your goals.\n\nWould Tuesday or Wednesday afternoon work for you?`;
+    }
+
+    if (prompt.includes('generate 3 highly clickable, intriguing, and professional subject lines')) {
+      return [
+        'A practical idea to improve your reply rate',
+        'Quick win for your outbound workflow',
+        'Can I share a 3-step conversion plan?'
+      ].join('\n');
+    }
+
+    if (prompt.includes('Polish and improve the following sales email draft')) {
+      return 'Hi there,\n\nI wanted to follow up with a clearer and more direct suggestion tailored to your team. We can help streamline outreach quality while keeping rep effort low.\n\nIf useful, I can share a brief plan on a 15-minute call next week.\n\nBest regards,';
+    }
+
+    if (prompt.includes('Summarize the following email thread history')) {
+      return 'Prospect showed interest but requested clearer implementation details and timeline expectations. Focus your reply on integration speed, support model, and a concrete next step.';
+    }
+
+    if (prompt.includes('step-by-step strategic playbook')) {
+      return [
+        '1. Reframe value around their immediate operational bottleneck.',
+        '2. Reduce perceived risk with a phased rollout and clear ownership.',
+        '3. Ask for a specific next-step meeting with agenda and outcome.'
+      ].join('\n');
+    }
+
+    if (prompt.includes('Provide 3 bullet points on how to improve')) {
+      return [
+        '- Tighten the opening to focus on one pain point.',
+        '- Add one quantified outcome to increase credibility.',
+        '- End with a single clear call to action and timeline.'
+      ].join('\n');
+    }
+
+    if (prompt.includes('dismantle this objection')) {
+      return 'Acknowledge the objection, tie ROI to their current cost of delay, and offer a low-risk next step: a short scoped pilot with measurable criteria.';
+    }
+
+    if (prompt.includes('complete 3-step B2B sales email drip sequence')) {
+      return [
+        'Step 1 - Initial Hook',
+        'Subject: Quick idea for your outbound team',
+        'Body: Share one relevant observation and invite a 15-minute discussion.',
+        '',
+        'Step 2 - Value-Add Follow Up',
+        'Subject: Practical framework you can apply this week',
+        'Body: Offer a concise framework and ask if they want a tailored version.',
+        '',
+        'Step 3 - Breakup/Final Attempt',
+        'Subject: Close the loop?',
+        'Body: Keep it respectful, summarize value, and leave the door open.'
+      ].join('\n');
+    }
+
+    if (prompt.includes('Analyze this sales email from a prospect')) {
+      return 'Score: 84 || Summary: Prospect is engaged and asks a concrete next-step question.';
+    }
+
+    return 'Local dev assistant response generated successfully.';
+  };
+
   // --- Task Management Logic ---
   const addTask = (e) => {
     e.preventDefault();
@@ -449,9 +915,23 @@ export default function App() {
     try {
       const contactData = { ...editingContact, email: normalizedEmail };
       delete contactData._isNew; 
-      
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', normalizedEmail);
-      await setDoc(docRef, contactData, { merge: true });
+
+      if (IS_LOCAL_DEV_MODE || !db) {
+        setContacts(prev => {
+          const existingIndex = prev.findIndex(c => normalizeEmail(c.email) === normalizedEmail);
+          const nextContact = { ...contactData, id: normalizedEmail };
+          if (existingIndex === -1) {
+            return [...prev, nextContact];
+          }
+          const next = [...prev];
+          next[existingIndex] = { ...next[existingIndex], ...nextContact };
+          return next;
+        });
+      } else {
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', normalizedEmail);
+        await setDoc(docRef, contactData, { merge: true });
+      }
+
       showNotification(`Contact ${editingContact._isNew ? 'added' : 'updated'} successfully!`);
       setIsContactModalOpen(false);
       setEditingContact(null);
@@ -467,7 +947,12 @@ export default function App() {
     if (!user || !contactToDelete) return;
     setLoading(true);
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', normalizeEmail(contactToDelete.email)));
+      const targetEmail = normalizeEmail(contactToDelete.email);
+      if (IS_LOCAL_DEV_MODE || !db) {
+        setContacts(prev => prev.filter(contact => normalizeEmail(contact.email) !== targetEmail));
+      } else {
+        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', targetEmail));
+      }
       showNotification("Contact deleted securely.");
       setContactToDelete(null);
     } catch (err) {
@@ -493,6 +978,26 @@ export default function App() {
     const proxyBaseUrl = getApiBaseUrl();
     const usingProxy = Boolean(proxyBaseUrl);
     const apiKey = (config.geminiKey || '').trim();
+
+    if (useMockIntegrations) {
+      if (abortPrevious && activeAIRequestRef.current) {
+        activeAIRequestRef.current.abort();
+      }
+      const controller = new AbortController();
+      activeAIRequestRef.current = controller;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        if (controller.signal.aborted) {
+          throw new Error('AI request cancelled.');
+        }
+        return getLocalMockAiResponse(promptText);
+      } finally {
+        if (activeAIRequestRef.current === controller) {
+          activeAIRequestRef.current = null;
+        }
+      }
+    }
+
     if (!usingProxy && !apiKey) {
       throw new Error("Add your Gemini API key in Settings before using AI features.");
     }
@@ -775,6 +1280,46 @@ export default function App() {
   };
 
   const handleHubSpotSync = async () => {
+    if (useMockIntegrations) {
+      const mockContacts = [
+        {
+          hubspotId: 'mock-1001',
+          name: 'Taylor Brooks',
+          company: 'Northwind Systems',
+          jobTitle: 'Revenue Operations Manager',
+          email: 'taylor.brooks@northwind.example.com',
+          phone: '555-0101',
+          stage: 'Lead',
+          status: 'Warm',
+          linkedin: '',
+          notes: 'Local mock contact for development testing.'
+        },
+        {
+          hubspotId: 'mock-1002',
+          name: 'Morgan Lee',
+          company: 'Summit Health',
+          jobTitle: 'Director of Partnerships',
+          email: 'morgan.lee@summit.example.com',
+          phone: '555-0102',
+          stage: 'Opportunity',
+          status: 'Warm',
+          linkedin: '',
+          notes: 'Imported from local mock HubSpot sync.'
+        }
+      ];
+
+      setContacts(prev => {
+        const byEmail = new Map(prev.map(c => [normalizeEmail(c.email), c]));
+        mockContacts.forEach(c => {
+          const email = normalizeEmail(c.email);
+          byEmail.set(email, { ...(byEmail.get(email) || {}), ...c, id: email });
+        });
+        return Array.from(byEmail.values());
+      });
+      showNotification('Local mock HubSpot sync completed with sample contacts.');
+      return;
+    }
+
     if (!config.hubspotToken && !getApiBaseUrl()) {
       showNotification("Please configure your HubSpot Access Token in Settings first.", "error");
       return;
@@ -805,11 +1350,23 @@ export default function App() {
           linkedin: '',
           notes: ''
         })).filter(c => c.email);
-        
-        for (const c of mappedContacts) {
-          const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', c.email);
-          await setDoc(docRef, c, { merge: true });
+
+        if (IS_LOCAL_DEV_MODE || !db) {
+          setContacts(prev => {
+            const byEmail = new Map(prev.map(c => [normalizeEmail(c.email), c]));
+            mappedContacts.forEach(c => {
+              const email = normalizeEmail(c.email);
+              byEmail.set(email, { ...(byEmail.get(email) || {}), ...c, id: email });
+            });
+            return Array.from(byEmail.values());
+          });
+        } else {
+          for (const c of mappedContacts) {
+            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', c.email);
+            await setDoc(docRef, c, { merge: true });
+          }
         }
+
         showNotification(`Successfully synced and saved ${mappedContacts.length} contacts from HubSpot`);
       } else {
         showNotification("No contacts found in HubSpot.", "error");
@@ -857,9 +1414,20 @@ export default function App() {
           return;
         }
 
-        for (const c of uniqueContacts) {
-          const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', c.email);
-          await setDoc(docRef, c, { merge: true });
+        if (IS_LOCAL_DEV_MODE || !db) {
+          setContacts(prev => {
+            const byEmail = new Map(prev.map(c => [normalizeEmail(c.email), c]));
+            uniqueContacts.forEach(c => {
+              const email = normalizeEmail(c.email);
+              byEmail.set(email, { ...(byEmail.get(email) || {}), ...c, id: email });
+            });
+            return Array.from(byEmail.values());
+          });
+        } else {
+          for (const c of uniqueContacts) {
+            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', c.email);
+            await setDoc(docRef, c, { merge: true });
+          }
         }
 
         showNotification(`Successfully imported and saved ${uniqueContacts.length} contacts from CSV`);
@@ -891,7 +1459,6 @@ export default function App() {
 
     setLoading(true);
     try {
-      const threadRef = doc(db, 'artifacts', appId, 'users', user.uid, 'threads', recipientEmail);
       const newMessage = {
         date: new Date().toISOString(),
         subject: composerState.subject,
@@ -900,12 +1467,24 @@ export default function App() {
       };
 
       const existingThread = threads[recipientEmail]?.messages || [];
-      await setDoc(threadRef, {
-        contactEmail: recipientEmail,
-        messages: [...existingThread, newMessage]
-      }, { merge: true });
 
-      if ((config.hubspotToken || getApiBaseUrl()) && composerState.hubspotId) {
+      if (IS_LOCAL_DEV_MODE || !db) {
+        setThreads(prev => ({
+          ...prev,
+          [recipientEmail]: {
+            contactEmail: recipientEmail,
+            messages: [...existingThread, newMessage]
+          }
+        }));
+      } else {
+        const threadRef = doc(db, 'artifacts', appId, 'users', user.uid, 'threads', recipientEmail);
+        await setDoc(threadRef, {
+          contactEmail: recipientEmail,
+          messages: [...existingThread, newMessage]
+        }, { merge: true });
+      }
+
+      if (!useMockIntegrations && (config.hubspotToken || getApiBaseUrl()) && composerState.hubspotId) {
         try {
           await callHubSpotAPI({
             resource: 'emails',
@@ -1644,19 +2223,41 @@ export default function App() {
         detail: user ? `Connected (${user.uid.slice(0, 8)}...)` : 'Not signed in yet'
       },
       {
+        label: 'Local Encrypted DB',
+        ok: !IS_LOCAL_DEV_MODE || (localDbBackend === 'electron-encrypted-file' && localDbUnlocked),
+        detail: !IS_LOCAL_DEV_MODE
+          ? 'Using Firebase-backed storage'
+          : (localDbBackend !== 'electron-encrypted-file'
+            ? 'Desktop runtime required for encrypted local database'
+            : (localDbUnlocked
+              ? `Unlocked and autosaving (${localDbBackend})`
+              : (localDbHasEncryptedData ? `Locked - passphrase required (${localDbBackend})` : `Not initialized yet (${localDbBackend})`)))
+      },
+      {
         label: 'Proxy Mode',
         ok: Boolean(getApiBaseUrl()),
         detail: getApiBaseUrl() ? `Routing via ${getApiBaseUrl()}` : 'Not configured (direct API mode)'
       },
       {
+        label: 'Integration Mode',
+        ok: true,
+        detail: useMockIntegrations
+          ? 'Mock mode (deterministic local responses enabled)'
+          : 'Real mode (uses configured proxy/API keys)'
+      },
+      {
         label: 'Gemini AI Access',
-        ok: Boolean(config.geminiKey) || Boolean(getApiBaseUrl()),
-        detail: getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.geminiKey ? 'Key loaded for this session' : 'Missing key')
+        ok: useMockIntegrations || Boolean(config.geminiKey) || Boolean(getApiBaseUrl()),
+        detail: useMockIntegrations
+          ? 'Served by local mock AI engine'
+          : (getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.geminiKey ? 'Key loaded for this session' : 'Missing key'))
       },
       {
         label: 'HubSpot Integration',
-        ok: Boolean(config.hubspotToken) || Boolean(getApiBaseUrl()),
-        detail: getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.hubspotToken ? 'Token configured' : 'Token missing')
+        ok: useMockIntegrations || Boolean(config.hubspotToken) || Boolean(getApiBaseUrl()),
+        detail: useMockIntegrations
+          ? 'Served by local mock HubSpot sync data'
+          : (getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.hubspotToken ? 'Token configured' : 'Token missing'))
       },
       {
         label: 'SMTP Readiness',
@@ -1708,6 +2309,78 @@ export default function App() {
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-4">
                 Security note: API keys and tokens are intentionally not persisted in local storage.
               </p>
+
+              <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
+                {IS_LOCAL_DEV_MODE && (
+                  <div className="mb-4 pb-4 border-b border-zinc-200 dark:border-zinc-800">
+                    <h4 className="text-sm font-bold text-black dark:text-white mb-2 flex items-center">
+                      <Lock className="w-4 h-4 mr-1 text-rose-900 dark:text-rose-600" />
+                      Encrypted Local Database
+                    </h4>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
+                      Data is saved on this device and encrypted with your passphrase. The passphrase is never stored.
+                      {localDbBackend === 'electron-encrypted-file'
+                        ? ' Running on Electron encrypted file storage.'
+                        : ' Electron desktop runtime is required (browser preview cannot access desktop encrypted storage).'}
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Passphrase</label>
+                        <input
+                          type="password"
+                          value={localDbPassphraseInput}
+                          onChange={(e) => setLocalDbPassphraseInput(e.target.value)}
+                          className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                          placeholder="Minimum 8 characters"
+                        />
+                      </div>
+                      <button
+                        onClick={unlockLocalEncryptedDatabase}
+                        disabled={loading || localDbBackend !== 'electron-encrypted-file'}
+                        className="h-10 bg-black dark:bg-white text-white dark:text-black rounded-md text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50"
+                      >
+                        {localDbHasEncryptedData ? 'Unlock Database' : 'Create & Unlock'}
+                      </button>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        onClick={lockLocalEncryptedDatabase}
+                        disabled={!localDbUnlocked || localDbBackend !== 'electron-encrypted-file'}
+                        className="text-xs bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 px-3 py-1.5 rounded-md hover:bg-zinc-200 dark:hover:bg-zinc-700 transition disabled:opacity-50"
+                      >
+                        Lock Database
+                      </button>
+                      <button
+                        onClick={resetLocalEncryptedDatabase}
+                        disabled={localDbBackend !== 'electron-encrypted-file'}
+                        className="text-xs bg-white dark:bg-zinc-900 border border-rose-900 text-rose-900 dark:text-rose-500 px-3 py-1.5 rounded-md hover:bg-rose-50 dark:hover:bg-zinc-800 transition disabled:opacity-50"
+                      >
+                        Reset Encrypted Database
+                      </button>
+                    </div>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">{localDbStatusMessage}</p>
+                  </div>
+                )}
+
+                <h4 className="text-sm font-bold text-black dark:text-white mb-2">Integration Execution Mode</h4>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-2">
+                  Use mock mode for deterministic QA without external credentials, or real mode to call proxy/live providers.
+                </p>
+                <select
+                  name="integrationMode"
+                  value={config.integrationMode}
+                  onChange={handleConfigChange}
+                  className="w-full md:w-80 border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                >
+                  <option value="mock">Mock Integrations (Local QA)</option>
+                  <option value="real">Real Integrations (Proxy/Live APIs)</option>
+                </select>
+                {IS_LOCAL_DEV_MODE && config.integrationMode === 'real' && (
+                  <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
+                    Local dev mode is active; real integrations require valid proxy/API credentials.
+                  </p>
+                )}
+              </div>
 
               <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
                 <h4 className="text-sm font-bold text-black dark:text-white mb-3">Secure Proxy Routing</h4>
@@ -2057,7 +2730,7 @@ export default function App() {
         <div className="p-6 border-b border-zinc-800">
           <h1 className="text-xl font-bold text-white flex items-center">
             <div className="w-8 h-8 bg-rose-900 rounded-lg flex items-center justify-center mr-3">
-              <Activity className="w-5 h-5 text-white" />
+              <Mail className="w-5 h-5 text-white" />
             </div>
             Sales Director
           </h1>
