@@ -267,7 +267,8 @@ export default function App() {
     objection: '',
     tone: 'Persuasive',
     length: 'Concise',
-    suggestedSubjects: []
+    suggestedSubjects: [],
+    sequenceSteps: []
   });
   const [configErrors, setConfigErrors] = useState({});
   const [composerErrors, setComposerErrors] = useState({});
@@ -832,18 +833,26 @@ export default function App() {
     }
 
     if (prompt.includes('complete 3-step B2B sales email drip sequence')) {
+      const recipientName = (prompt.match(/Recipient Name:\s*([^|\n]+)/i)?.[1] || '').trim();
+      const recipientCompany = (prompt.match(/Recipient Company:\s*([^|\n]+)/i)?.[1] || '').trim();
+      const greeting = recipientName ? `Hi ${recipientName},` : 'Hi there,';
+      const companyLabel = recipientCompany || 'your team';
+      const possessiveCompany = recipientCompany
+        ? `${recipientCompany}${recipientCompany.toLowerCase().endsWith('s') ? "'" : "'s"}`
+        : 'your';
+
       return [
         'Step 1 - Initial Hook',
-        'Subject: Quick idea for your outbound team',
-        'Body: Share one relevant observation and invite a 15-minute discussion.',
+        `Subject: Quick idea to improve replies at ${companyLabel}`,
+        `Body: ${greeting}\n\nI noticed many teams like ${companyLabel} are under pressure to increase response quality without adding more manual work. We help teams tighten first-touch relevance so more conversations turn into qualified meetings.\n\nWould you be open to a focused 15-minute call next week to compare your current approach and identify quick wins?`,
         '',
         'Step 2 - Value-Add Follow Up',
-        'Subject: Practical framework you can apply this week',
-        'Body: Offer a concise framework and ask if they want a tailored version.',
+        `Subject: A simple 3-point outbound framework for ${companyLabel}`,
+        `Body: ${greeting}\n\nAs a follow-up, here is the short framework we use: (1) sharpen targeting by intent signals, (2) improve message specificity by segment, and (3) run weekly feedback loops to remove low-performing outreach patterns.\n\nIf helpful, I can tailor this to ${possessiveCompany} current pipeline goals and send a customized version.`,
         '',
         'Step 3 - Breakup/Final Attempt',
-        'Subject: Close the loop?',
-        'Body: Keep it respectful, summarize value, and leave the door open.'
+        'Subject: Should I close the loop?',
+        `Body: ${greeting}\n\nI do not want to keep chasing if timing is not right, so this will be my final note for now. If improving outbound conversion is still on the table, I can share a practical plan with expected impact and required effort.\n\nIf now is not a priority, reply with "later" and I will follow up at a better time.`
       ].join('\n');
     }
 
@@ -852,6 +861,38 @@ export default function App() {
     }
 
     return 'Local dev assistant response generated successfully.';
+  };
+
+  const parseSequenceSteps = (sequenceText = '') => {
+    const normalized = String(sequenceText || '').replace(/\r\n/g, '\n').trim();
+    if (!normalized) return [];
+
+    const stepRegex = /Step\s*(\d+)\s*-\s*([^\n]+)\nSubject:\s*([^\n]+)\nBody:\s*([\s\S]*?)(?=\nStep\s*\d+\s*-|$)/gi;
+    const steps = [];
+    let match;
+
+    while ((match = stepRegex.exec(normalized)) !== null) {
+      const stepNumber = Number(match[1]);
+      const stepTitle = String(match[2] || '').trim();
+      const subject = String(match[3] || '').trim();
+      const body = String(match[4] || '').trim();
+
+      if (stepNumber && subject && body) {
+        steps.push({ stepNumber, stepTitle, subject, body });
+      }
+    }
+
+    return steps.sort((a, b) => a.stepNumber - b.stepNumber);
+  };
+
+  const loadSequenceStepToComposer = (step) => {
+    if (!step) return;
+    setComposerState(prev => ({
+      ...prev,
+      subject: step.subject,
+      body: step.body
+    }));
+    showNotification(`Loaded Step ${step.stepNumber} into composer.`);
   };
 
   // --- Task Management Logic ---
@@ -1163,7 +1204,7 @@ export default function App() {
            newBody = `${newBody}\n\n${config.signature}`;
         }
         
-        setComposerState(prev => ({ ...prev, subject: newSubject || prev.subject, body: newBody, suggestedSubjects: [] }));
+          setComposerState(prev => ({ ...prev, subject: newSubject || prev.subject, body: newBody, suggestedSubjects: [], sequenceSteps: [] }));
         showNotification("Draft generated successfully");
 
       } else if (actionType === 'meeting') {
@@ -1185,7 +1226,7 @@ export default function App() {
           newBody = result.replace(subjectMatch[0], '').trim();
         }
         if (config.signature) newBody += `\n\n${config.signature}`;
-        setComposerState(prev => ({ ...prev, subject: newSubject || prev.subject, body: newBody }));
+        setComposerState(prev => ({ ...prev, subject: newSubject || prev.subject, body: newBody, sequenceSteps: [] }));
         showNotification("Meeting invite generated");
 
       } else if (actionType === 'suggestSubjects') {
@@ -1201,7 +1242,7 @@ export default function App() {
         }
         prompt = `Act as an elite copywriter. Polish and improve the following sales email draft. Make it sound more natural, improve the flow, ensure it aligns with a ${composerState.tone} tone, and keep it ${composerState.length}. NO EMOJIS.\n\nDraft:\n${composerState.body}`;
         const result = await callGeminiAPI(prompt);
-        setComposerState(prev => ({ ...prev, body: result }));
+        setComposerState(prev => ({ ...prev, body: result, sequenceSteps: [] }));
         showNotification("Draft polished successfully");
 
       } else if (actionType === 'summarize') {
@@ -1242,11 +1283,27 @@ export default function App() {
         
         prompt = `Act as an elite Virtual Sales Director. Write a complete 3-step B2B sales email drip sequence for ${composerState.to || 'this prospect'}.
         Context: ${contextParts.join(' | ')} | Tone: ${composerState.tone}
-        Requirements: Step 1: Initial Hook. Step 2: Value-Add Follow Up. Step 3: Breakup/Final Attempt. Format clearly with specific Subject Lines. Do not include signatures. CRITICAL: NO EMOJIS.`;
+        Requirements: Step 1: Initial Hook. Step 2: Value-Add Follow Up. Step 3: Breakup/Final Attempt.
+        For each step, output exactly this structure:
+        Step X - [Step Name]
+        Subject: [specific subject line]
+        Body: [complete, send-ready email copy with greeting, value, and CTA]
+        Write final email copy, not instructions. Do not output placeholders like "Share one..." or "Offer...".
+        Do not include signatures. CRITICAL: NO EMOJIS.`;
         
         const result = await callGeminiAPI(prompt);
-        setComposerState(prev => ({ ...prev, body: result, subject: '3-Step Sequence Generated' }));
-        showNotification("3-Step Sequence generated successfully");
+        const parsedSteps = parseSequenceSteps(result);
+        setComposerState(prev => ({
+          ...prev,
+          body: result,
+          subject: '3-Step Sequence Generated',
+          sequenceSteps: parsedSteps
+        }));
+        showNotification(
+          parsedSteps.length > 0
+            ? '3-Step Sequence generated. Use the step loader buttons to copy one email at a time.'
+            : '3-Step Sequence generated successfully'
+        );
       } else if (actionType === 'analyzeInbox') {
         const updatedInbox = [...inboxEmails];
         for (let i = 0; i < updatedInbox.length; i++) {
@@ -1518,7 +1575,7 @@ export default function App() {
         .join('\n\n');
         
       setComposerState(prev => ({ 
-        ...prev, body: '', subject: '', threadHistory: historyString 
+        ...prev, body: '', subject: '', threadHistory: historyString, sequenceSteps: []
       }));
     } catch (err) {
       showNotification("Error saving thread to database.", "error");
@@ -1690,7 +1747,7 @@ export default function App() {
                        <button 
                          onClick={() => {
                            const matchedContact = contacts.find(c => c.name === task.contact) || {};
-                           setComposerState(prev => ({ ...prev, recipientName: task.contact, companyName: task.company, to: matchedContact.email || '' }));
+                           setComposerState(prev => ({ ...prev, recipientName: task.contact, companyName: task.company, to: matchedContact.email || '', sequenceSteps: [] }));
                            setActiveTab('outreach');
                          }}
                          className="ml-3 text-rose-900 dark:text-rose-500 hover:underline font-bold flex items-center"
@@ -1839,7 +1896,8 @@ export default function App() {
                       recipientName: email.fromName,
                       companyName: email.company,
                       subject: email.subject.startsWith('Re:') ? email.subject : `Re: ${email.subject}`,
-                      threadHistory: historyString
+                      threadHistory: historyString,
+                      sequenceSteps: []
                     }));
                     setActiveTab('outreach');
                   }}
@@ -2127,6 +2185,27 @@ export default function App() {
                       {sub}
                     </button>
                   ))}
+                </div>
+              )}
+
+              {composerState.sequenceSteps.length > 0 && (
+                <div className="px-4 py-3 bg-zinc-50 dark:bg-zinc-950/50 border-t border-zinc-200 dark:border-zinc-800">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <span className="text-xs font-bold text-black dark:text-white uppercase tracking-wide">Sequence Step Loader</span>
+                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400">Copy one step into Subject + Body</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {composerState.sequenceSteps.map((step) => (
+                      <button
+                        key={`sequence-step-${step.stepNumber}`}
+                        onClick={() => loadSequenceStepToComposer(step)}
+                        className="text-xs bg-black dark:bg-zinc-800 text-white px-3 py-1.5 rounded-md font-bold hover:bg-zinc-800 dark:hover:bg-zinc-700 transition"
+                        title={`${step.stepTitle}: ${step.subject}`}
+                      >
+                        Copy Step {step.stepNumber} To Composer
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -2972,7 +3051,8 @@ export default function App() {
                            recipientName: selectedContact.name,
                            companyName: selectedContact.company,
                            jobTitle: selectedContact.jobTitle || '',
-                           threadHistory: selectedContact.historyString
+                          threadHistory: selectedContact.historyString,
+                          sequenceSteps: []
                          }));
                          setSelectedContact(null);
                          setActiveTab('outreach');
