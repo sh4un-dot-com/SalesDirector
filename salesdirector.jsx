@@ -288,6 +288,9 @@ export default function App() {
   const notificationTimerRef = useRef(null);
   const activeAIRequestRef = useRef(null);
   const hasLoadedLocalConfigRef = useRef(false);
+  const configChangeCountRef = useRef(0);
+  const configSaveTimerRef = useRef(null);
+  const [configSaveStatus, setConfigSaveStatus] = useState(null);
   const [localDbPassphraseInput, setLocalDbPassphraseInput] = useState('');
   const [localDbPassphrase, setLocalDbPassphrase] = useState('');
   const [localDbUnlocked, setLocalDbUnlocked] = useState(false);
@@ -422,12 +425,19 @@ export default function App() {
 
   useEffect(() => {
     if (!hasLoadedLocalConfigRef.current || typeof window === 'undefined') return;
+    configChangeCountRef.current += 1;
     try {
       const safeConfig = {};
       PERSISTED_CONFIG_KEYS.forEach((key) => {
         safeConfig[key] = config[key];
       });
       window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(safeConfig));
+      // Show save confirmation only after user-initiated changes (skip first cycle from localStorage load)
+      if (configChangeCountRef.current > 1) {
+        setConfigSaveStatus('saved');
+        if (configSaveTimerRef.current) clearTimeout(configSaveTimerRef.current);
+        configSaveTimerRef.current = setTimeout(() => setConfigSaveStatus(null), 2500);
+      }
     } catch {
       // Ignore local storage write failures (private mode/quota).
     }
@@ -2604,7 +2614,15 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
     return (
       <div className="p-8 max-w-4xl mx-auto w-full space-y-8">
         <div>
-          <h2 className="text-2xl font-bold text-black dark:text-white mb-6">Integrations & Settings</h2>
+          <h2 className="text-2xl font-bold text-black dark:text-white mb-6 flex items-center">
+            Integrations & Settings
+            {configSaveStatus === 'saved' && (
+              <span className="ml-3 flex items-center text-sm font-medium text-emerald-600 dark:text-emerald-400 animate-fade-in-up">
+                <CheckCircle className="w-4 h-4 mr-1" />
+                Settings saved
+              </span>
+            )}
+          </h2>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             {/* System Health */}

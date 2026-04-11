@@ -7,6 +7,7 @@
 ## Platform & Deployment
 
 - **Native desktop app** for Windows (NSIS installer) and macOS (DMG)
+- **Custom app icon** — rose/maroon gradient briefcase with gold AI sparkle across all platform surfaces (taskbar, title bar, installer, dock, browser favicon)
 - **Web preview mode** for quick browser-based development and demos
 - **Offline-capable** — works fully offline after initial setup (Tailwind CSS bundled locally)
 - **Automated CI/CD** — GitHub Actions builds both platforms and publishes GitHub Releases on version tags
@@ -35,7 +36,12 @@ Never wonder which email to answer first again.
 - **AI lead scoring** — every inbound email scored 1–100 (100 = hottest lead)
 - **Lead quality badges** — Hot, Warm, Cold visual indicators
 - **One-sentence AI summaries** — instant context without opening the email
-- **"Needs Response"** status tracking across your inbox
+- **Filter tabs** — All, Unread, Needs Response, Archived — view exactly the slice you need
+- **Inline search** — search by sender, subject, or company across all inbox emails
+- **Mark Read / Unread** — toggle read status per email
+- **Flag for response** — mark or unmark emails as needing a response
+- **Archive** — archive emails to declutter without deleting
+- **Delete** — permanently remove emails from inbox
 - **Draft Reply** quick action — jump straight to the composer with context pre-loaded
 - **Bulk inbox analysis** — score and summarize your entire inbox in one click
 - **Email preview** — sender, subject, body snippet visible inline
@@ -55,6 +61,8 @@ Your AI sales assistant builds your daily schedule.
 - **Contact & company association** — every task linked to a CRM record
 - **One-click "Execute"** — jump from task to composer with contact context loaded
 - **Task completion toggle** and deletion
+- **Task edit modal** — full edit with type (follow-up, call, meeting, proposal, research, admin), priority (1–100), due date picker, contact association, rationale/notes, and status fields
+- **Due date badges** — visual indicator on tasks with a scheduled due date
 
 ---
 
@@ -64,16 +72,20 @@ Your single source of truth for every prospect and customer.
 
 ### Contact Management
 - **Sortable contact table** — Name, Title/Company, Contact Info, Stage, Actions
+- **Stage filter bar** — filter contacts by stage: All, Lead, Contact, Opportunity, Customer, Cold, Warm, Hot — with live result count
 - **Contact stages** — Lead → Opportunity → Customer → Churned
 - **Full contact records** — email, phone, name, company, job title, LinkedIn URL, notes
 - **Edit and delete** — inline contact management
 
 ### Contact Dossier View
 - **Full interaction timeline** — every thread message with timestamps
-- **Quick actions** — Draft Outreach, Add Task, Log Call
+- **Quick actions** — Draft Outreach, Add Task, Log Call (persists to timeline with timestamp)
+- **AI Intelligence panel** — Research Contact (B2B sales intelligence dossier), Follow-Up Strategy (urgency/timing/action recommendations)
+- **Timeline message management** — delete individual timeline messages
 - **Contact detail card** — clickable email, phone, LinkedIn links
 - **Stage badge** and notes display
 - **Expandable message details**
+- **Call activity display** — logged calls shown with green badge in timeline
 
 ### Import & Sync
 - **CSV import** — header auto-detection, email column validation, bulk creation
@@ -93,6 +105,8 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 - **Merge tags toolbar** — `[First Name]`, `[Company Name]`, `[Meeting Link]`
 - **Auto-signature insertion** — appends your configured signature to every send
 - **SMTP status indicator** — know if sending is ready before you hit Send
+- **Draft auto-save** — composer content automatically saved to localStorage every 2 seconds; recovered on next visit
+- **Draft auto-save indicator** — shows "Draft auto-saved" status in the composer footer
 - **Step loader** — navigate through multi-step sequence emails
 
 ### AI Writing Actions
@@ -104,6 +118,9 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 | **Pitch Meeting** | Generates a specialized meeting-request email with a 15-minute CTA |
 | **Sequence** | Creates a full 3-step drip campaign: Initial Hook → Value-Add Follow-up → Breakup/Final Attempt (each with custom subject and body) |
 | **Analyze Draft** | Returns 3-bullet improvement suggestions for conversion optimization |
+| **Pre-Send Check** | AI analyzes your email across 6 dimensions (tone, clarity, personalization, CTA strength, length, professionalism) before sending |
+| **Research Contact** | Generates a B2B sales intelligence dossier with role analysis, pain points, conversation starters, and deal potential (from dossier) |
+| **Follow-Up Strategy** | AI recommends follow-up urgency, timing, channel, opening line, and strategic approach (from dossier) |
 
 ### Strategy Sidebar
 - **Tone selector** — Professional, Persuasive, Friendly, Direct & Urgent, Consultative
@@ -122,6 +139,7 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 Eight real-time status indicators for instant diagnostics:
 - Auth Session · Local Encrypted DB · Proxy Mode · Gemini AI Access · HubSpot Integration · SMTP Readiness · IMAP Readiness
 - **Clear Saved Settings** button for factory reset
+- **"Settings saved" confirmation** — visible checkmark + message appears whenever a setting is changed, auto-dismisses after 2.5 seconds
 
 ### Encrypted Local Database (Desktop Only)
 - **Create & Unlock** — set a passphrase (min 8 characters) to create database
@@ -178,6 +196,15 @@ Eight real-time status indicators for instant diagnostics:
 - Full dark mode with one-click toggle in the header
 - Preference persisted across app restarts
 - Smooth theme transitions
+
+### Global Search
+- **Header search bar** — search contacts by name, email, or company from any tab
+- **Live dropdown results** — shows up to 8 matching contacts with avatar initials, name, and company
+- **Click-to-open** — select a result to open the contact dossier instantly
+
+### Dynamic Avatar
+- **Header avatar** — displays user initials computed from the configured sender name in Settings
+- Falls back to "SD" when no sender name is configured
 
 ### Email Thread Tracking
 - Email thread storage per contact

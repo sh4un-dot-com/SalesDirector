@@ -50,6 +50,8 @@ SalesDirector has seven tabs accessible from the left sidebar:
 
 **Header controls:**
 - **Dark mode toggle** — top-right header, preference persists across restarts.
+- **Global search** — search contacts by name, email, or company from any tab. Results appear in a live dropdown; click to open the contact dossier.
+- **User avatar** — displays your initials from the sender name configured in Settings (falls back to "SD").
 
 ---
 
@@ -83,6 +85,12 @@ Your sales command center shows:
 
 ## Smart Inbox
 
+### Filtering & Search
+
+- **Filter tabs** — toggle between All, Unread, Needs Response, and Archived emails
+- **Search bar** — search by sender, subject, or company across all inbox emails
+- Filters and search work together to narrow your view
+
 ### Scoring & Prioritization
 
 Click **Analyze & Score Inbox** to run AI scoring across all inbound emails:
@@ -91,10 +99,15 @@ Click **Analyze & Score Inbox** to run AI scoring across all inbound emails:
 - Visual badges: **Hot** (70+), **Warm** (40–69), **Cold** (below 40)
 - **One-sentence AI summary** per email for instant context
 
-### Quick Actions
+### Per-Email Actions
 
-- **Draft Reply** — opens the AI Outreach composer with the contact and thread context pre-loaded
-- **Needs Response** — status flag for tracking follow-up obligations
+| Action | What It Does |
+|---|---|
+| **Draft Reply** | Opens the AI Outreach composer with contact and thread context pre-loaded |
+| **Read / Unread** | Toggle read status — unread emails appear bold with a rose dot |
+| **Flag** | Mark or unmark an email as needing a response |
+| **Archive** | Archive an email to remove it from the default view (viewable in Archived tab) |
+| **Delete** | Permanently remove an email from the inbox |
 
 ---
 
@@ -118,6 +131,20 @@ Click **Prioritize with AI** to:
 - **Daily timeline** — hourly breakdown from your active hours start to end
 - **Execute buttons** — jump from any task directly to the AI composer with context
 
+### Editing Tasks
+
+Click the **edit icon** (pencil) on any task to open the task edit modal:
+
+- **Task text** — rename the task
+- **Type** — follow-up, call, meeting, proposal, research, admin
+- **Priority** — manual 1–100 score
+- **Due date** — date picker for scheduling
+- **Contact** — associate a contact name
+- **Rationale / Notes** — free-text reason or notes
+- **Status** — set to pending or completed
+
+Click **Save Changes** to persist. Tasks with due dates show a date badge in the task list.
+
 ---
 
 ## CRM & Contacts
@@ -127,6 +154,14 @@ Click **Prioritize with AI** to:
 - **Manual entry** — click "Add Contact" and fill in the form
 - **CSV import** — click "Import CSV" to bulk-import contacts
 - **HubSpot sync** — click "Sync HubSpot" to pull contacts from your CRM
+
+### Filtering Contacts
+
+Use the **stage filter bar** above the contacts table to filter by stage:
+
+- **All Stages** — show every contact
+- **Lead, Contact, Opportunity, Customer, Cold, Warm, Hot** — filter to a specific stage
+- A live count shows how many contacts match when a filter is active
 
 ### CSV Import
 
@@ -156,10 +191,14 @@ Click any contact to open their full dossier:
 
 - **Detail card** — name, title, company, email, phone, LinkedIn (all clickable)
 - **Interaction timeline** — every thread message with direction arrows and timestamps
+- **Delete messages** — remove individual timeline messages via the trash icon
 - **Quick actions:**
   - **Draft Outreach** — opens AI Outreach with this contact pre-loaded
   - **Add Task** — create a task linked to this contact
-  - **Log Call** — record a call interaction
+  - **Log Call** — record a call interaction (persists to timeline with timestamp)
+- **AI Intelligence panel:**
+  - **Research Contact** — generates a B2B sales intelligence dossier (role analysis, pain points, conversation starters, approach, deal potential)
+  - **Follow-Up Strategy** — AI recommends follow-up urgency, timing, channel, opening line, and strategic approach
 
 ---
 
@@ -193,8 +232,11 @@ The AI-powered email composition workspace. Split into two panels:
 | **Pitch Meeting** | Creates a meeting-request email with 15-minute CTA |
 | **Sequence** | Builds a 3-step drip campaign (Hook → Value-Add → Breakup) |
 | **Analyze** | Returns 3 bullet points of improvement suggestions |
+| **Pre-Send Check** | AI analyzes your email across 6 dimensions before sending (tone, clarity, personalization, CTA, length, professionalism) |
 
 **Merge tags:** Insert `[First Name]`, `[Company Name]`, or `[Meeting Link]` placeholders via toolbar buttons.
+
+**Draft auto-save:** Your composer content (to, subject, body, settings) is automatically saved to local storage every 2 seconds. If you close the app or navigate away, your draft will be recovered when you return. A "Draft auto-saved" indicator appears in the composer footer.
 
 **Sending:** Click **Send Email** to dispatch. The message is:
 - Saved to encrypted local thread history (desktop mode)
@@ -207,7 +249,8 @@ The AI-powered email composition workspace. Split into two panels:
 
 ### System Health
 
-Eight status indicators at the top of Settings:
+Eight status indicators at the top of Settings.
+All settings auto-save as you type. A **✅ Settings saved** confirmation appears in the page heading whenever a change is persisted, and dismisses after a few seconds.
 
 | Indicator | What It Checks |
 |---|---|
