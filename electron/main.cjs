@@ -53,6 +53,18 @@ const decryptPayload = (encryptedPayload, passphrase) => {
 };
 
 const registerLocalDbIpcHandlers = () => {
+  ipcMain.handle('app:info', async () => {
+    return {
+      productName: app.getName(),
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      electronVersion: process.versions.electron,
+      chromeVersion: process.versions.chrome,
+      nodeVersion: process.versions.node
+    };
+  });
+
   ipcMain.handle('localdb:status', async () => {
     const dbPath = getLocalDbPath();
     try {
@@ -158,12 +170,37 @@ const attachSmokeTestHandlers = (window) => {
               return expectedAboutText.every((value) => pageText.includes(value));
             };
 
-            const check = () => {
+            const getBridgeStatus = async () => {
+              const desktopApi = window.salesDirectorDesktop;
+              if (
+                !desktopApi ||
+                typeof desktopApi.getAppInfo !== 'function' ||
+                typeof desktopApi.localDb?.status !== 'function'
+              ) {
+                return { ok: false };
+              }
+
+              try {
+                const [appInfo, localDbStatus] = await Promise.all([
+                  desktopApi.getAppInfo(),
+                  desktopApi.localDb.status()
+                ]);
+
+                return {
+                  ok: Boolean(appInfo?.version) && localDbStatus?.backend === 'electron-encrypted-file'
+                };
+              } catch {
+                return { ok: false };
+              }
+            };
+
+            const check = async () => {
               const root = document.getElementById('root');
               const text = root?.innerText?.trim() || '';
               const childCount = root?.children?.length || 0;
+              const bridgeStatus = await getBridgeStatus();
 
-              if ((text.length > 0 || childCount > 0) && hasExpectedAboutText()) {
+              if ((text.length > 0 || childCount > 0) && hasExpectedAboutText() && bridgeStatus.ok) {
                 resolve({ ok: true, textLength: text.length, childCount, title: document.title });
                 return;
               }
@@ -177,7 +214,9 @@ const attachSmokeTestHandlers = (window) => {
                 return;
               }
 
-              requestAnimationFrame(check);
+              requestAnimationFrame(() => {
+                check();
+              });
             };
 
             check();

@@ -70,15 +70,6 @@ const AKITA_CREDITS = {
   origin: 'Made in Niagara Falls, Canada'
 };
 
-const getDesktopAppInfo = () => {
-  if (typeof window === 'undefined') return null;
-  const appInfo = window.salesDirectorDesktop?.appInfo;
-  if (!appInfo || typeof appInfo !== 'object') {
-    return null;
-  }
-  return appInfo;
-};
-
 const getDesktopLocalDbApi = () => {
   if (typeof window === 'undefined') return null;
   const localDbApi = window.salesDirectorDesktop?.localDb;
@@ -288,9 +279,9 @@ export default function App() {
   const [localDbHasEncryptedData, setLocalDbHasEncryptedData] = useState(false);
   const [localDbStatusMessage, setLocalDbStatusMessage] = useState('');
   const [localDbBackend, setLocalDbBackend] = useState('initializing');
+  const [desktopAppInfo, setDesktopAppInfo] = useState(null);
   const localDbReadyRef = useRef(false);
   const localDbSaveTimerRef = useRef(null);
-  const desktopAppInfo = getDesktopAppInfo();
 
   // Firebase Auth & Data Sync
   useEffect(() => {
@@ -320,6 +311,23 @@ export default function App() {
     return () => {
       unsubscribeAuth();
     };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const getAppInfo = window.salesDirectorDesktop?.getAppInfo;
+    if (typeof getAppInfo !== 'function') return;
+
+    getAppInfo()
+      .then((info) => {
+        if (info && typeof info === 'object') {
+          setDesktopAppInfo(info);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load desktop app info:', err);
+      });
   }, []);
 
   useEffect(() => {

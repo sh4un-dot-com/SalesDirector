@@ -1,99 +1,140 @@
 # SalesDirector
 
-SalesDirector is an AI-assisted outbound sales workspace built with React, optional Firebase, and optional HubSpot + proxy integrations. It helps teams manage contacts, generate outreach drafts, prioritize tasks, and track thread history from one interface.
+**AI-powered outbound sales command center for Windows and macOS.**
 
-## What It Includes
+SalesDirector is a desktop application that combines AI email drafting, CRM contact management, smart inbox scoring, intelligent task scheduling, and encrypted local storage into a single workspace. Built for sales teams that want to close more deals with less context switching.
 
-- AI outreach drafting, polishing, analysis, objection handling, and sequence generation
-- Smart Inbox scoring with AI summaries
-- Contact management with encrypted desktop local storage (and optional Firebase-backed mode)
-- Desktop-only encrypted local database (AES-256-GCM) with passphrase unlock
-- One-time migration of legacy browser-encrypted local data into desktop encrypted storage
-- HubSpot contact sync and email engagement logging
-- CSV contact import with parsing and deduplication
-- Optional secure proxy to keep API keys and tokens off the frontend
-- Electron desktop packaging and macOS DMG workflows
+> Built by **Akita Engineering** in Niagara Falls, Canada.
+> [www.akitaengineering.com](https://www.akitaengineering.com) · [support@akitaengineering.com](mailto:support@akitaengineering.com)
+
+---
+
+## Highlights
+
+| Capability | What It Does |
+|---|---|
+| **AI Outreach Engine** | Draft, polish, analyze emails. Generate subject lines, meeting pitches, 3-step drip sequences, and objection-crushing strategies — all from one composer. |
+| **Smart Inbox** | AI scores every inbound email 1–100 and generates one-sentence summaries so you know who to reply to first. |
+| **CRM & Contacts** | Import CSV, sync HubSpot, or add contacts manually. Full dossiers with interaction timelines, quick actions, and stage tracking. |
+| **Tasks & Calendar** | AI generates and prioritizes your daily sales actions with time blocks, rationale, and one-click execution. |
+| **Encrypted Local Database** | AES-256-GCM encryption with PBKDF2 key derivation. Your data stays on your machine, protected by your passphrase. |
+| **HubSpot Integration** | Two-way contact sync and automatic email engagement logging. |
+| **Multi-Provider AI** | Gemini (default), OpenAI, Anthropic, xAI, and Meta provider slots — keys are session-only, never saved to disk. |
+| **Desktop-First** | Native installers for Windows (NSIS) and macOS (DMG). Works fully offline after setup. |
+
+For the complete feature list, see [FEATURES.md](FEATURES.md).
+
+---
 
 ## Quick Start
 
-1. Install dependencies.
-
 ```powershell
+# 1. Install dependencies
 npm install
-```
 
-2. Run desktop mode (recommended for encrypted local storage).
-
-```powershell
+# 2. Launch desktop mode (recommended)
 npm run dev:desktop
-```
 
-3. Optional web preview mode.
-
-```powershell
+# 3. Or web preview for quick iteration
 npm run dev
 ```
 
-4. Open the app and complete initial settings in the Settings tab.
+Open the app → go to **Settings** → configure sender profile, AI provider key, and optionally HubSpot credentials. You're ready to sell.
 
-## Desktop Encrypted Local Database
+For full setup including proxy mode, environment configuration, and packaging, see [SETUP.md](SETUP.md).
 
-- Encrypted local storage is available in desktop runtime only.
-- In browser preview, encrypted DB controls are intentionally disabled.
-- In Settings, open Encrypted Local Database and enter a passphrase to Create and Unlock.
-- Passphrase is never stored by the app.
-- If legacy browser-encrypted data exists, the first successful desktop unlock will migrate it into the desktop encrypted database and remove the legacy browser payload.
+---
+
+## Desktop Installers
+
+### Build locally
+
+```powershell
+# Windows installer (.exe)
+npm run dist:win
+
+# macOS DMG
+npm run dist:mac
+```
+
+Installers are written to the `release/` directory.
+
+### GitHub Releases (CI)
+
+Push a version tag to trigger automatic builds for both platforms:
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The unified [desktop-build.yml](.github/workflows/desktop-build.yml) workflow builds Windows + macOS installers and publishes them as a GitHub Release with auto-generated release notes.
+
+For signed/notarized macOS DMGs, use [release-macos-signed.yml](.github/workflows/release-macos-signed.yml) (manual dispatch).
+
+---
 
 ## Scripts
 
-- npm run dev: Start Vite dev server
-- npm run build:web: Build production web bundle
-- npm run preview: Preview production web build locally
-- npm run test: Run parser and proxy tests
-- npm run dev:desktop: Run Electron desktop app in dev mode
-- npm run start:desktop: Build web assets and launch Electron
-- npm run dist:mac: Build macOS DMG (local)
-- npm run dist:mac:ci: Build unsigned macOS DMG (CI-safe)
-- npm run dist:mac:signed: Build signed/notarized macOS DMG (requires signing env)
+| Script | Purpose |
+|---|---|
+| `npm run dev` | Vite dev server (web preview) |
+| `npm run dev:desktop` | Electron desktop app with hot reload |
+| `npm run build:web` | Production web build |
+| `npm run preview` | Preview production build locally |
+| `npm run start:desktop` | Build + launch Electron |
+| `npm run dist:win` | Build Windows NSIS installer |
+| `npm run dist:mac` | Build macOS DMG |
+| `npm run dist:mac:ci` | Build unsigned macOS DMG (CI) |
+| `npm run dist:mac:signed` | Build signed/notarized macOS DMG |
+| `npm test` | Run all tests |
 
-## GitHub CI DMG
+---
 
-- Unsigned DMG workflow: [.github/workflows/build-macos-dmg.yml](.github/workflows/build-macos-dmg.yml)
-- Triggers: push to main, pull request to main, v* tags, and manual dispatch
-- Output artifact: macos-dmg
-- Signed/notarized workflow: [.github/workflows/release-macos-signed.yml](.github/workflows/release-macos-signed.yml)
+## Architecture
 
-## Documentation Map
+```
+salesdirector.jsx          → Main React application (single-file app)
+electron/main.cjs          → Electron main process, IPC handlers
+electron/preload.cjs       → Secure bridge (contextIsolation + sandbox)
+utils/dataParsers.mjs      → CSV/AI parsing utilities
+proxy-server.mjs           → Optional secure proxy server
+src/main.jsx               → React entry point
+src/App.jsx                → App wrapper
+vite.config.mjs            → Vite build config (base: './' for Electron)
+```
 
-- New user onboarding in 15-30 minutes: [ONBOARDING.md](ONBOARDING.md)
-- Printable trainer handout and onboarding runbook: [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md)
-- Setup and environment: [SETUP.md](SETUP.md)
-- User workflows and feature usage: [USER_MANUAL.md](USER_MANUAL.md)
-- HubSpot token, scopes, and troubleshooting: [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md)
-- Production launch and release gates: [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)
-- Error matrix and issue triage: [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md)
-- Optional secure proxy setup: [PROXY_SETUP.md](PROXY_SETUP.md)
-- macOS signing and notarization setup: [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md)
+**IPC Bridge Pattern:** `main.cjs` registers handlers via `ipcMain.handle` → `preload.cjs` exposes via `contextBridge.exposeInMainWorld` → renderer accesses via `window.salesDirectorDesktop`.
 
-## Core Architecture
+---
 
-- Frontend app: [salesdirector.jsx](salesdirector.jsx)
-- Shared parsing utilities: [utils/dataParsers.mjs](utils/dataParsers.mjs)
-- Proxy server: [proxy-server.mjs](proxy-server.mjs)
-- Desktop wrapper: [electron/main.cjs](electron/main.cjs)
+## Security
 
-## Security Notes
+- **API keys are never persisted.** All provider keys and tokens are session-only.
+- **Encrypted at rest.** Local CRM data uses AES-256-GCM with a PBKDF2-derived key (250,000 iterations).
+- **Passphrase never stored.** The app never saves your database passphrase.
+- **Proxy mode available.** Keep all secrets server-side — the frontend only knows the proxy URL.
+- **Sandboxed Electron.** Context isolation enabled, node integration disabled.
 
-- Sensitive values like API keys and tokens are intentionally not persisted to local storage.
-- In proxy mode, keep credentials on the server and configure only proxy URL and optional shared secret in the client.
-- Local CRM/task/thread/inbox data in desktop mode is encrypted at rest and protected by a user passphrase.
-- Do not commit real tokens, SMTP passwords, or signing material.
+---
 
-## Current Functional Boundaries
+## Documentation
 
-- Outbound send saves to encrypted desktop local history in local mode, or Firestore in Firebase-backed mode.
-- HubSpot logging occurs when a HubSpot contact ID is present and integration is configured.
-- SMTP and IMAP settings are captured and validated in the UI for readiness status.
+| Guide | Description |
+|---|---|
+| [FEATURES.md](FEATURES.md) | Complete feature list and capabilities |
+| [SETUP.md](SETUP.md) | Installation, environment, and first-run configuration |
+| [USER_MANUAL.md](USER_MANUAL.md) | Day-to-day workflows and feature usage |
+| [ONBOARDING.md](ONBOARDING.md) | 15–30 minute new user onboarding |
+| [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md) | Trainer handout and onboarding runbook |
+| [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md) | HubSpot token setup, scopes, and troubleshooting |
+| [PROXY_SETUP.md](PROXY_SETUP.md) | Secure proxy server configuration |
+| [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md) | Error matrix and issue triage |
+| [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) | Production launch and release gates |
+| [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md) | macOS code signing and notarization |
+| [SALES_FLYER_PROMPTS.md](SALES_FLYER_PROMPTS.md) | AI prompt outlines for generating sales collateral |
+
+---
 
 ## Testing
 
@@ -101,7 +142,10 @@ npm run dev
 npm test
 ```
 
-Tests cover:
+Tests cover CSV/AI parsing helpers, proxy validation, auth, CORS, body limits, and rate limits. The CI pipeline also runs a packaged Electron smoke test on Windows to verify the IPC bridge and renderer mounting.
 
-- CSV and AI parsing helpers
-- Proxy validation, auth, CORS, body limits, and rate limits
+---
+
+## License
+
+Copyright © 2026 Akita Engineering. All rights reserved.

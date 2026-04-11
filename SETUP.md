@@ -1,15 +1,20 @@
 # SalesDirector Setup Guide
 
-This guide walks through local setup, environment requirements, and first-run configuration.
+Complete local setup, environment configuration, and first-run walkthrough.
+
+> For day-to-day usage after setup, see [USER_MANUAL.md](USER_MANUAL.md).
+> For the full feature list, see [FEATURES.md](FEATURES.md).
+
+---
 
 ## 1. Prerequisites
 
-- Node.js 20 or newer
-- npm 10 or newer
-- Desktop runtime via Electron (for encrypted local database)
-- Optional Firebase project (only if you want Firebase-backed auth/storage)
-- Optional: Gemini API key and HubSpot private app token
-- Optional: Node runtime for proxy mode
+- **Node.js 20** or newer
+- **npm 10** or newer
+- Desktop runtime via **Electron** (for encrypted local database — included as a dev dependency)
+- Optional: Firebase project (only if you want cloud-backed auth/storage)
+- Optional: Gemini API key and/or other AI provider key
+- Optional: HubSpot private app token
 
 ## 2. Install Dependencies
 
@@ -17,147 +22,150 @@ This guide walks through local setup, environment requirements, and first-run co
 npm install
 ```
 
-## 3. Firebase Runtime Configuration
+## 3. Start the App
 
-The app currently reads these runtime globals:
+### Desktop mode (recommended)
 
-- __firebase_config
-- __initial_auth_token
-- __app_id
-
-They are referenced in [salesdirector.jsx](salesdirector.jsx).
-
-### Recommended approach
-
-Run in the same host/runtime that injects those globals.
-
-### Local standalone development fallback
-
-If you are running standalone and no host injects globals, update [salesdirector.jsx](salesdirector.jsx) to provide your Firebase config directly for local testing.
-
-## 4. Start the App
-
-Desktop mode (recommended):
+Full feature access including encrypted local database:
 
 ```powershell
 npm run dev:desktop
 ```
 
-Web preview mode (no desktop encrypted DB access):
+### Web preview mode
+
+Quick browser-based development — no encrypted DB access:
 
 ```powershell
 npm run dev
 ```
 
-Production desktop launch:
+### Production desktop launch
+
+Build web assets and launch Electron:
 
 ```powershell
 npm run start:desktop
 ```
 
-## 5. Encrypted Local Database (Desktop Runtime)
+## 4. First-Run Settings Checklist
 
-In local mode, data persistence is handled by an encrypted desktop database.
+Open the **Settings** tab and configure these in order:
 
-1. Open Settings.
-2. In Encrypted Local Database, enter a passphrase (minimum 8 chars).
-3. Click Create and Unlock (first time) or Unlock Database (existing data).
-4. Keep working normally. Contacts, threads, tasks, and inbox data are autosaved encrypted.
+1. **Encrypted Local Database** — enter a passphrase (min 8 characters) and click "Create and Unlock"
+2. **Company Website URL** — helps AI generate contextual outreach
+3. **Sender Profile** — your name, reply-to address, and email signature
+4. **AI Provider Key** — Gemini key for direct mode (or configure proxy)
+5. **HubSpot Token** — private app access token (optional)
+6. **Sending Limits** — max daily emails, send delay, active hours
 
-Important notes:
+Check the **System Health** panel at the top of Settings — all configured integrations should show green status.
 
-- Passphrase is never stored.
-- Browser preview intentionally cannot access desktop encrypted storage.
-- One-time migration is supported from legacy browser-encrypted local payloads when you first unlock in desktop mode with the correct passphrase.
+For team-wide onboarding sessions, use [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md).
 
-## 6. First-Run Settings Checklist
+## 5. Encrypted Local Database (Desktop Only)
 
-Open the Settings tab and configure:
+In desktop runtime, all CRM data is stored in an encrypted local database:
 
-- Company Website URL
-- Sender details and signature
-- AI provider key (Gemini key for direct mode)
-- HubSpot private app token (direct mode) or proxy URL
-- Sending safety defaults
+1. Open **Settings** → **Encrypted Local Database**
+2. Enter a passphrase (minimum 8 characters)
+3. Click **Create and Unlock** (first time) or **Unlock Database** (returning user)
+4. Work normally — contacts, threads, tasks, and inbox data auto-save encrypted
 
-For team onboarding sessions, use [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md).
+**Important:**
+- Passphrase is **never stored** — if lost, data cannot be recovered
+- Browser preview mode intentionally cannot access desktop encrypted storage
+- One-time migration from legacy browser-encrypted data occurs automatically on first desktop unlock
 
-Validation rules are implemented in [salesdirector.jsx](salesdirector.jsx).
+## 6. Direct Mode vs Proxy Mode
 
-## 7. Direct Mode vs Proxy Mode
+### Direct mode (fastest setup)
 
-### Direct mode
+Enter API keys directly in app Settings. Quick to start, but the frontend handles credentials in memory during the session. Keys are **never persisted** to disk.
 
-- Enter Gemini and HubSpot credentials directly in app settings.
-- Quick to start, but frontend handles credentials in memory.
+### Proxy mode (production recommended)
 
-### Proxy mode
+Run the secure proxy server with server-side secrets:
 
-- Run [proxy-server.mjs](proxy-server.mjs) with server-side secrets.
-- In app settings, set Proxy Base URL and optional Proxy Shared Secret.
-- Leave direct AI/HubSpot secrets empty in the frontend.
+```powershell
+GEMINI_API_KEY=your-key HUBSPOT_TOKEN=your-token node proxy-server.mjs
+```
 
-Detailed proxy steps are in [PROXY_SETUP.md](PROXY_SETUP.md).
+In app settings, set **Proxy Base URL** and optional **Proxy Shared Secret**. Leave direct AI/HubSpot key fields empty in the frontend.
 
-## 8. Testing and Build
+Detailed proxy configuration: [PROXY_SETUP.md](PROXY_SETUP.md).
 
-Run tests:
+## 7. Firebase Configuration (Optional)
+
+The app can run in Firebase-backed mode for cloud auth/storage. The runtime reads these globals:
+
+- `__firebase_config`
+- `__initial_auth_token`
+- `__app_id`
+
+If running standalone desktop mode with local encrypted storage, Firebase is **not required**.
+
+## 8. Testing
 
 ```powershell
 npm test
 ```
 
-Build web:
+Tests cover CSV/AI parsing helpers, proxy validation, auth, CORS, body limits, and rate limits.
+
+## 9. Desktop Packaging
+
+### Windows installer
 
 ```powershell
-npm run build:web
+npm run dist:win
 ```
 
-## 9. macOS Packaging
+Produces `release/SalesDirector-1.0.0-Setup.exe` (NSIS installer with custom install directory).
 
-Unsigned DMG workflow is available in CI.
+### macOS DMG
 
-For signed and notarized releases, follow [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md).
+```powershell
+npm run dist:mac
+```
+
+Produces a DMG in `release/`.
+
+For signed and notarized macOS releases, follow [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md).
+
+### GitHub CI Builds
+
+The unified [desktop-build.yml](.github/workflows/desktop-build.yml) workflow builds both platforms:
+
+- **Triggers:** push to main, pull request to main, v* tags, manual dispatch
+- **Outputs:** Windows NSIS installer + macOS DMG as artifacts
+- **Releases:** pushing a `v*` tag (e.g., `v1.0.0`) automatically creates a GitHub Release with both installers attached
+
+For signed/notarized macOS DMGs, use [release-macos-signed.yml](.github/workflows/release-macos-signed.yml) (manual dispatch, requires signing secrets).
 
 Before publishing a production build, run through [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
-### GitHub CI DMG Build (Recommended)
-
-Unsigned DMG builds run via [build-macos-dmg.yml](.github/workflows/build-macos-dmg.yml) on:
-
-- Push to main
-- Pull request targeting main
-- Push tag matching v*
-- Manual workflow_dispatch
-
-After completion, download the DMG from the workflow artifact named macos-dmg.
-
-For signed/notarized DMG, use [release-macos-signed.yml](.github/workflows/release-macos-signed.yml) with required secrets configured.
-
 ## 10. Troubleshooting
 
-### HubSpot sync fails
+### Encrypted local DB controls are disabled
+- Expected in browser preview mode. Launch with `npm run dev:desktop` or `npm run start:desktop`.
 
+### White screen in packaged app
+- Verify `base: './'` is set in [vite.config.mjs](vite.config.mjs). Absolute asset paths break under Electron's `file://` protocol.
+
+### HubSpot sync fails
 - Verify token and scopes in [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md).
-- Check whether you are in direct mode or proxy mode.
+- Check whether you're in direct mode or proxy mode.
 
 ### AI features fail with key errors
-
-- Direct mode: verify Gemini key is set.
-- Proxy mode: verify proxy env has GEMINI_API_KEY and app points to proxy URL.
+- Direct mode: verify provider key is set in Settings.
+- Proxy mode: verify proxy env has the key and app points to proxy URL.
 
 ### 401 from proxy
-
-- Ensure Proxy Shared Secret in app matches PROXY_SHARED_SECRET on server.
+- Ensure Proxy Shared Secret in app matches `PROXY_SHARED_SECRET` on server.
 
 ### Firestore/auth errors
+- If running local-only desktop mode, Firebase is not required — these can be ignored.
+- If using Firebase-backed mode, confirm runtime config and project rules.
 
-- If you are intentionally running local-only desktop mode, Firebase is not required.
-- If using Firebase-backed mode, confirm runtime config is provided and project rules permit access.
-
-### Encrypted local DB controls are disabled
-
-- This is expected in browser preview mode.
-- Launch desktop runtime using npm run dev:desktop or npm run start:desktop.
-
-For expanded issue mapping and faster diagnosis, see [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
+For expanded troubleshooting, see [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
