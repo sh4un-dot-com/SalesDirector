@@ -20,11 +20,21 @@ const RATE_LIMIT_GEMINI = toPositiveInt(process.env.RATE_LIMIT_GEMINI, 20);
 const RATE_LIMIT_HUBSPOT_CONTACTS = toPositiveInt(process.env.RATE_LIMIT_HUBSPOT_CONTACTS, 40);
 const RATE_LIMIT_HUBSPOT_EMAILS = toPositiveInt(process.env.RATE_LIMIT_HUBSPOT_EMAILS, 30);
 const DEFAULT_CONTACT_PROPERTIES = 'firstname,lastname,company,email,hs_lead_status,jobtitle,phone,lifecyclestage';
+const DEFAULT_EMAIL_PROPERTIES = [
+  'hs_timestamp',
+  'hs_email_direction',
+  'hs_email_subject',
+  'hs_email_text',
+  'hs_email_from_email',
+  'hs_email_from_firstname',
+  'hs_email_from_lastname'
+].join(',');
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'info').toLowerCase();
 
 const ROUTE_LIMITS = {
   'POST /api/gemini': RATE_LIMIT_GEMINI,
   'GET /api/hubspot/contacts': RATE_LIMIT_HUBSPOT_CONTACTS,
+  'GET /api/hubspot/emails': RATE_LIMIT_HUBSPOT_EMAILS,
   'POST /api/hubspot/emails': RATE_LIMIT_HUBSPOT_EMAILS
 };
 
@@ -165,6 +175,30 @@ const validatePropertiesQuery = (rawValue) => {
   parts.forEach((property) => {
     if (!/^[a-zA-Z0-9_]+$/.test(property)) {
       throw new HttpError(400, `Invalid contact property name: ${property}`);
+    }
+  });
+
+  return Array.from(new Set(parts)).join(',');
+};
+
+const validateEmailPropertiesQuery = (rawValue) => {
+  const incoming = rawValue || DEFAULT_EMAIL_PROPERTIES;
+  const parts = incoming
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    throw new HttpError(400, 'At least one email property is required.');
+  }
+
+  if (parts.length > MAX_CONTACT_PROPERTIES) {
+    throw new HttpError(400, `Too many email properties. Max is ${MAX_CONTACT_PROPERTIES}.`);
+  }
+
+  parts.forEach((property) => {
+    if (!/^[a-zA-Z0-9_]+$/.test(property)) {
+      throw new HttpError(400, `Invalid email property name: ${property}`);
     }
   });
 
@@ -344,7 +378,45 @@ const handleHubSpotContacts = async (req, res, url) => {
   sendJson(res, 200, data);
 };
 
-const handleHubSpotEmails = async (req, res) => {
+const handleHubSpotEmailsList = async (res, url) => {
+  if (!HUBSPOT_TOKEN) {
+    sendJson(res, 500, { error: 'HUBSPOT_TOKEN is not configured on the proxy.' });
+    return;
+  }
+
+  const properties = validateEmailPropertiesQuery(url.searchParams.get('properties'));
+  const requestedLimit = Number(url.searchParams.get('limit') || 50);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
+    throw new HttpError(400, 'limit must be an integer between 1 and 100.');
+  }
+
+  const after = url.searchParams.get('after');
+  const query = new URLSearchParams({
+    properties,
+    limit: String(requestedLimit)
+  });
+  if (after) {
+    query.set('after', after);
+  }
+
+  const response = await fetch(`https://api.hubapi.com/crm/v3/objects/emails?${query.toString()}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    sendJson(res, response.status, { error: data.message || 'HubSpot email list request failed.' });
+    return;
+  }
+
+  sendJson(res, 200, data);
+};
+
+const handleHubSpotEmailsCreate = async (req, res) => {
   if (!HUBSPOT_TOKEN) {
     sendJson(res, 500, { error: 'HUBSPOT_TOKEN is not configured on the proxy.' });
     return;
@@ -436,8 +508,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (method === 'GET' && requestUrl.pathname === '/api/hubspot/emails') {
+      await handleHubSpotEmailsList(res, requestUrl);
+      return;
+    }
+
     if (method === 'POST' && requestUrl.pathname === '/api/hubspot/emails') {
-      await handleHubSpotEmails(req, res);
+      await handleHubSpotEmailsCreate(req, res);
       return;
     }
 

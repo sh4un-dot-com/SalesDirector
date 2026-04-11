@@ -2,6 +2,8 @@ const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const crypto = require('node:crypto');
+const { ImapFlow } = require('imapflow');
+const { simpleParser } = require('mailparser');
 
 const LOCAL_DB_FILE = 'salesdirector-localdb.enc.json';
 const LOCAL_DB_VERSION = 1;
@@ -13,6 +15,65 @@ const isCiSmokeTest = process.argv.includes(CI_SMOKE_TEST_FLAG);
 
 const deriveKey = (passphrase, salt, iterations = LOCAL_DB_ITERATIONS) => {
   return crypto.pbkdf2Sync(passphrase, salt, iterations, 32, 'sha256');
+};
+
+const clampInt = (value, min, max, fallback) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.floor(parsed);
+  return Math.min(max, Math.max(min, rounded));
+};
+
+const formatCompanyFromEmail = (email = '') => {
+  const domain = String(email).split('@')[1] || '';
+  const root = domain.split('.')[0] || '';
+  if (!root) return 'Unknown';
+  return root
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+};
+
+const sanitizeBodyPreview = (text = '', limit = 1600) => {
+  const normalized = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return 'No preview available.';
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
+};
+
+const normalizeImapEmail = (parsedMessage, uid, flags, internalDate) => {
+  const fromEntry = parsedMessage?.from?.value?.[0] || {};
+  const fromEmail = String(fromEntry.address || '').trim().toLowerCase();
+  const fromName = String(fromEntry.name || fromEmail || 'Unknown Sender').trim();
+  const subject = String(parsedMessage?.subject || 'No subject').trim();
+  const dateValue = parsedMessage?.date || internalDate || new Date();
+  const dateObj = new Date(dateValue);
+  const dateIso = Number.isNaN(dateObj.getTime()) ? new Date().toISOString() : dateObj.toISOString();
+  const hasSeenFlag = flags instanceof Set ? flags.has('\\Seen') : false;
+  const hasAnsweredFlag = flags instanceof Set ? flags.has('\\Answered') : false;
+
+  return {
+    id: `imap-${uid}`,
+    source: 'imap',
+    sourceId: String(uid),
+    uid,
+    messageId: String(parsedMessage?.messageId || '').trim(),
+    fromName,
+    fromEmail,
+    company: formatCompanyFromEmail(fromEmail),
+    subject,
+    body: sanitizeBodyPreview(parsedMessage?.text || parsedMessage?.html || ''),
+    dateRaw: dateIso,
+    date: new Date(dateIso).toLocaleDateString(),
+    isRead: hasSeenFlag,
+    needsResponse: !hasSeenFlag && !hasAnsweredFlag,
+    isArchived: false,
+    aiScore: null,
+    aiSummary: ''
+  };
 };
 
 const encryptPayload = (payload, passphrase) => {
@@ -110,6 +171,85 @@ const registerLocalDbIpcHandlers = () => {
       }
     }
     return { ok: true, backend: 'electron-encrypted-file' };
+  });
+
+  ipcMain.handle('imap:syncInbox', async (_event, payload = {}) => {
+    const host = String(payload.host || '').trim();
+    const user = String(payload.user || '').trim();
+    const password = String(payload.password || '');
+    const folder = String(payload.folder || 'INBOX').trim() || 'INBOX';
+    const secure = payload.secure !== false;
+    const port = clampInt(payload.port, 1, 65535, secure ? 993 : 143);
+    const lookbackDays = clampInt(payload.lookbackDays, 1, 365, 14);
+    const limit = clampInt(payload.limit, 1, 200, 50);
+    const unreadOnly = Boolean(payload.unreadOnly);
+
+    if (!host) {
+      throw new Error('IMAP host is required.');
+    }
+    if (!user) {
+      throw new Error('IMAP username is required.');
+    }
+    if (!password) {
+      throw new Error('IMAP password or app password is required.');
+    }
+
+    const client = new ImapFlow({
+      host,
+      port,
+      secure,
+      auth: { user, pass: password },
+      logger: false
+    });
+
+    let mailboxLock;
+    try {
+      await client.connect();
+      mailboxLock = await client.getMailboxLock(folder);
+
+      const sinceDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+      const searchQuery = unreadOnly
+        ? ['UNSEEN', ['SINCE', sinceDate]]
+        : ['SINCE', sinceDate];
+
+      const matchedUids = await client.search(searchQuery);
+      const selectedUids = matchedUids.slice(-limit).reverse();
+
+      const emails = [];
+      for (const uid of selectedUids) {
+        const fetched = await client.fetchOne(uid, {
+          uid: true,
+          flags: true,
+          internalDate: true,
+          source: true
+        });
+
+        if (!fetched?.source) continue;
+
+        try {
+          const parsedMessage = await simpleParser(fetched.source);
+          emails.push(normalizeImapEmail(parsedMessage, fetched.uid || uid, fetched.flags, fetched.internalDate));
+        } catch {
+          // Skip malformed MIME payloads while still returning other messages.
+        }
+      }
+
+      return {
+        ok: true,
+        folder,
+        lookbackDays,
+        limit,
+        matchedCount: matchedUids.length,
+        fetchedCount: emails.length,
+        fetchedAt: new Date().toISOString(),
+        emails
+      };
+    } finally {
+      if (mailboxLock) {
+        mailboxLock.release();
+      }
+      await client.logout().catch(() => {});
+    }
   });
 };
 

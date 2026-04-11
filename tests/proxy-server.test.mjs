@@ -135,6 +135,19 @@ test('proxy validates HubSpot contacts properties query', async () => {
   }
 });
 
+test('proxy validates HubSpot email list query params', async () => {
+  const server = await startProxy({ HUBSPOT_TOKEN: 'dummy-token' });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/hubspot/emails?limit=999&properties=hs_timestamp,hs_email_subject`);
+    const body = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.match(body.error, /limit must be an integer between 1 and 100/i);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('proxy validates HubSpot email payload schema', async () => {
   const server = await startProxy({ HUBSPOT_TOKEN: 'dummy-token' });
   try {

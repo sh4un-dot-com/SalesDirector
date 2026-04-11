@@ -86,9 +86,95 @@ const getDesktopLocalDbApi = () => {
   return null;
 };
 
+const getDesktopImapApi = () => {
+  if (typeof window === 'undefined') return null;
+  const imapApi = window.salesDirectorDesktop?.imap;
+  if (imapApi && typeof imapApi.syncInbox === 'function') {
+    return imapApi;
+  }
+  return null;
+};
+
 const DEFAULT_TASKS = [];
 
 const DEFAULT_INBOX_EMAILS = [];
+
+const formatCompanyFromEmail = (email = '') => {
+  const domain = String(email).split('@')[1] || '';
+  const root = domain.split('.')[0] || '';
+  if (!root) return 'Unknown';
+  return root
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+};
+
+const normalizeInboxDate = (value) => {
+  const date = new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) {
+    const fallback = new Date();
+    return { raw: fallback.toISOString(), label: fallback.toLocaleDateString() };
+  }
+  return { raw: date.toISOString(), label: date.toLocaleDateString() };
+};
+
+const inboxFingerprint = (email = {}) => {
+  const messageId = String(email.messageId || '').trim().toLowerCase();
+  if (messageId) return `msg:${messageId}`;
+
+  const source = String(email.source || '').trim().toLowerCase();
+  const sourceId = String(email.sourceId || '').trim().toLowerCase();
+  if (source && sourceId) return `${source}:${sourceId}`;
+
+  const from = String(email.fromEmail || '').trim().toLowerCase();
+  const subject = String(email.subject || '').trim().toLowerCase();
+  const date = String(email.dateRaw || email.date || '').trim();
+  return `fallback:${source}|${from}|${subject}|${date}`;
+};
+
+const mergeInboxEmails = (current = [], incoming = []) => {
+  const merged = new Map();
+
+  current.forEach((email) => {
+    merged.set(inboxFingerprint(email), { ...email });
+  });
+
+  incoming.forEach((email, index) => {
+    const fingerprint = inboxFingerprint(email);
+    const existing = merged.get(fingerprint);
+    const normalizedDate = normalizeInboxDate(email.dateRaw || email.date);
+    const fallbackId = `email-${Date.now()}-${index}`;
+
+    merged.set(fingerprint, {
+      ...(existing || {}),
+      ...email,
+      id: existing?.id || email.id || fallbackId,
+      source: email.source || existing?.source || 'manual',
+      sourceId: email.sourceId || existing?.sourceId || '',
+      fromName: email.fromName || existing?.fromName || email.fromEmail || 'Unknown Sender',
+      fromEmail: normalizeEmail(email.fromEmail || existing?.fromEmail || ''),
+      company: email.company || existing?.company || formatCompanyFromEmail(email.fromEmail || existing?.fromEmail || ''),
+      subject: email.subject || existing?.subject || 'No subject',
+      body: email.body || existing?.body || 'No preview available.',
+      dateRaw: email.dateRaw || existing?.dateRaw || normalizedDate.raw,
+      date: email.date || existing?.date || normalizedDate.label,
+      isRead: typeof existing?.isRead === 'boolean' ? existing.isRead : Boolean(email.isRead),
+      needsResponse: typeof existing?.needsResponse === 'boolean'
+        ? existing.needsResponse
+        : (typeof email.needsResponse === 'boolean' ? email.needsResponse : !Boolean(email.isRead)),
+      isArchived: typeof existing?.isArchived === 'boolean' ? existing.isArchived : Boolean(email.isArchived),
+      aiScore: existing?.aiScore ?? email.aiScore ?? null,
+      aiSummary: existing?.aiSummary || email.aiSummary || ''
+    });
+  });
+
+  return Array.from(merged.values()).sort((a, b) => {
+    const aTime = new Date(a.dateRaw || a.date || 0).getTime();
+    const bTime = new Date(b.dateRaw || b.date || 0).getTime();
+    return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+  });
+};
 
 const bytesToBase64 = (bytes) => {
   let binary = '';
@@ -180,6 +266,11 @@ const PERSISTED_CONFIG_KEYS = [
   'smtpUser',
   'imapHost',
   'imapPort',
+  'imapUser',
+  'imapFolder',
+  'imapLookbackDays',
+  'imapSyncLimit',
+  'imapUnreadOnly',
   'maxDailyEmails',
   'sendDelay',
   'activeHoursStart',
@@ -235,6 +326,10 @@ export default function App() {
   const [newTaskInput, setNewTaskInput] = useState('');
 
   const [inboxEmails, setInboxEmails] = useState(() => DEFAULT_INBOX_EMAILS.map((email) => ({ ...email })));
+  const [inboxSyncStatus, setInboxSyncStatus] = useState({
+    imap: { lastRunAt: null, fetchedCount: 0, error: '' },
+    hubspot: { lastRunAt: null, fetchedCount: 0, error: '' }
+  });
   
   const [config, setConfig] = useState({
     apiBaseUrl: '',
@@ -252,6 +347,12 @@ export default function App() {
     smtpPass: '',
     imapHost: '',
     imapPort: '993',
+    imapUser: '',
+    imapPass: '',
+    imapFolder: 'INBOX',
+    imapLookbackDays: '14',
+    imapSyncLimit: '50',
+    imapUnreadOnly: 'false',
     maxDailyEmails: '100',
     sendDelay: '30',
     activeHoursStart: '09:00',
@@ -781,6 +882,27 @@ export default function App() {
       }
     }
 
+    if (name === 'imapPort') {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+        return 'Enter a valid IMAP port between 1 and 65535.';
+      }
+    }
+
+    if (name === 'imapLookbackDays') {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 365) {
+        return 'Enter a whole number between 1 and 365 days.';
+      }
+    }
+
+    if (name === 'imapSyncLimit') {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) {
+        return 'Enter a whole number between 1 and 200 emails.';
+      }
+    }
+
     const start = nextConfig.activeHoursStart;
     const end = nextConfig.activeHoursEnd;
     if ((name === 'activeHoursStart' || name === 'activeHoursEnd') && start && end && start >= end) {
@@ -791,11 +913,12 @@ export default function App() {
   };
 
   const handleConfigChange = (e) => {
-    const { name, value } = e.target;
+    const { name, value, type, checked } = e.target;
+    const nextValue = type === 'checkbox' ? checked : value;
     setConfig(prev => {
-      const nextConfig = { ...prev, [name]: value };
+      const nextConfig = { ...prev, [name]: nextValue };
       setConfigErrors(prevErrors => {
-        const nextErrors = { ...prevErrors, [name]: getConfigFieldError(name, value, nextConfig) };
+        const nextErrors = { ...prevErrors, [name]: getConfigFieldError(name, nextValue, nextConfig) };
 
         if (name === 'activeHoursStart' || name === 'activeHoursEnd') {
           const rangeError = (nextConfig.activeHoursStart && nextConfig.activeHoursEnd && nextConfig.activeHoursStart >= nextConfig.activeHoursEnd)
@@ -870,7 +993,7 @@ export default function App() {
 
     const directPath = resource === 'contacts'
       ? `/crm/v3/objects/contacts${query ? `?${query}` : ''}`
-      : '/crm/v3/objects/emails';
+      : `/crm/v3/objects/emails${query ? `?${query}` : ''}`;
 
     const response = await fetch(`https://api.hubapi.com${directPath}`, {
       method,
@@ -983,6 +1106,178 @@ export default function App() {
 
   const toggleInboxNeedsResponse = (emailId) => {
     setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, needsResponse: !e.needsResponse } : e));
+  };
+
+  const normalizeSyncedInboxEmails = (emails = [], source = 'manual') => {
+    return (Array.isArray(emails) ? emails : []).map((email, index) => {
+      const normalizedDate = normalizeInboxDate(email.dateRaw || email.date);
+      const fromEmail = normalizeEmail(email.fromEmail || '');
+      const fromName = String(email.fromName || fromEmail || 'Unknown Sender').trim();
+
+      return {
+        id: email.id || `${source}-${Date.now()}-${index}`,
+        source,
+        sourceId: String(email.sourceId || email.uid || email.id || `${index}`),
+        messageId: String(email.messageId || ''),
+        fromName,
+        fromEmail,
+        company: String(email.company || formatCompanyFromEmail(fromEmail) || 'Unknown').trim(),
+        subject: String(email.subject || 'No subject').trim(),
+        body: String(email.body || 'No preview available.').trim(),
+        dateRaw: normalizedDate.raw,
+        date: normalizedDate.label,
+        isRead: Boolean(email.isRead),
+        needsResponse: typeof email.needsResponse === 'boolean' ? email.needsResponse : !Boolean(email.isRead),
+        isArchived: Boolean(email.isArchived),
+        aiScore: null,
+        aiSummary: ''
+      };
+    });
+  };
+
+  const handleImapInboxSync = async () => {
+    const desktopImapApi = getDesktopImapApi();
+    if (!desktopImapApi) {
+      showNotification('Mailbox sync requires the desktop app runtime.', 'error');
+      return;
+    }
+
+    const imapUser = (config.imapUser || config.smtpUser || '').trim();
+    const imapPassword = String(config.imapPass || config.smtpPass || '');
+
+    if (!config.imapHost || !config.imapPort || !imapUser || !imapPassword) {
+      showNotification('Set IMAP host, port, username, and password before syncing mailbox.', 'error');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const result = await desktopImapApi.syncInbox({
+        host: config.imapHost,
+        port: Number(config.imapPort),
+        secure: true,
+        user: imapUser,
+        password: imapPassword,
+        folder: config.imapFolder || 'INBOX',
+        lookbackDays: Number(config.imapLookbackDays || 14),
+        limit: Number(config.imapSyncLimit || 50),
+        unreadOnly: String(config.imapUnreadOnly) === 'true'
+      });
+
+      const syncedEmails = normalizeSyncedInboxEmails(result?.emails || [], 'imap');
+      setInboxEmails((prev) => mergeInboxEmails(prev, syncedEmails));
+      setInboxSyncStatus((prev) => ({
+        ...prev,
+        imap: {
+          lastRunAt: new Date().toISOString(),
+          fetchedCount: syncedEmails.length,
+          error: ''
+        }
+      }));
+
+      showNotification(
+        syncedEmails.length > 0
+          ? `Mailbox sync complete. Imported ${syncedEmails.length} email${syncedEmails.length === 1 ? '' : 's'}.`
+          : 'Mailbox sync complete. No recent emails found in the selected window.'
+      );
+    } catch (error) {
+      const message = error?.message || 'Mailbox sync failed.';
+      setInboxSyncStatus((prev) => ({
+        ...prev,
+        imap: {
+          lastRunAt: new Date().toISOString(),
+          fetchedCount: 0,
+          error: message
+        }
+      }));
+      showNotification(message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleHubSpotInboxSync = async () => {
+    if (!config.hubspotToken && !getApiBaseUrl()) {
+      showNotification('Configure HubSpot token or proxy before inbox sync.', 'error');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const properties = [
+        'hs_timestamp',
+        'hs_email_direction',
+        'hs_email_subject',
+        'hs_email_text',
+        'hs_email_from_email',
+        'hs_email_from_firstname',
+        'hs_email_from_lastname'
+      ].join(',');
+
+      const data = await callHubSpotAPI({
+        resource: 'emails',
+        method: 'GET',
+        query: `limit=50&properties=${encodeURIComponent(properties)}`
+      });
+
+      const mapped = (Array.isArray(data?.results) ? data.results : []).map((item) => {
+        const props = item?.properties || {};
+        const direction = String(props.hs_email_direction || '').toUpperCase();
+        const fromEmail = normalizeEmail(props.hs_email_from_email || '');
+        const fromName = `${props.hs_email_from_firstname || ''} ${props.hs_email_from_lastname || ''}`.trim();
+        const normalizedDate = normalizeInboxDate(props.hs_timestamp);
+        const isLikelyOutbound = direction.includes('OUT') || direction.includes('SENT');
+
+        return {
+          id: `hubspot-${item.id}`,
+          source: 'hubspot',
+          sourceId: String(item.id || ''),
+          messageId: '',
+          fromName: fromName || fromEmail || 'HubSpot Contact',
+          fromEmail,
+          company: formatCompanyFromEmail(fromEmail),
+          subject: props.hs_email_subject || 'HubSpot timeline email',
+          body: props.hs_email_text || 'No email body available from HubSpot.',
+          dateRaw: normalizedDate.raw,
+          date: normalizedDate.label,
+          isRead: isLikelyOutbound,
+          needsResponse: !isLikelyOutbound,
+          isArchived: false,
+          aiScore: null,
+          aiSummary: ''
+        };
+      });
+
+      const syncedEmails = normalizeSyncedInboxEmails(mapped, 'hubspot');
+      setInboxEmails((prev) => mergeInboxEmails(prev, syncedEmails));
+      setInboxSyncStatus((prev) => ({
+        ...prev,
+        hubspot: {
+          lastRunAt: new Date().toISOString(),
+          fetchedCount: syncedEmails.length,
+          error: ''
+        }
+      }));
+
+      showNotification(
+        syncedEmails.length > 0
+          ? `HubSpot inbox sync complete. Imported ${syncedEmails.length} email${syncedEmails.length === 1 ? '' : 's'}.`
+          : 'HubSpot inbox sync complete. No email records returned.'
+      );
+    } catch (error) {
+      const message = error?.message || 'HubSpot inbox sync failed.';
+      setInboxSyncStatus((prev) => ({
+        ...prev,
+        hubspot: {
+          lastRunAt: new Date().toISOString(),
+          fetchedCount: 0,
+          error: message
+        }
+      }));
+      showNotification(message, 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
   // --- Call Logging ---
@@ -2010,16 +2305,61 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
   const renderInbox = () => (
     <div className="p-8 space-y-6 max-w-7xl mx-auto w-full">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center gap-3 flex-wrap">
         <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">Smart Inbox</h2>
-        <button 
-          onClick={() => handleAIAction('analyzeInbox')}
-          disabled={loading}
-          className="flex items-center bg-rose-900 text-white px-4 py-2 rounded-lg hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
-        >
-          <Sparkles className="w-4 h-4 mr-2" />
-          Analyze & Score Inbox
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={handleImapInboxSync}
+            disabled={loading}
+            className="flex items-center bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+            title="Pull recent emails directly from your IMAP mailbox"
+          >
+            <Inbox className="w-4 h-4 mr-2" />
+            Sync Mailbox
+          </button>
+          <button
+            onClick={handleHubSpotInboxSync}
+            disabled={loading}
+            className="flex items-center bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-800 dark:text-zinc-100 px-4 py-2 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+            title="Pull email activity records from HubSpot"
+          >
+            <Database className="w-4 h-4 mr-2" />
+            Sync HubSpot Inbox
+          </button>
+          <button 
+            onClick={() => handleAIAction('analyzeInbox')}
+            disabled={loading}
+            className="flex items-center bg-rose-900 text-white px-4 py-2 rounded-lg hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+          >
+            <Sparkles className="w-4 h-4 mr-2" />
+            Analyze & Score Inbox
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+        <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/50">
+          <p className="font-bold text-black dark:text-white">Mailbox (IMAP)</p>
+          <p className="text-zinc-600 dark:text-zinc-400 mt-1">
+            {inboxSyncStatus.imap.lastRunAt
+              ? `Last sync: ${new Date(inboxSyncStatus.imap.lastRunAt).toLocaleString()} · Imported ${inboxSyncStatus.imap.fetchedCount}`
+              : 'No IMAP sync yet.'}
+          </p>
+          {inboxSyncStatus.imap.error && (
+            <p className="text-rose-700 dark:text-rose-400 mt-1">{inboxSyncStatus.imap.error}</p>
+          )}
+        </div>
+        <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/50">
+          <p className="font-bold text-black dark:text-white">HubSpot Inbox</p>
+          <p className="text-zinc-600 dark:text-zinc-400 mt-1">
+            {inboxSyncStatus.hubspot.lastRunAt
+              ? `Last sync: ${new Date(inboxSyncStatus.hubspot.lastRunAt).toLocaleString()} · Imported ${inboxSyncStatus.hubspot.fetchedCount}`
+              : 'No HubSpot inbox sync yet.'}
+          </p>
+          {inboxSyncStatus.hubspot.error && (
+            <p className="text-rose-700 dark:text-rose-400 mt-1">{inboxSyncStatus.hubspot.error}</p>
+          )}
+        </div>
       </div>
 
       {/* Inbox Search & Filters */}
@@ -2061,6 +2401,15 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <div className="flex items-center gap-2">
                     {!email.isRead && <span className="w-2 h-2 bg-rose-900 dark:bg-rose-500 rounded-full flex-shrink-0"></span>}
                     <h4 className="text-sm font-bold text-black dark:text-white truncate">{email.fromName} <span className="text-zinc-500 font-normal">({email.company})</span></h4>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wide ${
+                      email.source === 'imap'
+                        ? 'bg-emerald-100 border-emerald-200 text-emerald-800 dark:bg-emerald-900/30 dark:border-emerald-800 dark:text-emerald-300'
+                        : email.source === 'hubspot'
+                          ? 'bg-blue-100 border-blue-200 text-blue-800 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300'
+                          : 'bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300'
+                    }`}>
+                      {email.source || 'manual'}
+                    </span>
                   </div>
                   <h5 className="text-md font-bold text-rose-900 dark:text-rose-500 mt-1">{email.subject}</h5>
                 </div>
@@ -2606,8 +2955,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       },
       {
         label: 'IMAP Readiness',
-        ok: Boolean(config.imapHost && config.imapPort),
-        detail: config.imapHost && config.imapPort ? 'Host/port present' : 'Missing host or port'
+        ok: Boolean(config.imapHost && config.imapPort && (config.imapUser || config.smtpUser) && (config.imapPass || config.smtpPass)),
+        detail: config.imapHost && config.imapPort
+          ? ((config.imapUser || config.smtpUser) && (config.imapPass || config.smtpPass)
+            ? 'Host, port, and credentials present'
+            : 'Host/port set, credentials missing')
+          : 'Missing host or port'
       }
     ];
 
@@ -2915,6 +3268,73 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       type="text" name="imapPort" value={config.imapPort} onChange={handleConfigChange}
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     />
+                    {configErrors.imapPort && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.imapPort}</p>}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 mt-3">
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">IMAP Username</label>
+                    <input
+                      type="text" name="imapUser" value={config.imapUser} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                      placeholder="mailbox@example.com"
+                    />
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">If blank, SMTP username is used as fallback.</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">IMAP Password / App Password</label>
+                    <input
+                      type="password" name="imapPass" value={config.imapPass} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                      placeholder="••••••••"
+                    />
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Not persisted in local storage.</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-4 gap-2 mt-3">
+                  <div className="col-span-2">
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Mailbox Folder</label>
+                    <input
+                      type="text" name="imapFolder" value={config.imapFolder} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                      placeholder="INBOX"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Lookback Days</label>
+                    <input
+                      type="number" name="imapLookbackDays" value={config.imapLookbackDays} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    />
+                    {configErrors.imapLookbackDays && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.imapLookbackDays}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Fetch Limit</label>
+                    <input
+                      type="number" name="imapSyncLimit" value={config.imapSyncLimit} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    />
+                    {configErrors.imapSyncLimit && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.imapSyncLimit}</p>}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 mt-3">
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Unread Only</label>
+                    <select
+                      name="imapUnreadOnly" value={config.imapUnreadOnly} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    >
+                      <option value="false">No - include read and unread</option>
+                      <option value="true">Yes - unread only</option>
+                    </select>
+                  </div>
+                  <div className="flex items-end">
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      Security tip: Use provider app passwords for mailbox sync instead of your primary account password.
+                    </p>
                   </div>
                 </div>
               </div>
