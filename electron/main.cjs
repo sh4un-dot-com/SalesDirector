@@ -24,6 +24,22 @@ const clampInt = (value, min, max, fallback) => {
   return Math.min(max, Math.max(min, rounded));
 };
 
+const parseImapConnection = (payload = {}) => {
+  const host = String(payload.host || '').trim();
+  const user = String(payload.user || '').trim();
+  const password = String(payload.password || '');
+  const secure = payload.secure !== false;
+  const port = clampInt(payload.port, 1, 65535, secure ? 993 : 143);
+  const folder = String(payload.folder || 'INBOX').trim() || 'INBOX';
+  const archiveFolder = String(payload.archiveFolder || 'Archive').trim() || 'Archive';
+
+  if (!host) throw new Error('IMAP host is required.');
+  if (!user) throw new Error('IMAP username is required.');
+  if (!password) throw new Error('IMAP password or app password is required.');
+
+  return { host, user, password, secure, port, folder, archiveFolder };
+};
+
 const formatCompanyFromEmail = (email = '') => {
   const domain = String(email).split('@')[1] || '';
   const root = domain.split('.')[0] || '';
@@ -174,25 +190,17 @@ const registerLocalDbIpcHandlers = () => {
   });
 
   ipcMain.handle('imap:syncInbox', async (_event, payload = {}) => {
-    const host = String(payload.host || '').trim();
-    const user = String(payload.user || '').trim();
-    const password = String(payload.password || '');
-    const folder = String(payload.folder || 'INBOX').trim() || 'INBOX';
-    const secure = payload.secure !== false;
-    const port = clampInt(payload.port, 1, 65535, secure ? 993 : 143);
+    const {
+      host,
+      user,
+      password,
+      secure,
+      port,
+      folder
+    } = parseImapConnection(payload);
     const lookbackDays = clampInt(payload.lookbackDays, 1, 365, 14);
     const limit = clampInt(payload.limit, 1, 200, 50);
     const unreadOnly = Boolean(payload.unreadOnly);
-
-    if (!host) {
-      throw new Error('IMAP host is required.');
-    }
-    if (!user) {
-      throw new Error('IMAP username is required.');
-    }
-    if (!password) {
-      throw new Error('IMAP password or app password is required.');
-    }
 
     const client = new ImapFlow({
       host,
@@ -229,6 +237,7 @@ const registerLocalDbIpcHandlers = () => {
         try {
           const parsedMessage = await simpleParser(fetched.source);
           emails.push(normalizeImapEmail(parsedMessage, fetched.uid || uid, fetched.flags, fetched.internalDate));
+          emails[emails.length - 1].folder = folder;
         } catch {
           // Skip malformed MIME payloads while still returning other messages.
         }
@@ -247,6 +256,75 @@ const registerLocalDbIpcHandlers = () => {
     } finally {
       if (mailboxLock) {
         mailboxLock.release();
+      }
+      await client.logout().catch(() => {});
+    }
+  });
+
+  ipcMain.handle('imap:updateMessageState', async (_event, payload = {}) => {
+    const {
+      host,
+      user,
+      password,
+      secure,
+      port,
+      folder,
+      archiveFolder
+    } = parseImapConnection(payload);
+
+    const action = String(payload.action || '').trim();
+    const uid = clampInt(payload.uid, 1, Number.MAX_SAFE_INTEGER, 0);
+    if (!uid) {
+      throw new Error('A valid IMAP message UID is required.');
+    }
+
+    const value = Boolean(payload.value);
+    const currentFolder = String(payload.currentFolder || folder).trim() || folder;
+
+    const client = new ImapFlow({
+      host,
+      port,
+      secure,
+      auth: { user, pass: password },
+      logger: false
+    });
+
+    let lock;
+    try {
+      await client.connect();
+
+      if (action === 'setRead') {
+        lock = await client.getMailboxLock(currentFolder);
+        if (value) {
+          await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+        } else {
+          await client.messageFlagsRemove(uid, ['\\Seen'], { uid: true });
+        }
+        return { ok: true, action, uid, folder: currentFolder, value };
+      }
+
+      if (action === 'setFlagged') {
+        lock = await client.getMailboxLock(currentFolder);
+        if (value) {
+          await client.messageFlagsAdd(uid, ['\\Flagged'], { uid: true });
+        } else {
+          await client.messageFlagsRemove(uid, ['\\Flagged'], { uid: true });
+        }
+        return { ok: true, action, uid, folder: currentFolder, value };
+      }
+
+      if (action === 'setArchived') {
+        const destinationFolder = value ? archiveFolder : folder;
+        const sourceFolder = value ? currentFolder : (currentFolder || archiveFolder);
+        lock = await client.getMailboxLock(sourceFolder);
+        await client.messageMove(uid, destinationFolder, { uid: true });
+        return { ok: true, action, uid, folder: destinationFolder, value };
+      }
+
+      throw new Error(`Unsupported IMAP message action: ${action}`);
+    } finally {
+      if (lock) {
+        lock.release();
       }
       await client.logout().catch(() => {});
     }

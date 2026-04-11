@@ -268,9 +268,13 @@ const PERSISTED_CONFIG_KEYS = [
   'imapPort',
   'imapUser',
   'imapFolder',
+  'imapArchiveFolder',
   'imapLookbackDays',
   'imapSyncLimit',
   'imapUnreadOnly',
+  'imapAutoSyncEnabled',
+  'imapAutoSyncMinutes',
+  'imapSyncFlagChanges',
   'maxDailyEmails',
   'sendDelay',
   'activeHoursStart',
@@ -330,6 +334,10 @@ export default function App() {
     imap: { lastRunAt: null, fetchedCount: 0, error: '' },
     hubspot: { lastRunAt: null, fetchedCount: 0, error: '' }
   });
+  const [inboxSyncBusy, setInboxSyncBusy] = useState({
+    imap: false,
+    hubspot: false
+  });
   
   const [config, setConfig] = useState({
     apiBaseUrl: '',
@@ -350,9 +358,13 @@ export default function App() {
     imapUser: '',
     imapPass: '',
     imapFolder: 'INBOX',
+    imapArchiveFolder: 'Archive',
     imapLookbackDays: '14',
     imapSyncLimit: '50',
     imapUnreadOnly: 'false',
+    imapAutoSyncEnabled: 'false',
+    imapAutoSyncMinutes: '10',
+    imapSyncFlagChanges: 'true',
     maxDailyEmails: '100',
     sendDelay: '30',
     activeHoursStart: '09:00',
@@ -401,6 +413,7 @@ export default function App() {
   const [desktopAppInfo, setDesktopAppInfo] = useState(null);
   const localDbReadyRef = useRef(false);
   const localDbSaveTimerRef = useRef(null);
+  const imapSyncInFlightRef = useRef(false);
 
   // Firebase Auth & Data Sync
   useEffect(() => {
@@ -903,6 +916,13 @@ export default function App() {
       }
     }
 
+    if (name === 'imapAutoSyncMinutes') {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 240) {
+        return 'Enter a whole number between 1 and 240 minutes.';
+      }
+    }
+
     const start = nextConfig.activeHoursStart;
     const end = nextConfig.activeHoursEnd;
     if ((name === 'activeHoursStart' || name === 'activeHoursEnd') && start && end && start >= end) {
@@ -1096,16 +1116,102 @@ export default function App() {
     showNotification('Email removed from inbox.');
   };
 
-  const toggleInboxRead = (emailId) => {
-    setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, isRead: !e.isRead } : e));
+  const getImapActionConfig = () => {
+    const user = (config.imapUser || config.smtpUser || '').trim();
+    const password = String(config.imapPass || config.smtpPass || '');
+    return {
+      host: config.imapHost,
+      port: Number(config.imapPort),
+      secure: true,
+      user,
+      password,
+      folder: config.imapFolder || 'INBOX',
+      archiveFolder: config.imapArchiveFolder || 'Archive'
+    };
   };
 
-  const toggleInboxArchived = (emailId) => {
-    setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, isArchived: !e.isArchived } : e));
+  const shouldSyncImapFlags = (email) => {
+    return email?.source === 'imap' && String(config.imapSyncFlagChanges) === 'true';
   };
 
-  const toggleInboxNeedsResponse = (emailId) => {
-    setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, needsResponse: !e.needsResponse } : e));
+  const syncImapMessageState = async (email, action, value) => {
+    const desktopImapApi = getDesktopImapApi();
+    if (!desktopImapApi || typeof desktopImapApi.updateMessageState !== 'function') {
+      throw new Error('Mailbox action sync requires the desktop app runtime.');
+    }
+
+    const uid = Number(email?.uid || email?.sourceId || 0);
+    if (!Number.isInteger(uid) || uid <= 0) {
+      throw new Error('Selected email cannot be synced to IMAP because UID is missing.');
+    }
+
+    const imapConfig = getImapActionConfig();
+    if (!imapConfig.host || !imapConfig.port || !imapConfig.user || !imapConfig.password) {
+      throw new Error('Set IMAP host, port, username, and password before syncing mailbox actions.');
+    }
+
+    return desktopImapApi.updateMessageState({
+      ...imapConfig,
+      action,
+      value,
+      uid,
+      currentFolder: email.folder || imapConfig.folder
+    });
+  };
+
+  const toggleInboxRead = async (emailId) => {
+    const target = inboxEmails.find((email) => email.id === emailId);
+    if (!target) return;
+
+    const nextRead = !target.isRead;
+    if (shouldSyncImapFlags(target)) {
+      try {
+        await syncImapMessageState(target, 'setRead', nextRead);
+      } catch (error) {
+        showNotification(error.message || 'Failed to sync read state to mailbox.', 'error');
+        return;
+      }
+    }
+
+    setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, isRead: nextRead } : e));
+  };
+
+  const toggleInboxArchived = async (emailId) => {
+    const target = inboxEmails.find((email) => email.id === emailId);
+    if (!target) return;
+
+    const nextArchived = !target.isArchived;
+    let resultingFolder = target.folder;
+    if (shouldSyncImapFlags(target)) {
+      try {
+        const syncResult = await syncImapMessageState(target, 'setArchived', nextArchived);
+        if (syncResult?.folder) {
+          resultingFolder = syncResult.folder;
+        }
+      } catch (error) {
+        showNotification(error.message || 'Failed to sync archive state to mailbox.', 'error');
+        return;
+      }
+    }
+
+    setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, isArchived: nextArchived, folder: resultingFolder || e.folder } : e));
+  };
+
+  const toggleInboxNeedsResponse = async (emailId) => {
+    const target = inboxEmails.find((email) => email.id === emailId);
+    if (!target) return;
+
+    const nextNeedsResponse = !target.needsResponse;
+    if (shouldSyncImapFlags(target)) {
+      try {
+        await syncImapMessageState(target, 'setFlagged', nextNeedsResponse);
+      } catch (error) {
+        showNotification(error.message || 'Failed to sync flag state to mailbox.', 'error');
+        return;
+      }
+    }
+
+    setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, needsResponse: nextNeedsResponse } : e));
   };
 
   const normalizeSyncedInboxEmails = (emails = [], source = 'manual') => {
@@ -1118,6 +1224,8 @@ export default function App() {
         id: email.id || `${source}-${Date.now()}-${index}`,
         source,
         sourceId: String(email.sourceId || email.uid || email.id || `${index}`),
+        uid: Number(email.uid || email.sourceId || 0) || undefined,
+        folder: String(email.folder || (source === 'imap' ? (config.imapFolder || 'INBOX') : '')).trim() || undefined,
         messageId: String(email.messageId || ''),
         fromName,
         fromEmail,
@@ -1135,10 +1243,21 @@ export default function App() {
     });
   };
 
-  const handleImapInboxSync = async () => {
+  const handleImapInboxSync = async (options = {}) => {
+    const { background = false, silent = false } = options;
+
+    if (imapSyncInFlightRef.current) {
+      if (!silent) {
+        showNotification('Mailbox sync is already running.', 'error');
+      }
+      return;
+    }
+
     const desktopImapApi = getDesktopImapApi();
     if (!desktopImapApi) {
-      showNotification('Mailbox sync requires the desktop app runtime.', 'error');
+      if (!silent) {
+        showNotification('Mailbox sync requires the desktop app runtime.', 'error');
+      }
       return;
     }
 
@@ -1146,11 +1265,17 @@ export default function App() {
     const imapPassword = String(config.imapPass || config.smtpPass || '');
 
     if (!config.imapHost || !config.imapPort || !imapUser || !imapPassword) {
-      showNotification('Set IMAP host, port, username, and password before syncing mailbox.', 'error');
+      if (!silent) {
+        showNotification('Set IMAP host, port, username, and password before syncing mailbox.', 'error');
+      }
       return;
     }
 
-    setLoading(true);
+    imapSyncInFlightRef.current = true;
+    setInboxSyncBusy((prev) => ({ ...prev, imap: true }));
+    if (!background) {
+      setLoading(true);
+    }
     try {
       const result = await desktopImapApi.syncInbox({
         host: config.imapHost,
@@ -1175,11 +1300,13 @@ export default function App() {
         }
       }));
 
-      showNotification(
-        syncedEmails.length > 0
-          ? `Mailbox sync complete. Imported ${syncedEmails.length} email${syncedEmails.length === 1 ? '' : 's'}.`
-          : 'Mailbox sync complete. No recent emails found in the selected window.'
-      );
+      if (!silent) {
+        showNotification(
+          syncedEmails.length > 0
+            ? `Mailbox sync complete. Imported ${syncedEmails.length} email${syncedEmails.length === 1 ? '' : 's'}.`
+            : 'Mailbox sync complete. No recent emails found in the selected window.'
+        );
+      }
     } catch (error) {
       const message = error?.message || 'Mailbox sync failed.';
       setInboxSyncStatus((prev) => ({
@@ -1190,9 +1317,15 @@ export default function App() {
           error: message
         }
       }));
-      showNotification(message, 'error');
+      if (!silent) {
+        showNotification(message, 'error');
+      }
     } finally {
-      setLoading(false);
+      imapSyncInFlightRef.current = false;
+      setInboxSyncBusy((prev) => ({ ...prev, imap: false }));
+      if (!background) {
+        setLoading(false);
+      }
     }
   };
 
@@ -1203,6 +1336,7 @@ export default function App() {
     }
 
     setLoading(true);
+    setInboxSyncBusy((prev) => ({ ...prev, hubspot: true }));
     try {
       const properties = [
         'hs_timestamp',
@@ -1276,9 +1410,49 @@ export default function App() {
       }));
       showNotification(message, 'error');
     } finally {
+      setInboxSyncBusy((prev) => ({ ...prev, hubspot: false }));
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (String(config.imapAutoSyncEnabled) !== 'true') {
+      return undefined;
+    }
+
+    const intervalMinutes = Number(config.imapAutoSyncMinutes || 10);
+    if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 240) {
+      return undefined;
+    }
+
+    let stopped = false;
+    const runAutoSync = async () => {
+      if (stopped) return;
+      await handleImapInboxSync({ background: true, silent: true });
+    };
+
+    const initialDelay = setTimeout(runAutoSync, 2500);
+    const timer = setInterval(runAutoSync, intervalMinutes * 60 * 1000);
+
+    return () => {
+      stopped = true;
+      clearTimeout(initialDelay);
+      clearInterval(timer);
+    };
+  }, [
+    config.imapAutoSyncEnabled,
+    config.imapAutoSyncMinutes,
+    config.imapHost,
+    config.imapPort,
+    config.imapUser,
+    config.smtpUser,
+    config.imapPass,
+    config.smtpPass,
+    config.imapFolder,
+    config.imapLookbackDays,
+    config.imapSyncLimit,
+    config.imapUnreadOnly
+  ]);
 
   // --- Call Logging ---
   const logCallActivity = (contact, noteText = '') => {
@@ -2310,21 +2484,21 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={handleImapInboxSync}
-            disabled={loading}
+            disabled={loading || inboxSyncBusy.imap}
             className="flex items-center bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50 font-bold text-sm shadow-sm"
             title="Pull recent emails directly from your IMAP mailbox"
           >
-            <Inbox className="w-4 h-4 mr-2" />
-            Sync Mailbox
+            {inboxSyncBusy.imap ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Inbox className="w-4 h-4 mr-2" />}
+            {inboxSyncBusy.imap ? 'Syncing Mailbox...' : 'Sync Mailbox'}
           </button>
           <button
             onClick={handleHubSpotInboxSync}
-            disabled={loading}
+            disabled={loading || inboxSyncBusy.hubspot}
             className="flex items-center bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-800 dark:text-zinc-100 px-4 py-2 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 transition disabled:opacity-50 font-bold text-sm shadow-sm"
             title="Pull email activity records from HubSpot"
           >
-            <Database className="w-4 h-4 mr-2" />
-            Sync HubSpot Inbox
+            {inboxSyncBusy.hubspot ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Database className="w-4 h-4 mr-2" />}
+            {inboxSyncBusy.hubspot ? 'Syncing HubSpot...' : 'Sync HubSpot Inbox'}
           </button>
           <button 
             onClick={() => handleAIAction('analyzeInbox')}
@@ -2340,6 +2514,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
         <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/50">
           <p className="font-bold text-black dark:text-white">Mailbox (IMAP)</p>
+          <p className="text-zinc-500 dark:text-zinc-400 mt-1">
+            Auto sync: {String(config.imapAutoSyncEnabled) === 'true' ? `On every ${config.imapAutoSyncMinutes || '10'} min` : 'Off'}
+          </p>
           <p className="text-zinc-600 dark:text-zinc-400 mt-1">
             {inboxSyncStatus.imap.lastRunAt
               ? `Last sync: ${new Date(inboxSyncStatus.imap.lastRunAt).toLocaleString()} · Imported ${inboxSyncStatus.imap.fetchedCount}`
@@ -3320,6 +3497,35 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   </div>
                 </div>
 
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Archive Folder</label>
+                    <input
+                      type="text" name="imapArchiveFolder" value={config.imapArchiveFolder} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                      placeholder="Archive"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Auto Sync</label>
+                    <select
+                      name="imapAutoSyncEnabled" value={config.imapAutoSyncEnabled} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    >
+                      <option value="false">Off</option>
+                      <option value="true">On</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Auto Interval (min)</label>
+                    <input
+                      type="number" name="imapAutoSyncMinutes" value={config.imapAutoSyncMinutes} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    />
+                    {configErrors.imapAutoSyncMinutes && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.imapAutoSyncMinutes}</p>}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-2 mt-3">
                   <div>
                     <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Unread Only</label>
@@ -3331,12 +3537,21 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <option value="true">Yes - unread only</option>
                     </select>
                   </div>
-                  <div className="flex items-end">
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                      Security tip: Use provider app passwords for mailbox sync instead of your primary account password.
-                    </p>
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Sync Read/Archive/Flag Back To Mailbox</label>
+                    <select
+                      name="imapSyncFlagChanges" value={config.imapSyncFlagChanges} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    >
+                      <option value="true">On - keep mailbox state in sync</option>
+                      <option value="false">Off - local only</option>
+                    </select>
                   </div>
                 </div>
+
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
+                  Security tip: Use provider app passwords for mailbox sync instead of your primary account password.
+                </p>
               </div>
             </div>
           </div>

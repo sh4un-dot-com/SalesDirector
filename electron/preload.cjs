@@ -4,7 +4,8 @@ contextBridge.exposeInMainWorld('salesDirectorDesktop', {
   platform: process.platform,
   getAppInfo: () => ipcRenderer.invoke('app:info'),
   imap: {
-    syncInbox: (payload = {}) => ipcRenderer.invoke('imap:syncInbox', payload)
+    syncInbox: (payload = {}) => ipcRenderer.invoke('imap:syncInbox', payload),
+    updateMessageState: (payload = {}) => ipcRenderer.invoke('imap:updateMessageState', payload)
   },
   localDb: {
     status: () => ipcRenderer.invoke('localdb:status'),
