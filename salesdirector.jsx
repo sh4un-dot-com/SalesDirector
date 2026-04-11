@@ -273,6 +273,7 @@ const PERSISTED_CONFIG_KEYS = [
   'imapSyncLimit',
   'imapUnreadOnly',
   'imapAutoSyncEnabled',
+  'imapSyncOnStartup',
   'imapAutoSyncMinutes',
   'imapSyncFlagChanges',
   'maxDailyEmails',
@@ -363,6 +364,7 @@ export default function App() {
     imapSyncLimit: '50',
     imapUnreadOnly: 'false',
     imapAutoSyncEnabled: 'false',
+    imapSyncOnStartup: 'true',
     imapAutoSyncMinutes: '10',
     imapSyncFlagChanges: 'true',
     maxDailyEmails: '100',
@@ -414,6 +416,7 @@ export default function App() {
   const localDbReadyRef = useRef(false);
   const localDbSaveTimerRef = useRef(null);
   const imapSyncInFlightRef = useRef(false);
+  const imapStartupSyncTriggeredRef = useRef(false);
 
   // Firebase Auth & Data Sync
   useEffect(() => {
@@ -1431,16 +1434,28 @@ export default function App() {
       await handleImapInboxSync({ background: true, silent: true });
     };
 
-    const initialDelay = setTimeout(runAutoSync, 2500);
+    const shouldRunStartupSync =
+      String(config.imapSyncOnStartup) === 'true' &&
+      !imapStartupSyncTriggeredRef.current;
+
+    let initialDelay;
+    if (shouldRunStartupSync) {
+      imapStartupSyncTriggeredRef.current = true;
+      initialDelay = setTimeout(runAutoSync, 2500);
+    }
+
     const timer = setInterval(runAutoSync, intervalMinutes * 60 * 1000);
 
     return () => {
       stopped = true;
-      clearTimeout(initialDelay);
+      if (initialDelay) {
+        clearTimeout(initialDelay);
+      }
       clearInterval(timer);
     };
   }, [
     config.imapAutoSyncEnabled,
+    config.imapSyncOnStartup,
     config.imapAutoSyncMinutes,
     config.imapHost,
     config.imapPort,
@@ -2515,7 +2530,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/50">
           <p className="font-bold text-black dark:text-white">Mailbox (IMAP)</p>
           <p className="text-zinc-500 dark:text-zinc-400 mt-1">
-            Auto sync: {String(config.imapAutoSyncEnabled) === 'true' ? `On every ${config.imapAutoSyncMinutes || '10'} min` : 'Off'}
+            Auto sync: {String(config.imapAutoSyncEnabled) === 'true' ? `On every ${config.imapAutoSyncMinutes || '10'} min` : 'Off'} · Startup sync: {String(config.imapSyncOnStartup) === 'true' ? 'On' : 'Off'}
           </p>
           <p className="text-zinc-600 dark:text-zinc-400 mt-1">
             {inboxSyncStatus.imap.lastRunAt
@@ -3526,7 +3541,17 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 mt-3">
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Sync On App Startup</label>
+                    <select
+                      name="imapSyncOnStartup" value={config.imapSyncOnStartup} onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    >
+                      <option value="true">On</option>
+                      <option value="false">Off</option>
+                    </select>
+                  </div>
                   <div>
                     <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Unread Only</label>
                     <select
