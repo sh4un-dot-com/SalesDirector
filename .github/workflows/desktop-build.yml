@@ -60,6 +60,27 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.platform.disable_signing }}
         run: ${{ matrix.platform.build_command }}
 
+      - name: Smoke test Windows app startup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exePath = (Resolve-Path 'release/win-unpacked/SalesDirector.exe').Path
+          if (-not (Test-Path $exePath)) {
+            throw "Expected Windows executable not found: $exePath"
+          }
+
+          $process = Start-Process -FilePath $exePath -PassThru
+          Start-Sleep -Seconds 12
+          $process.Refresh()
+
+          if ($process.HasExited -and $process.ExitCode -ne 0) {
+            throw "Windows app exited during startup with code $($process.ExitCode)."
+          }
+
+          if (-not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force
+          }
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
