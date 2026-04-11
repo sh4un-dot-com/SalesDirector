@@ -26,9 +26,11 @@
     "files": [
       "dist/**",
       "electron/**",
+      "build/icon.png",
       "package.json"
     ],
     "mac": {
+      "icon": "build/icon.png",
       "target": [
         "dmg"
       ],
@@ -42,6 +44,7 @@
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ]

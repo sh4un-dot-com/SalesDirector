@@ -251,6 +251,7 @@ const createWindow = () => {
     minHeight: 700,
     autoHideMenuBar: true,
     title: 'SalesDirector',
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,

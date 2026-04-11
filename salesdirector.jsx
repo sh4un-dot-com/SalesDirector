@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Mail, Users, Settings, Activity, Send, 
   RefreshCw, CheckCircle, AlertCircle, Wand2, 
@@ -7,7 +7,8 @@ import {
   Lock, User, Shield, SlidersHorizontal, Sparkles, UploadCloud, ListChecks,
   Briefcase, TrendingUp, Save, Calendar, ShieldAlert, Layers,
   Phone, Moon, Sun, Clock, X, PenTool, Type, Plus, Trash2, Linkedin,
-  CheckSquare, CalendarDays, MoreVertical, Play, Check
+  CheckSquare, CalendarDays, MoreVertical, Play, Check,
+  Archive, Eye, EyeOff, Filter, Zap, Target, Star, PhoneCall, RotateCcw
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
@@ -212,6 +213,20 @@ export default function App() {
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
   const [editingContact, setEditingContact] = useState(null);
   const [contactToDelete, setContactToDelete] = useState(null);
+
+  // Task Modals
+  const [editingTask, setEditingTask] = useState(null);
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+
+  // Inbox Filters
+  const [inboxFilter, setInboxFilter] = useState('all');
+  const [inboxSearch, setInboxSearch] = useState('');
+
+  // Contact Filters
+  const [contactStageFilter, setContactStageFilter] = useState('all');
+
+  // Global Search
+  const [globalSearch, setGlobalSearch] = useState('');
 
   // App State
   const [contacts, setContacts] = useState([]);
@@ -653,6 +668,80 @@ export default function App() {
     return '';
   };
 
+  // --- Draft Auto-Save ---
+  useEffect(() => {
+    if (!composerState.body && !composerState.subject) return;
+    const timer = setTimeout(() => {
+      try {
+        window.localStorage.setItem('salesdirector.draft.v1', JSON.stringify({
+          to: composerState.to,
+          subject: composerState.subject,
+          body: composerState.body,
+          recipientName: composerState.recipientName,
+          jobTitle: composerState.jobTitle,
+          companyName: composerState.companyName,
+          savedAt: new Date().toISOString()
+        }));
+      } catch { /* ignore */ }
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [composerState.body, composerState.subject, composerState.to]);
+
+  // Recover draft on mount
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem('salesdirector.draft.v1');
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      if (draft && (draft.body || draft.subject)) {
+        setComposerState(prev => ({
+          ...prev,
+          to: draft.to || prev.to,
+          subject: draft.subject || prev.subject,
+          body: draft.body || prev.body,
+          recipientName: draft.recipientName || prev.recipientName,
+          jobTitle: draft.jobTitle || prev.jobTitle,
+          companyName: draft.companyName || prev.companyName
+        }));
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  // --- Filtered Lists (memoized) ---
+  const filteredInboxEmails = useMemo(() => {
+    let emails = inboxEmails;
+    if (inboxFilter === 'unread') emails = emails.filter(e => !e.isRead);
+    else if (inboxFilter === 'needsResponse') emails = emails.filter(e => e.needsResponse && !e.isArchived);
+    else if (inboxFilter === 'archived') emails = emails.filter(e => e.isArchived);
+    else emails = emails.filter(e => !e.isArchived);
+
+    if (inboxSearch.trim()) {
+      const term = inboxSearch.toLowerCase();
+      emails = emails.filter(e =>
+        (e.fromName || '').toLowerCase().includes(term) ||
+        (e.fromEmail || '').toLowerCase().includes(term) ||
+        (e.subject || '').toLowerCase().includes(term) ||
+        (e.company || '').toLowerCase().includes(term)
+      );
+    }
+    return emails;
+  }, [inboxEmails, inboxFilter, inboxSearch]);
+
+  const filteredContacts = useMemo(() => {
+    if (contactStageFilter === 'all') return contacts;
+    return contacts.filter(c => (c.stage || 'Lead') === contactStageFilter);
+  }, [contacts, contactStageFilter]);
+
+  const globalSearchResults = useMemo(() => {
+    if (!globalSearch.trim()) return null;
+    const term = globalSearch.toLowerCase();
+    return contacts.filter(c =>
+      (c.name || '').toLowerCase().includes(term) ||
+      (c.email || '').toLowerCase().includes(term) ||
+      (c.company || '').toLowerCase().includes(term)
+    ).slice(0, 8);
+  }, [contacts, globalSearch]);
+
   const getConfigFieldError = (name, value, nextConfig) => {
     const trimmed = String(value || '').trim();
 
@@ -833,7 +922,8 @@ export default function App() {
       status: 'pending',
       priority: null,
       time: '',
-      rationale: ''
+      rationale: '',
+      dueDate: ''
     };
     setTasks(prev => [newTask, ...prev]);
     setNewTaskInput('');
@@ -847,6 +937,84 @@ export default function App() {
   const deleteTask = (taskId) => {
     setTasks(prev => prev.filter(t => t.id !== taskId));
     showNotification("Task removed.");
+  };
+
+  const openEditTask = (task) => {
+    setEditingTask({ ...task, dueDate: task.dueDate || '', priority: task.priority || '' });
+    setIsTaskModalOpen(true);
+  };
+
+  const handleTaskFormChange = (e) => {
+    const { name, value } = e.target;
+    setEditingTask(prev => ({ ...prev, [name]: name === 'priority' ? (value ? Number(value) : null) : value }));
+  };
+
+  const saveTask = () => {
+    if (!editingTask) return;
+    setTasks(prev => prev.map(t => t.id === editingTask.id ? { ...editingTask } : t));
+    setIsTaskModalOpen(false);
+    setEditingTask(null);
+    showNotification('Task updated.');
+  };
+
+  // --- Inbox Management Logic ---
+  const deleteInboxEmail = (emailId) => {
+    setInboxEmails(prev => prev.filter(e => e.id !== emailId));
+    showNotification('Email removed from inbox.');
+  };
+
+  const toggleInboxRead = (emailId) => {
+    setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, isRead: !e.isRead } : e));
+  };
+
+  const toggleInboxArchived = (emailId) => {
+    setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, isArchived: !e.isArchived } : e));
+  };
+
+  const toggleInboxNeedsResponse = (emailId) => {
+    setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, needsResponse: !e.needsResponse } : e));
+  };
+
+  // --- Call Logging ---
+  const logCallActivity = (contact, noteText = '') => {
+    const callLog = {
+      date: new Date().toISOString(),
+      subject: `Phone call with ${contact.name}`,
+      body: noteText || `Call logged at ${new Date().toLocaleString()}.`,
+      direction: 'outbound',
+      type: 'call'
+    };
+    const contactEmail = normalizeEmail(contact.email);
+    const existingThread = threads[contactEmail]?.messages || [];
+
+    if (IS_LOCAL_DEV_MODE || !db) {
+      setThreads(prev => ({
+        ...prev,
+        [contactEmail]: {
+          contactEmail,
+          messages: [...existingThread, callLog]
+        }
+      }));
+    } else {
+      const threadRef = doc(db, 'artifacts', appId, 'users', user.uid, 'threads', contactEmail);
+      setDoc(threadRef, {
+        contactEmail,
+        messages: [...existingThread, callLog]
+      }, { merge: true }).catch(err => console.error('Failed to log call:', err));
+    }
+    showNotification(`Call with ${contact.name} logged to timeline.`);
+  };
+
+  // --- Thread Message Delete ---
+  const deleteThreadMessage = (contactEmail, messageIndex) => {
+    const email = normalizeEmail(contactEmail);
+    setThreads(prev => {
+      const thread = prev[email];
+      if (!thread) return prev;
+      const updatedMessages = thread.messages.filter((_, idx) => idx !== messageIndex);
+      return { ...prev, [email]: { ...thread, messages: updatedMessages } };
+    });
+    showNotification('Message removed from thread.');
   };
 
   // --- CRM Logic ---
@@ -1017,7 +1185,7 @@ export default function App() {
     }
   };
 
-  const handleAIAction = async (actionType) => {
+  const handleAIAction = async (actionType, options = {}) => {
     if (loading) {
       showNotification("Please wait for the current action to finish.", "error");
       return;
@@ -1234,6 +1402,83 @@ export default function App() {
         }
         setInboxEmails(updatedInbox);
         showNotification("Inbox successfully analyzed and scored.");
+
+      } else if (actionType === 'researchContact') {
+        const contact = options?.contact;
+        if (!contact) { showNotification("No contact selected.", "error"); setLoading(false); return; }
+        prompt = `Act as an elite B2B sales intelligence analyst. Research this contact and provide a concise, actionable dossier:
+
+Name: ${contact.name}
+Email: ${contact.email}
+Company: ${contact.company || 'Unknown'}
+Job Title: ${contact.jobTitle || 'Unknown'}
+LinkedIn: ${contact.linkedin || 'Not provided'}
+
+Provide:
+1. ROLE ANALYSIS: What this person likely cares about based on their title and company
+2. PAIN POINTS: 3 likely business pain points for someone in this role
+3. CONVERSATION STARTERS: 3 personalized opening angles for outreach
+4. BEST APPROACH: Recommended tone, timing, and channel for first contact
+5. DEAL POTENTIAL: Assessment of decision-making authority (Champion, Influencer, or Decision Maker)
+
+Keep it concise and actionable. CRITICAL: NO EMOJIS.`;
+        
+        const result = await callGeminiAPI(prompt);
+        setComposerState(prev => ({ ...prev, aiContext: `[AI Research: ${contact.name}]\n\n${result}` }));
+        showNotification(`AI research completed for ${contact.name}.`);
+
+      } else if (actionType === 'preSendCheck') {
+        if (!composerState.body) { showNotification("Write a draft first.", "error"); setLoading(false); return; }
+        prompt = `Act as a senior sales email QA analyst. Review this email BEFORE it gets sent and provide a quick pre-send checklist:
+
+To: ${composerState.to || 'Unknown'}
+Subject: ${composerState.subject || 'No subject'}
+Body:
+${composerState.body}
+
+Evaluate on these dimensions and give a score for each (1-10):
+1. CLARITY: Is the message clear and easy to understand?
+2. PERSONALIZATION: Does it feel personalized or generic?
+3. CTA STRENGTH: Is there a clear, compelling call to action?
+4. TONE MATCH: Does it match a ${composerState.tone} tone?
+5. SPAM RISK: Any words/patterns that might trigger spam filters?
+6. OVERALL SEND READINESS: Overall score (1-10)
+
+Then provide 1-2 quick fixes if score is below 8. Keep response concise.
+CRITICAL: NO EMOJIS.`;
+
+        const result = await callGeminiAPI(prompt);
+        setComposerState(prev => ({ ...prev, aiContext: `[Pre-Send Analysis]\n\n${result}` }));
+        showNotification("Pre-send analysis complete. Check Director's Insight.");
+
+      } else if (actionType === 'suggestFollowUp') {
+        const contact = options?.contact;
+        if (!contact) { showNotification("No contact selected.", "error"); setLoading(false); return; }
+        const contactEmail = normalizeEmail(contact.email);
+        const threadHistory = threads[contactEmail]?.messages || [];
+        const historyText = threadHistory.length > 0
+          ? threadHistory.map(m => `[${new Date(m.date).toLocaleDateString()}] ${m.direction}: ${m.subject}`).join('\n')
+          : 'No previous interactions recorded.';
+
+        prompt = `Act as an elite Virtual Sales Director. Based on this interaction history, suggest the PERFECT next follow-up action:
+
+Contact: ${contact.name} (${contact.jobTitle || 'Unknown title'}) at ${contact.company || 'Unknown company'}
+Stage: ${contact.stage || 'Lead'}
+Interaction History:
+${historyText}
+
+Provide:
+1. URGENCY LEVEL: Hot/Warm/Cold follow-up needed
+2. BEST TIMING: When to follow up (e.g., "Tomorrow morning", "In 3 days")
+3. RECOMMENDED ACTION: Call, email, LinkedIn message, or meeting request
+4. SUGGESTED OPENER: The exact first sentence to use
+5. STRATEGIC ANGLE: What approach will resonate most
+
+Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
+
+        const result = await callGeminiAPI(prompt);
+        setComposerState(prev => ({ ...prev, aiContext: `[Follow-Up Strategy: ${contact.name}]\n\n${result}` }));
+        showNotification(`Follow-up strategy generated for ${contact.name}.`);
       }
 
     } catch (err) {
@@ -1444,6 +1689,7 @@ export default function App() {
       setComposerState(prev => ({ 
         ...prev, body: '', subject: '', threadHistory: historyString, sequenceSteps: []
       }));
+      try { window.localStorage.removeItem('salesdirector.draft.v1'); } catch { /* ignore */ }
     } catch (err) {
       showNotification("Error saving thread to database.", "error");
     } finally {
@@ -1629,6 +1875,11 @@ export default function App() {
                       {task.type}
                     </h4>
                     <div className="flex items-center space-x-2">
+                      {task.dueDate && task.status !== 'completed' && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-900 dark:text-blue-400">
+                          Due: {new Date(task.dueDate).toLocaleDateString()}
+                        </span>
+                      )}
                       {task.priority && task.status !== 'completed' && (
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
                           task.priority >= 80 ? 'bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-900 dark:text-rose-400' : 
@@ -1638,6 +1889,9 @@ export default function App() {
                           Priority: {task.priority}
                         </span>
                       )}
+                      <button onClick={() => openEditTask(task)} className="text-zinc-400 hover:text-black dark:hover:text-white transition" title="Edit Task">
+                        <Edit3 className="w-4 h-4" />
+                      </button>
                       <button onClick={() => deleteTask(task.id)} className="text-zinc-400 hover:text-rose-900 dark:hover:text-rose-500 transition">
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -1757,17 +2011,50 @@ export default function App() {
           Analyze & Score Inbox
         </button>
       </div>
+
+      {/* Inbox Search & Filters */}
+      <div className="flex flex-col md:flex-row gap-4">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-zinc-400" />
+          <input
+            type="text"
+            value={inboxSearch}
+            onChange={(e) => setInboxSearch(e.target.value)}
+            placeholder="Search by sender, subject, or company..."
+            className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-rose-900 text-black dark:text-white transition-colors"
+          />
+        </div>
+        <div className="flex rounded-lg border border-zinc-200 dark:border-zinc-700 overflow-hidden">
+          {[
+            { id: 'all', label: 'All' },
+            { id: 'unread', label: 'Unread' },
+            { id: 'needsResponse', label: 'Needs Response' },
+            { id: 'archived', label: 'Archived' }
+          ].map(f => (
+            <button
+              key={f.id}
+              onClick={() => setInboxFilter(f.id)}
+              className={`px-4 py-2 text-xs font-bold transition-colors ${inboxFilter === f.id ? 'bg-black dark:bg-white text-white dark:text-black' : 'bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'}`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
       
       <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors">
         <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
-          {inboxEmails.map(email => (
-            <div key={email.id} className={`p-6 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors ${!email.needsResponse ? 'opacity-60' : ''}`}>
+          {filteredInboxEmails.map(email => (
+            <div key={email.id} className={`p-6 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors ${email.isRead ? 'opacity-60' : ''}`}>
               <div className="flex justify-between items-start mb-2">
-                <div>
-                  <h4 className="text-sm font-bold text-black dark:text-white">{email.fromName} <span className="text-zinc-500 font-normal">({email.company})</span></h4>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    {!email.isRead && <span className="w-2 h-2 bg-rose-900 dark:bg-rose-500 rounded-full flex-shrink-0"></span>}
+                    <h4 className="text-sm font-bold text-black dark:text-white truncate">{email.fromName} <span className="text-zinc-500 font-normal">({email.company})</span></h4>
+                  </div>
                   <h5 className="text-md font-bold text-rose-900 dark:text-rose-500 mt-1">{email.subject}</h5>
                 </div>
-                <div className="flex flex-col items-end">
+                <div className="flex flex-col items-end ml-4">
                   <span className="text-xs text-zinc-500 dark:text-zinc-400 mb-2">{email.date}</span>
                   {email.aiScore !== null && (
                     <div className={`px-3 py-1 rounded-full text-xs font-bold border ${
@@ -1789,28 +2076,64 @@ export default function App() {
                 </div>
               )}
 
-              {email.needsResponse && (
-                <button 
-                  onClick={() => {
-                    const historyString = `[${email.date}] ${email.fromName} wrote:\nSubject: ${email.subject}\n${email.body}`;
-                    setComposerState(prev => ({ 
-                      ...prev, 
-                      to: email.fromEmail,
-                      recipientName: email.fromName,
-                      companyName: email.company,
-                      subject: email.subject.startsWith('Re:') ? email.subject : `Re: ${email.subject}`,
-                      threadHistory: historyString,
-                      sequenceSteps: []
-                    }));
-                    setActiveTab('outreach');
-                  }}
-                  className="text-xs bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition"
+              <div className="flex items-center gap-2 flex-wrap">
+                {email.needsResponse && (
+                  <button 
+                    onClick={() => {
+                      const historyString = `[${email.date}] ${email.fromName} wrote:\nSubject: ${email.subject}\n${email.body}`;
+                      setComposerState(prev => ({ 
+                        ...prev, 
+                        to: email.fromEmail,
+                        recipientName: email.fromName,
+                        companyName: email.company,
+                        subject: email.subject.startsWith('Re:') ? email.subject : `Re: ${email.subject}`,
+                        threadHistory: historyString,
+                        sequenceSteps: []
+                      }));
+                      setActiveTab('outreach');
+                    }}
+                    className="text-xs bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition"
+                  >
+                    Draft Reply
+                  </button>
+                )}
+                <button
+                  onClick={() => toggleInboxRead(email.id)}
+                  className="text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-3 py-2 rounded font-medium hover:bg-zinc-200 dark:hover:bg-zinc-700 transition flex items-center"
+                  title={email.isRead ? 'Mark unread' : 'Mark read'}
                 >
-                  Draft Reply
+                  {email.isRead ? <EyeOff className="w-3 h-3 mr-1" /> : <Eye className="w-3 h-3 mr-1" />}
+                  {email.isRead ? 'Unread' : 'Read'}
                 </button>
-              )}
+                <button
+                  onClick={() => toggleInboxNeedsResponse(email.id)}
+                  className={`text-xs px-3 py-2 rounded font-medium transition flex items-center ${email.needsResponse ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-400 hover:bg-amber-200' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}
+                >
+                  <Star className="w-3 h-3 mr-1" />
+                  {email.needsResponse ? 'Flagged' : 'Flag'}
+                </button>
+                <button
+                  onClick={() => toggleInboxArchived(email.id)}
+                  className="text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-3 py-2 rounded font-medium hover:bg-zinc-200 dark:hover:bg-zinc-700 transition flex items-center"
+                >
+                  <Archive className="w-3 h-3 mr-1" />
+                  {email.isArchived ? 'Unarchive' : 'Archive'}
+                </button>
+                <button
+                  onClick={() => deleteInboxEmail(email.id)}
+                  className="text-xs text-zinc-400 hover:text-rose-900 dark:hover:text-rose-500 px-2 py-2 rounded transition"
+                  title="Delete"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           ))}
+          {filteredInboxEmails.length === 0 && (
+            <div className="p-12 text-center text-zinc-500 dark:text-zinc-400">
+              {inboxSearch ? 'No emails match your search.' : inboxFilter === 'archived' ? 'No archived emails.' : 'Inbox is empty.'}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1844,6 +2167,23 @@ export default function App() {
         </div>
       </div>
       
+      {/* Stage Filter Bar */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <Filter className="w-4 h-4 text-zinc-400" />
+        {['all', 'Lead', 'Contact', 'Opportunity', 'Customer', 'Cold', 'Warm', 'Hot'].map(stage => (
+          <button
+            key={stage}
+            onClick={() => setContactStageFilter(stage)}
+            className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${contactStageFilter === stage ? 'bg-black dark:bg-white text-white dark:text-black' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}
+          >
+            {stage === 'all' ? 'All Stages' : stage}
+          </button>
+        ))}
+        {contactStageFilter !== 'all' && (
+          <span className="text-xs text-zinc-500 ml-2">{filteredContacts.length} of {contacts.length} contacts</span>
+        )}
+      </div>
+
       <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors">
         <table className="w-full text-left border-collapse">
           <thead>
@@ -1856,7 +2196,7 @@ export default function App() {
             </tr>
           </thead>
           <tbody>
-            {contacts.map(contact => (
+            {filteredContacts.map(contact => (
               <tr key={contact.id || contact.email} className="border-b border-zinc-100 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors cursor-pointer" onClick={() => openDossier(contact)}>
                 <td className="p-4 text-sm font-bold text-black dark:text-white">{contact.name}</td>
                 <td className="p-4 text-sm text-zinc-600 dark:text-zinc-300">
@@ -1891,8 +2231,8 @@ export default function App() {
                 </td>
               </tr>
             ))}
-            {contacts.length === 0 && (
-               <tr><td colSpan="5" className="p-8 text-center text-zinc-500 dark:text-zinc-400">No contacts found. Please sync from HubSpot, import a CSV, or Add a contact manually.</td></tr>
+            {filteredContacts.length === 0 && (
+               <tr><td colSpan="5" className="p-8 text-center text-zinc-500 dark:text-zinc-400">{contactStageFilter !== 'all' ? `No contacts in "${contactStageFilter}" stage.` : 'No contacts found. Please sync from HubSpot, import a CSV, or Add a contact manually.'}</td></tr>
             )}
           </tbody>
         </table>
@@ -2178,18 +2518,37 @@ export default function App() {
 
             {/* Footer / Actions */}
             <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 flex justify-between items-center transition-colors">
-              <div className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center font-bold">
-                <Server className="w-4 h-4 mr-1" />
-                SMTP: {config.smtpHost ? 'Configured' : 'Not Configured'}
+              <div className="flex items-center gap-4">
+                <div className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center font-bold">
+                  <Server className="w-4 h-4 mr-1" />
+                  SMTP: {config.smtpHost ? 'Configured' : 'Not Configured'}
+                </div>
+                {(composerState.body || composerState.subject) && (
+                  <div className="text-xs text-green-600 dark:text-green-400 flex items-center font-medium">
+                    <Save className="w-3 h-3 mr-1" />
+                    Draft auto-saved
+                  </div>
+                )}
               </div>
-              <button 
-                onClick={handleSendEmail}
-                disabled={loading || Boolean(composerErrors.to)}
-                className="flex items-center bg-black dark:bg-white text-white dark:text-black px-6 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition font-bold disabled:opacity-50 shadow-sm"
-              >
-                <Send className="w-4 h-4 mr-2" />
-                Send Email
-              </button>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => handleAIAction('preSendCheck')}
+                  disabled={loading || !composerState.body}
+                  className="flex items-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white px-4 py-2 rounded-lg hover:bg-zinc-300 dark:hover:bg-zinc-700 transition font-bold text-sm disabled:opacity-50"
+                  title="AI will analyze your email for tone, clarity, and effectiveness before sending"
+                >
+                  <Shield className="w-4 h-4 mr-2" />
+                  Pre-Send Check
+                </button>
+                <button 
+                  onClick={handleSendEmail}
+                  disabled={loading || Boolean(composerErrors.to)}
+                  className="flex items-center bg-black dark:bg-white text-white dark:text-black px-6 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition font-bold disabled:opacity-50 shadow-sm"
+                >
+                  <Send className="w-4 h-4 mr-2" />
+                  Send Email
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2858,13 +3217,42 @@ export default function App() {
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-zinc-400" />
               <input 
-                type="text" 
+                type="text"
+                value={globalSearch}
+                onChange={(e) => setGlobalSearch(e.target.value)}
                 placeholder="Search leads..." 
                 className="pl-9 pr-4 py-1.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-full text-sm outline-none focus:ring-2 focus:ring-rose-900 w-64 transition-all text-black dark:text-white"
               />
+              {globalSearchResults && globalSearchResults.length > 0 && (
+                <div className="absolute top-full mt-2 right-0 w-80 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+                  <div className="p-2 border-b border-zinc-100 dark:border-zinc-800">
+                    <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 px-2">{globalSearchResults.length} result{globalSearchResults.length !== 1 ? 's' : ''}</span>
+                  </div>
+                  {globalSearchResults.map(c => (
+                    <button
+                      key={c.id || c.email}
+                      onClick={() => { openDossier(c); setGlobalSearch(''); }}
+                      className="w-full flex items-center p-3 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-left transition-colors"
+                    >
+                      <div className="w-8 h-8 rounded-full bg-rose-900/10 dark:bg-rose-900/30 text-rose-900 dark:text-rose-400 flex items-center justify-center font-bold text-xs mr-3 flex-shrink-0">
+                        {(c.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold text-black dark:text-white truncate">{c.name}</div>
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400 truncate">{c.company}{c.jobTitle ? ` · ${c.jobTitle}` : ''}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {globalSearchResults && globalSearchResults.length === 0 && (
+                <div className="absolute top-full mt-2 right-0 w-64 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 p-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
+                  No contacts found.
+                </div>
+              )}
             </div>
-            <div className="w-8 h-8 rounded-full bg-rose-900 text-white flex items-center justify-center font-bold text-sm shadow-sm">
-              JD
+            <div className="w-8 h-8 rounded-full bg-rose-900 text-white flex items-center justify-center font-bold text-sm shadow-sm" title={config.senderName || 'User'}>
+              {(config.senderName || 'SD').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
             </div>
           </div>
         </header>
@@ -2960,6 +3348,90 @@ export default function App() {
       )}
 
       {/* Delete Confirmation Modal Overlay */}
+      {/* Task Edit Modal */}
+      {isTaskModalOpen && editingTask && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 w-full max-w-lg rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
+            <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center">
+              <h2 className="text-xl font-bold text-black dark:text-white">Edit Task</h2>
+              <button onClick={() => { setIsTaskModalOpen(false); setEditingTask(null); }} className="text-zinc-400 hover:text-black dark:hover:text-white transition">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Task</label>
+                <input 
+                  type="text" name="text" value={editingTask.text || ''} onChange={handleTaskFormChange}
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Type</label>
+                  <select name="type" value={editingTask.type || 'follow-up'} onChange={handleTaskFormChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  >
+                    <option value="follow-up">Follow-up</option>
+                    <option value="call">Call</option>
+                    <option value="meeting">Meeting</option>
+                    <option value="proposal">Proposal</option>
+                    <option value="research">Research</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Priority (1-100)</label>
+                  <input 
+                    type="number" name="priority" value={editingTask.priority || 50} onChange={handleTaskFormChange}
+                    min="1" max="100"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Due Date</label>
+                  <input 
+                    type="date" name="dueDate" value={editingTask.dueDate || ''} onChange={handleTaskFormChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Contact</label>
+                  <input 
+                    type="text" name="contact" value={editingTask.contact || ''} onChange={handleTaskFormChange}
+                    placeholder="Contact name"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Rationale / Notes</label>
+                <textarea 
+                  name="rationale" value={editingTask.rationale || ''} onChange={handleTaskFormChange} rows="2"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  placeholder="Why this task matters..."
+                ></textarea>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Status</label>
+                <select name="status" value={editingTask.status || 'pending'} onChange={handleTaskFormChange}
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                >
+                  <option value="pending">Pending</option>
+                  <option value="completed">Completed</option>
+                </select>
+              </div>
+            </div>
+            <div className="p-6 border-t border-zinc-200 dark:border-zinc-800 flex justify-end space-x-3">
+              <button onClick={() => { setIsTaskModalOpen(false); setEditingTask(null); }} className="px-4 py-2 text-sm font-bold text-zinc-600 dark:text-zinc-400 hover:text-black dark:hover:text-white transition">Cancel</button>
+              <button onClick={saveTask} className="px-6 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition">Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {contactToDelete && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-zinc-900 w-full max-w-sm rounded-xl shadow-2xl p-6 border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
@@ -3064,10 +3536,31 @@ export default function App() {
                        <CheckSquare className="w-4 h-4 mr-2" /> Add Task
                      </button>
                     <button 
-                      onClick={() => showNotification("Call activity logged.", "success")}
+                      onClick={() => logCallActivity(selectedContact)}
                         className="w-full flex items-center justify-center bg-black dark:bg-white text-white dark:text-black py-2 rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition"
                      >
                        <Phone className="w-4 h-4 mr-2" /> Log Call
+                     </button>
+                   </div>
+                </div>
+
+                {/* AI Intelligence */}
+                <div className="bg-zinc-50 dark:bg-zinc-950/50 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800">
+                   <h3 className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-4 flex items-center"><Sparkles className="w-3 h-3 mr-1 text-rose-900 dark:text-rose-500" /> AI Intelligence</h3>
+                   <div className="space-y-2">
+                     <button 
+                       onClick={() => handleAIAction('researchContact', { contact: selectedContact })}
+                       disabled={loading}
+                       className="w-full flex items-center justify-center bg-rose-900 text-white py-2 rounded-lg text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50"
+                     >
+                       <Zap className="w-4 h-4 mr-2" /> Research Contact
+                     </button>
+                     <button 
+                       onClick={() => handleAIAction('suggestFollowUp', { contact: selectedContact })}
+                       disabled={loading}
+                       className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition disabled:opacity-50"
+                     >
+                       <Target className="w-4 h-4 mr-2" /> Follow-Up Strategy
                      </button>
                    </div>
                 </div>
@@ -3090,13 +3583,22 @@ export default function App() {
                        <details key={idx} className="group bg-zinc-50 dark:bg-zinc-950/50 rounded-xl border border-zinc-200 dark:border-zinc-800 [&_summary::-webkit-details-marker]:hidden">
                          <summary className="flex justify-between items-center p-4 cursor-pointer focus:outline-none">
                            <div className="flex items-center">
-                             <span className={`text-xs font-bold px-2 py-1 rounded mr-3 ${msg.direction === 'outbound' ? 'bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white' : 'bg-rose-100 dark:bg-rose-900/30 text-rose-900 dark:text-rose-400'}`}>
-                                {msg.direction === 'outbound' ? 'You Sent' : 'They Replied'}
+                             <span className={`text-xs font-bold px-2 py-1 rounded mr-3 ${
+                               msg.type === 'call' ? 'bg-green-100 dark:bg-green-900/30 text-green-900 dark:text-green-400' :
+                               msg.direction === 'outbound' ? 'bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white' : 'bg-rose-100 dark:bg-rose-900/30 text-rose-900 dark:text-rose-400'}`}>
+                                {msg.type === 'call' ? 'Call' : msg.direction === 'outbound' ? 'You Sent' : 'They Replied'}
                              </span>
                              <h4 className="text-sm font-bold text-black dark:text-white truncate max-w-xs">{msg.subject || 'No Subject'}</h4>
                            </div>
                            <div className="flex items-center text-zinc-400">
                              <span className="text-xs mr-3">{new Date(msg.date).toLocaleString()}</span>
+                             <button 
+                               onClick={(e) => { e.preventDefault(); e.stopPropagation(); deleteThreadMessage(selectedContact.email, idx); }}
+                               className="p-1 text-zinc-400 hover:text-rose-900 dark:hover:text-rose-500 rounded transition mr-2"
+                               title="Delete message"
+                             >
+                               <Trash2 className="w-3.5 h-3.5" />
+                             </button>
                              <ChevronRight className="w-4 h-4 transform group-open:rotate-90 transition-transform" />
                            </div>
                          </summary>
