@@ -62,6 +62,22 @@ const THEME_STORAGE_KEY = 'salesdirector.theme.v1';
 const LOCAL_DB_STORAGE_KEY = 'salesdirector.localdb.enc.v1';
 const LOCAL_DB_ENCRYPTION_VERSION = 1;
 const LOCAL_DB_PBKDF2_ITERATIONS = 250000;
+const AKITA_CREDITS = {
+  companyName: 'Akita Engineering',
+  supportEmail: 'support@akitaengineering.com',
+  website: 'https://www.akitaengineering.com',
+  websiteLabel: 'www.akitaengineering.com',
+  origin: 'Made in Niagara Falls, Canada'
+};
+
+const getDesktopAppInfo = () => {
+  if (typeof window === 'undefined') return null;
+  const appInfo = window.salesDirectorDesktop?.appInfo;
+  if (!appInfo || typeof appInfo !== 'object') {
+    return null;
+  }
+  return appInfo;
+};
 
 const getDesktopLocalDbApi = () => {
   if (typeof window === 'undefined') return null;
@@ -274,6 +290,7 @@ export default function App() {
   const [localDbBackend, setLocalDbBackend] = useState('initializing');
   const localDbReadyRef = useRef(false);
   const localDbSaveTimerRef = useRef(null);
+  const desktopAppInfo = getDesktopAppInfo();
 
   // Firebase Auth & Data Sync
   useEffect(() => {
@@ -2653,6 +2670,115 @@ export default function App() {
     );
   };
 
+  const renderAbout = () => {
+    const platformLabel = desktopAppInfo
+      ? `${desktopAppInfo.platform} (${desktopAppInfo.arch})`
+      : 'Browser preview';
+    const runtimeLabel = desktopAppInfo
+      ? `Electron ${desktopAppInfo.electronVersion} · Node ${desktopAppInfo.nodeVersion} · Chrome ${desktopAppInfo.chromeVersion}`
+      : 'Browser preview';
+    const storageLabel = !IS_LOCAL_DEV_MODE
+      ? 'Firebase-backed storage'
+      : (localDbBackend !== 'electron-encrypted-file'
+        ? 'Desktop runtime required for encrypted local storage'
+        : (localDbUnlocked
+          ? 'Electron encrypted file storage (unlocked)'
+          : (localDbHasEncryptedData
+            ? 'Electron encrypted file storage (locked)'
+            : 'Electron encrypted file storage ready')));
+    const aboutFacts = [
+      { label: 'Application', value: desktopAppInfo?.productName || 'SalesDirector' },
+      { label: 'Version', value: desktopAppInfo?.version || 'Browser preview' },
+      { label: 'Platform', value: platformLabel },
+      { label: 'Runtime', value: runtimeLabel },
+      { label: 'Storage Backend', value: storageLabel },
+      { label: 'Operating Mode', value: IS_LOCAL_DEV_MODE ? 'Local development fallback' : 'Firebase-backed connected mode' }
+    ];
+
+    return (
+      <div className="p-8 max-w-5xl mx-auto w-full space-y-8">
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-rose-900 dark:text-rose-500 mb-2">About & Diagnostics</p>
+            <h2 className="text-3xl font-bold text-black dark:text-white">SalesDirector Desktop</h2>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-2 max-w-2xl">
+              Build details, runtime diagnostics, and support information for this installation.
+            </p>
+          </div>
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-5 py-4 shadow-sm transition-colors">
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-zinc-500 dark:text-zinc-400">Current Build</p>
+            <p className="mt-1 text-2xl font-bold text-black dark:text-white">{desktopAppInfo?.version || 'Preview'}</p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{platformLabel}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-[1.3fr_1fr] gap-8">
+          <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
+            <div className="flex items-center text-black dark:text-white mb-5">
+              <Activity className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+              <h3 className="text-lg font-bold">Runtime Diagnostics</h3>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {aboutFacts.map((item) => (
+                <div key={item.label} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-4 transition-colors">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{item.label}</p>
+                  <p className="mt-2 text-sm font-semibold text-black dark:text-white leading-6">{item.value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-black dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-800 shadow-sm transition-colors text-zinc-100">
+            <div className="flex items-center mb-5">
+              <Briefcase className="w-5 h-5 mr-2 text-rose-500" />
+              <h3 className="text-lg font-bold text-white">Credits & Support</h3>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+                <p className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-400">Built By</p>
+                <p className="mt-2 text-xl font-bold text-white">{AKITA_CREDITS.companyName}</p>
+                <p className="mt-2 text-sm text-zinc-300 leading-6">{AKITA_CREDITS.origin}</p>
+              </div>
+
+              <div className="rounded-xl bg-white/5 border border-white/10 p-4 space-y-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-400">Support Email</p>
+                  <a
+                    href={`mailto:${AKITA_CREDITS.supportEmail}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1 inline-flex items-center text-sm font-semibold text-white hover:text-rose-400 transition-colors"
+                  >
+                    <Mail className="w-4 h-4 mr-2 text-rose-500" />
+                    {AKITA_CREDITS.supportEmail}
+                  </a>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-400">Website</p>
+                  <a
+                    href={AKITA_CREDITS.website}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1 inline-flex items-center text-sm font-semibold text-white hover:text-rose-400 transition-colors"
+                  >
+                    <Globe className="w-4 h-4 mr-2 text-rose-500" />
+                    {AKITA_CREDITS.websiteLabel}
+                  </a>
+                </div>
+              </div>
+
+              <p className="text-xs text-zinc-400 leading-6">
+                Need build or deployment help? Reach out to Akita Engineering for support on desktop distribution,
+                infrastructure, and rollout.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className={`flex h-screen font-sans overflow-hidden transition-colors ${isDarkMode ? 'dark bg-zinc-950' : 'bg-white'}`}>
       
@@ -2675,6 +2801,7 @@ export default function App() {
             { id: 'contacts', icon: Users, label: 'CRM & Contacts' },
             { id: 'outreach', icon: Edit3, label: 'AI Outreach' },
             { id: 'settings', icon: Settings, label: 'Settings' },
+            { id: 'about', icon: FileText, label: 'About' },
           ].map((item) => (
             <button
               key={item.id}
@@ -2693,11 +2820,15 @@ export default function App() {
         </nav>
         
         <div className="p-4 border-t border-zinc-800 text-xs text-zinc-500 text-center flex flex-col items-center">
-          <p className="mb-1 font-medium">Proudly built in Niagara Falls by</p>
-          <a href="https://www.akitaengineering.com" target="_blank" rel="noopener noreferrer" className="text-rose-900 dark:text-rose-600 hover:text-rose-700 dark:hover:text-rose-400 font-bold text-sm mb-1 transition-colors">
-            Akita Engineering
+          <p className="mb-1 font-medium">Proudly built by</p>
+          <a href={AKITA_CREDITS.website} target="_blank" rel="noopener noreferrer" className="text-rose-900 dark:text-rose-600 hover:text-rose-700 dark:hover:text-rose-400 font-bold text-sm mb-1 transition-colors">
+            {AKITA_CREDITS.companyName}
           </a>
-          <p className="text-zinc-600 dark:text-zinc-500 font-medium text-[10px]">www.akitaengineering.com</p>
+          <a href={`mailto:${AKITA_CREDITS.supportEmail}`} target="_blank" rel="noopener noreferrer" className="text-zinc-400 hover:text-zinc-200 font-medium text-[10px] transition-colors">
+            {AKITA_CREDITS.supportEmail}
+          </a>
+          <p className="text-zinc-600 dark:text-zinc-500 font-medium text-[10px] mt-1">{AKITA_CREDITS.websiteLabel}</p>
+          <p className="text-zinc-600 dark:text-zinc-500 font-medium text-[10px] mt-1">{AKITA_CREDITS.origin}</p>
         </div>
       </div>
 
@@ -2738,6 +2869,7 @@ export default function App() {
           {activeTab === 'contacts' && renderContacts()}
           {activeTab === 'outreach' && renderOutreach()}
           {activeTab === 'settings' && renderSettings()}
+          {activeTab === 'about' && renderAbout()}
         </main>
 
         {/* Global Notifications Notification */}

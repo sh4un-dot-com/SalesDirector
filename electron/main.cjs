@@ -6,8 +6,10 @@ const crypto = require('node:crypto');
 const LOCAL_DB_FILE = 'salesdirector-localdb.enc.json';
 const LOCAL_DB_VERSION = 1;
 const LOCAL_DB_ITERATIONS = 250000;
+const CI_SMOKE_TEST_FLAG = '--ci-smoke-test';
 
 const getLocalDbPath = () => path.join(app.getPath('userData'), LOCAL_DB_FILE);
+const isCiSmokeTest = process.argv.includes(CI_SMOKE_TEST_FLAG);
 
 const deriveKey = (passphrase, salt, iterations = LOCAL_DB_ITERATIONS) => {
   return crypto.pbkdf2Sync(passphrase, salt, iterations, 32, 'sha256');
@@ -99,6 +101,109 @@ const registerLocalDbIpcHandlers = () => {
   });
 };
 
+const attachSmokeTestHandlers = (window) => {
+  if (!isCiSmokeTest) {
+    return;
+  }
+
+  const finish = (exitCode, message) => {
+    if (message) {
+      if (exitCode === 0) {
+        console.log(message);
+      } else {
+        console.error(message);
+      }
+    }
+
+    if (!window.isDestroyed()) {
+      window.destroy();
+    }
+    app.exit(exitCode);
+  };
+
+  const smokeTimeout = setTimeout(() => {
+    finish(1, 'CI smoke test timed out before renderer content became available.');
+  }, 30000);
+
+  window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (isMainFrame) {
+      clearTimeout(smokeTimeout);
+      finish(1, `Main window failed to load (${errorCode}): ${errorDescription} [${validatedURL}]`);
+    }
+  });
+
+  window.webContents.once('did-finish-load', () => {
+    setTimeout(async () => {
+      try {
+        const result = await window.webContents.executeJavaScript(
+          `new Promise((resolve) => {
+            const deadline = Date.now() + 10000;
+            const expectedAboutText = ['Akita Engineering', 'support@akitaengineering.com', 'Made in Niagara Falls, Canada'];
+
+            const clickAboutTab = () => {
+              const aboutButton = Array.from(document.querySelectorAll('button')).find((button) => {
+                return (button.textContent || '').trim() === 'About';
+              });
+
+              if (!aboutButton) {
+                return false;
+              }
+
+              aboutButton.click();
+              return true;
+            };
+
+            const hasExpectedAboutText = () => {
+              const pageText = document.body?.innerText || '';
+              return expectedAboutText.every((value) => pageText.includes(value));
+            };
+
+            const check = () => {
+              const root = document.getElementById('root');
+              const text = root?.innerText?.trim() || '';
+              const childCount = root?.children?.length || 0;
+
+              if ((text.length > 0 || childCount > 0) && hasExpectedAboutText()) {
+                resolve({ ok: true, textLength: text.length, childCount, title: document.title });
+                return;
+              }
+
+              if (text.length > 0 || childCount > 0) {
+                clickAboutTab();
+              }
+
+              if (Date.now() >= deadline) {
+                resolve({ ok: false, textLength: text.length, childCount, title: document.title });
+                return;
+              }
+
+              requestAnimationFrame(check);
+            };
+
+            check();
+          });`,
+          true
+        );
+
+        clearTimeout(smokeTimeout);
+
+        if (!result?.ok) {
+          finish(1, 'CI smoke test failed: renderer root stayed empty after load.');
+          return;
+        }
+
+        finish(
+          0,
+          `CI smoke test passed: title="${result.title}" textLength=${result.textLength} childCount=${result.childCount}`
+        );
+      } catch (err) {
+        clearTimeout(smokeTimeout);
+        finish(1, `CI smoke test failed while inspecting renderer: ${err?.message || err}`);
+      }
+    }, 1000);
+  });
+};
+
 const createWindow = () => {
   const window = new BrowserWindow({
     width: 1440,
@@ -115,10 +220,14 @@ const createWindow = () => {
     }
   });
 
+  attachSmokeTestHandlers(window);
+
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) {
     window.loadURL(devServerUrl);
-    window.webContents.openDevTools({ mode: 'detach' });
+    if (!isCiSmokeTest) {
+      window.webContents.openDevTools({ mode: 'detach' });
+    }
   } else {
     window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }

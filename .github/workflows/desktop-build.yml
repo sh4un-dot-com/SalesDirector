@@ -69,16 +69,9 @@ jobs:
             throw "Expected Windows executable not found: $exePath"
           }
 
-          $process = Start-Process -FilePath $exePath -PassThru
-          Start-Sleep -Seconds 12
-          $process.Refresh()
-
-          if ($process.HasExited -and $process.ExitCode -ne 0) {
-            throw "Windows app exited during startup with code $($process.ExitCode)."
-          }
-
-          if (-not $process.HasExited) {
-            Stop-Process -Id $process.Id -Force
+          $process = Start-Process -FilePath $exePath -ArgumentList '--ci-smoke-test' -PassThru -Wait
+          if ($process.ExitCode -ne 0) {
+            throw "Windows renderer smoke test failed with exit code $($process.ExitCode)."
           }
 
       - name: Upload build artifacts

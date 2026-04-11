@@ -2,6 +2,7 @@
   "name": "salesdirector",
   "version": "1.0.0",
   "description": "SalesDirector desktop app",
+  "author": "Akita Engineering <support@akitaengineering.com> (https://www.akitaengineering.com)",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
@@ -18,6 +19,7 @@
   "build": {
     "appId": "com.akitaengineering.salesdirector",
     "productName": "SalesDirector",
+    "copyright": "Copyright © 2026 Akita Engineering. Made in Niagara Falls, Canada.",
     "directories": {
       "output": "release"
     },
@@ -58,10 +60,13 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
     "concurrently": "^9.0.1",
     "cross-env": "^7.0.3",
     "electron": "^32.1.2",
     "electron-builder": "^25.1.8",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
     "vite": "^5.4.10",
     "wait-on": "^8.0.1"
   }
