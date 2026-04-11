@@ -12,7 +12,8 @@
     "start:desktop": "npm run build:web && electron .",
     "dist:mac": "npm run build:web && electron-builder --mac dmg --publish never",
     "dist:mac:ci": "npm run build:web && electron-builder --mac dmg --publish never",
-    "dist:mac:signed": "npm run build:web && electron-builder --mac dmg --publish never"
+    "dist:mac:signed": "npm run build:web && electron-builder --mac dmg --publish never",
+    "dist:win": "npm run build:web && electron-builder --win --publish never"
   },
   "build": {
     "appId": "com.akitaengineering.salesdirector",
@@ -37,6 +38,16 @@
     },
     "dmg": {
       "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-Setup.${ext}"
     }
   },
   "dependencies": {

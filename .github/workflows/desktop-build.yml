@@ -1,0 +1,93 @@
+name: Build Desktop Apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: macOS DMG
+            os: macos-latest
+            build_command: npm run dist:mac:ci
+            artifact_name: desktop-macos
+            artifact_path: |
+              release/*.dmg
+              release/*.blockmap
+            disable_signing: 'false'
+          - name: Windows Installer
+            os: windows-latest
+            build_command: npm run dist:win
+            artifact_name: desktop-windows
+            artifact_path: |
+              release/*.exe
+              release/*.blockmap
+            disable_signing: ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build desktop artifact
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.platform.disable_signing }}
+        run: ${{ matrix.platform.build_command }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: ${{ matrix.platform.artifact_path }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release-artifacts/*.dmg
+            release-artifacts/*.exe
+            release-artifacts/*.blockmap

@@ -1,10 +1,7 @@
-name: Release macOS Signed DMG
+name: Release macOS Signed DMG (Manual)
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   release-macos-signed:
