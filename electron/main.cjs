@@ -220,8 +220,15 @@ const registerLocalDbIpcHandlers = () => {
         ? ['UNSEEN', ['SINCE', sinceDate]]
         : ['SINCE', sinceDate];
 
-      const matchedUids = await client.search(searchQuery);
-      const selectedUids = matchedUids.slice(-limit).reverse();
+      const rawSearchResult = await client.search(searchQuery);
+      const matchedUids = Array.isArray(rawSearchResult)
+        ? rawSearchResult
+        : (Array.isArray(rawSearchResult?.all) ? rawSearchResult.all : []);
+      const selectedUids = matchedUids
+        .map((uid) => Number(uid))
+        .filter((uid) => Number.isInteger(uid) && uid > 0)
+        .slice(-limit)
+        .reverse();
 
       const emails = [];
       for (const uid of selectedUids) {
