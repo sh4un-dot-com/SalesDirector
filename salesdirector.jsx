@@ -8,7 +8,7 @@ import {
   Briefcase, TrendingUp, Save, Calendar, ShieldAlert, Layers,
   Phone, Moon, Sun, Clock, X, PenTool, Type, Plus, Trash2, Linkedin,
   CheckSquare, CalendarDays, MoreVertical, Play, Check,
-  Archive, Eye, EyeOff, Filter, Zap, Target, Star, PhoneCall, RotateCcw
+  Archive, Eye, EyeOff, Filter, Zap, Target, Star, PhoneCall, RotateCcw, Menu
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
@@ -367,6 +367,7 @@ const PERSISTED_CONFIG_KEYS = [
 export default function App() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('outreach');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notification, setNotification] = useState(null);
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -3938,7 +3939,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       .slice(0, 3);
 
     return (
-      <div className="p-8 space-y-6 max-w-6xl mx-auto w-full">
+      <div className="p-4 md:p-8 space-y-6 max-w-6xl mx-auto w-full">
         <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">Sales Command Center</h2>
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           {dashboardStats.map((stat, idx) => (
@@ -4195,7 +4196,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   };
 
   const renderTasks = () => (
-    <div className="p-8 max-w-7xl mx-auto w-full h-full flex flex-col">
+    <div className="p-4 md:p-8 max-w-7xl mx-auto w-full h-full flex flex-col">
       <div className="flex justify-between items-center mb-6 gap-4 flex-wrap">
         <div>
           <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">Smart Agenda & Tasks</h2>
@@ -4360,7 +4361,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               </button>
             </form>
             <div className="flex gap-3 flex-wrap items-center">
-              <div className="relative flex-1 min-w-[220px]">
+              <div className="relative flex-1 min-w-[140px]">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
                 <input
                   type="text"
@@ -4642,7 +4643,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   );
 
   const renderInbox = () => (
-    <div className="p-8 space-y-6 max-w-7xl mx-auto w-full">
+    <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto w-full">
       <div className="flex justify-between items-center gap-3 flex-wrap">
         <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">Smart Inbox</h2>
         <div className="flex items-center gap-2 flex-wrap">
@@ -4889,7 +4890,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   );
 
   const renderContacts = () => (
-    <div className="p-8 space-y-6 max-w-7xl mx-auto w-full">
+    <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto w-full">
       <div className="flex justify-between items-center gap-4 flex-wrap">
         <div>
           <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">CRM & Contacts</h2>
@@ -4927,7 +4928,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 text-xs">
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
           <p className="text-zinc-500 dark:text-zinc-400">Pipeline Value</p>
           <p className="mt-2 text-xl font-bold text-black dark:text-white">{formatCurrencyCompact(crmOverview.pipelineValue)}</p>
@@ -4958,7 +4959,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               Drag accounts across stages to keep the forecast honest. Each column rolls up live value and stage-weighted revenue automatically.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-3 text-xs lg:min-w-[22rem]">
+          <div className="grid grid-cols-2 gap-3 text-xs lg:min-w-[18rem]">
             <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-3">
               <p className="text-zinc-500 dark:text-zinc-400">Board Total</p>
               <p className="mt-2 text-lg font-bold text-black dark:text-white">{formatCurrencyCompact(pipelineOverview.totalValue)}</p>
@@ -5052,7 +5053,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             <h3 className="text-sm font-bold text-black dark:text-white">Attention Queue</h3>
             <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400 max-w-2xl">These are the accounts most likely to need action because of deal value, timing, follow-up debt, or open work.</p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full lg:w-auto lg:min-w-[32rem]">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full lg:w-auto">
             {crmOverview.attentionContacts.map((item) => (
               <button
                 key={item.contact.email || item.contact.id}
@@ -5085,7 +5086,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             {stage === 'all' ? 'All Stages' : stage}
           </button>
         ))}
-        <div className="relative flex-1 min-w-[240px] max-w-sm ml-auto">
+        <div className="relative flex-1 min-w-[140px] max-w-sm ml-auto">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
           <input
             type="text"
@@ -5100,8 +5101,8 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         )}
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors">
-        <table className="w-full text-left border-collapse">
+      <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-x-auto transition-colors">
+        <table className="w-full text-left border-collapse min-w-[640px]">
           <thead>
             <tr className="bg-zinc-100 dark:bg-zinc-950 text-zinc-600 dark:text-zinc-400 text-sm border-b border-zinc-200 dark:border-zinc-800">
               <th className="p-4 font-medium text-black dark:text-white">Name</th>
@@ -5188,9 +5189,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   );
 
   const renderOutreach = () => (
-    <div className="flex h-full max-w-7xl mx-auto w-full">
+    <div className="flex flex-col md:flex-row h-full max-w-7xl mx-auto w-full">
       {/* Thread/Context Sidebar */}
-      <div className="w-1/3 border-r border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col overflow-y-auto transition-colors">
+      <div className="w-full md:w-1/3 border-b md:border-b-0 md:border-r border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col overflow-y-auto transition-colors md:max-h-full max-h-[40vh]">
         <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-between items-center transition-colors">
           <h3 className="font-semibold text-black dark:text-white flex items-center">
             <SlidersHorizontal className="w-4 h-4 mr-2 text-zinc-500 dark:text-zinc-400" />
@@ -5345,7 +5346,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       </div>
 
       {/* Main Composer Area */}
-      <div className="w-2/3 flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors">
+      <div className="w-full md:w-2/3 flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors min-h-0 flex-1">
         <div className="p-6 flex-1 flex flex-col">
           <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 flex flex-col h-full overflow-hidden transition-colors">
             {selectedInboxEmail && (
@@ -5689,7 +5690,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
     ];
 
     return (
-      <div className="p-8 max-w-4xl mx-auto w-full space-y-8">
+      <div className="p-4 md:p-8 max-w-4xl mx-auto w-full space-y-8">
         <div>
           <h2 className="text-2xl font-bold text-black dark:text-white mb-6 flex items-center">
             Integrations & Settings
@@ -6273,7 +6274,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
     ];
 
     return (
-      <div className="p-8 max-w-5xl mx-auto w-full space-y-8">
+      <div className="p-4 md:p-8 max-w-5xl mx-auto w-full space-y-8">
         <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.22em] text-rose-900 dark:text-rose-500 mb-2">About & Diagnostics</p>
@@ -6359,15 +6360,23 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   return (
     <div className={`flex h-screen font-sans overflow-hidden transition-colors ${isDarkMode ? 'dark bg-zinc-950' : 'bg-white'}`}>
       
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+
       {/* Sidebar Navigation */}
-      <div className="w-64 bg-black dark:bg-zinc-900 text-zinc-300 flex flex-col border-r border-zinc-800 transition-colors">
-        <div className="p-6 border-b border-zinc-800">
+      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-black dark:bg-zinc-900 text-zinc-300 flex flex-col border-r border-zinc-800 transition-transform duration-200 lg:static lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
           <h1 className="text-xl font-bold text-white flex items-center">
-            <div className="w-8 h-8 bg-rose-900 rounded-lg flex items-center justify-center mr-3">
+            <div className="w-8 h-8 bg-rose-900 rounded-lg flex items-center justify-center mr-3 flex-shrink-0">
               <Mail className="w-5 h-5 text-white" />
             </div>
             Sales Director
           </h1>
+          <button onClick={() => setSidebarOpen(false)} className="lg:hidden p-1 text-zinc-400 hover:text-white transition-colors">
+            <X className="w-5 h-5" />
+          </button>
         </div>
         
         <nav className="flex-1 p-4 space-y-2">
@@ -6382,7 +6391,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           ].map((item) => (
             <button
               key={item.id}
-              onClick={() => setActiveTab(item.id)}
+              onClick={() => { setActiveTab(item.id); setSidebarOpen(false); }}
               className={`w-full flex items-center px-4 py-3 rounded-lg transition-colors duration-150 ${
                 activeTab === item.id 
                   ? 'bg-zinc-800 dark:bg-zinc-800 text-white font-bold shadow-sm' 
@@ -6410,13 +6419,18 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col relative overflow-hidden bg-white dark:bg-zinc-950 transition-colors">
+      <div className="flex-1 flex flex-col relative overflow-hidden bg-white dark:bg-zinc-950 transition-colors min-w-0">
         {/* Header bar */}
-        <header className="h-16 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between px-8 z-10 transition-colors">
-          <h2 className="text-lg font-bold text-black dark:text-white capitalize">
-            {activeTab.replace('-', ' ')}
-          </h2>
-          <div className="flex items-center space-x-4">
+        <header className="h-16 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between px-4 md:px-8 z-10 transition-colors">
+          <div className="flex items-center gap-3 min-w-0">
+            <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 -ml-2 rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
+              <Menu className="w-5 h-5" />
+            </button>
+            <h2 className="text-lg font-bold text-black dark:text-white capitalize truncate">
+              {activeTab.replace('-', ' ')}
+            </h2>
+          </div>
+          <div className="flex items-center space-x-2 md:space-x-4">
             <button 
               onClick={() => setIsDarkMode(!isDarkMode)}
               className="p-2 rounded-full text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
@@ -6431,7 +6445,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
                 placeholder="Search leads..." 
-                className="pl-9 pr-4 py-1.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-full text-sm outline-none focus:ring-2 focus:ring-rose-900 w-64 transition-all text-black dark:text-white"
+                className="pl-9 pr-4 py-1.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-full text-sm outline-none focus:ring-2 focus:ring-rose-900 w-40 md:w-64 transition-all text-black dark:text-white"
               />
               {globalSearchResults && globalSearchResults.length > 0 && (
                 <div className="absolute top-full mt-2 right-0 w-80 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden">
