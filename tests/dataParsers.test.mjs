@@ -63,3 +63,9 @@ test('parseInboxScoreSummary extracts score and summary', () => {
   assert.equal(parsed.score, 92);
   assert.equal(parsed.summary, 'High intent and asks for pricing details.');
 });
+
+test('parseInboxScoreSummary handles alternate score formatting', () => {
+  const parsed = parseInboxScoreSummary('Score - 88/100\nSummary - Clear demo intent and wants a concrete next step.');
+  assert.equal(parsed.score, 88);
+  assert.equal(parsed.summary, 'Clear demo intent and wants a concrete next step.');
+});

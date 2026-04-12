@@ -120,11 +120,15 @@ export const applyTaskPrioritization = (lines, tasks) => {
 };
 
 export const parseInboxScoreSummary = (text = '') => {
-  const match = text.match(/Score:\s*(\d+)\s*\|\|\s*Summary:\s*(.*)/i);
-  if (!match) return null;
+  const normalized = String(text || '').trim();
+  if (!normalized) return null;
+
+  const scoreMatch = normalized.match(/score\s*[:=-]\s*(\d{1,3})(?:\s*\/\s*100)?/i);
+  const summaryMatch = normalized.match(/summary\s*[:=-]\s*([\s\S]+)/i);
+  if (!scoreMatch || !summaryMatch) return null;
 
   return {
-    score: Math.max(1, Math.min(parseInt(match[1], 10), 100)),
-    summary: match[2].trim()
+    score: Math.max(1, Math.min(parseInt(scoreMatch[1], 10), 100)),
+    summary: summaryMatch[1].trim().replace(/^[-*•\s]+/, '')
   };
 };

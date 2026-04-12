@@ -22,6 +22,18 @@ import {
   applyTaskPrioritization,
   parseInboxScoreSummary
 } from './utils/dataParsers.mjs';
+import {
+  canReplyToInboxEmail,
+  createComposerResetState,
+  buildComposerStateFromInboxEmail,
+  buildHandledInboxEmailUpdate,
+  getInboxReplyMetadata,
+  formatCompanyFromEmail,
+  buildHeuristicInboxInsight,
+  createFollowUpTaskFromInboxEmail,
+  selectUrgentInboxEmails,
+  selectLowPriorityInboxEmails
+} from './utils/inboxWorkflow.mjs';
 
 // Firebase Initialization
 const parseRuntimeJson = (value, fallback = {}) => {
@@ -99,17 +111,6 @@ const DEFAULT_TASKS = [];
 
 const DEFAULT_INBOX_EMAILS = [];
 
-const formatCompanyFromEmail = (email = '') => {
-  const domain = String(email).split('@')[1] || '';
-  const root = domain.split('.')[0] || '';
-  if (!root) return 'Unknown';
-  return root
-    .split(/[-_]/g)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
-};
-
 const normalizeInboxDate = (value) => {
   const date = new Date(value || Date.now());
   if (Number.isNaN(date.getTime())) {
@@ -117,6 +118,18 @@ const normalizeInboxDate = (value) => {
     return { raw: fallback.toISOString(), label: fallback.toLocaleDateString() };
   }
   return { raw: date.toISOString(), label: date.toLocaleDateString() };
+};
+
+const getInboxSourceBadgeClasses = (source = '') => {
+  if (source === 'imap') {
+    return 'bg-emerald-100 border-emerald-200 text-emerald-800 dark:bg-emerald-900/30 dark:border-emerald-800 dark:text-emerald-300';
+  }
+
+  if (source === 'hubspot') {
+    return 'bg-blue-100 border-blue-200 text-blue-800 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300';
+  }
+
+  return 'bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300';
 };
 
 const inboxFingerprint = (email = {}) => {
@@ -308,6 +321,9 @@ export default function App() {
   
   // CRM Modals
   const [selectedContact, setSelectedContact] = useState(null);
+  const [selectedInboxEmail, setSelectedInboxEmail] = useState(null);
+  const [urgentInboxQueueIds, setUrgentInboxQueueIds] = useState([]);
+  const [archiveSelectedInboxAfterSend, setArchiveSelectedInboxAfterSend] = useState(false);
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
   const [editingContact, setEditingContact] = useState(null);
   const [contactToDelete, setContactToDelete] = useState(null);
@@ -510,6 +526,40 @@ export default function App() {
   }, [config.defaultTone, config.defaultLength]);
 
   useEffect(() => {
+    if (!selectedInboxEmail?.id) return;
+
+    const updatedEmail = inboxEmails.find((email) => email.id === selectedInboxEmail.id);
+    if (!updatedEmail) {
+      setSelectedInboxEmail(null);
+      return;
+    }
+
+    if (updatedEmail !== selectedInboxEmail) {
+      setSelectedInboxEmail(updatedEmail);
+    }
+  }, [inboxEmails, selectedInboxEmail]);
+
+  useEffect(() => {
+    if (urgentInboxQueueIds.length === 0) return;
+
+    const nextQueueIds = urgentInboxQueueIds.filter((id) => inboxEmails.some((email) => email.id === id && !email.isArchived && email.needsResponse !== false));
+    if (nextQueueIds.length !== urgentInboxQueueIds.length) {
+      setUrgentInboxQueueIds(nextQueueIds);
+    }
+  }, [inboxEmails, urgentInboxQueueIds]);
+
+  useEffect(() => {
+    if (!selectedInboxEmail?.id || urgentInboxQueueIds.length === 0) return;
+    if (!urgentInboxQueueIds.includes(selectedInboxEmail.id)) {
+      setUrgentInboxQueueIds([]);
+    }
+  }, [selectedInboxEmail, urgentInboxQueueIds]);
+
+  useEffect(() => {
+    setArchiveSelectedInboxAfterSend(false);
+  }, [selectedInboxEmail?.id]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, isDarkMode ? 'dark' : 'light');
@@ -600,7 +650,7 @@ export default function App() {
       setTasks(dataset.tasks);
     }
     if (Array.isArray(dataset.inboxEmails)) {
-      setInboxEmails(dataset.inboxEmails);
+      setInboxEmails(mergeInboxEmails([], dataset.inboxEmails));
     }
   };
 
@@ -856,6 +906,14 @@ export default function App() {
     return emails;
   }, [inboxEmails, inboxFilter, inboxSearch]);
 
+  const actionableInboxEmails = useMemo(() => inboxEmails.filter((email) => !email.isArchived && email.needsResponse !== false), [inboxEmails]);
+  const urgentInboxCandidates = useMemo(() => selectUrgentInboxEmails(inboxEmails, { limit: 3, minScore: 70 }), [inboxEmails]);
+  const lowPriorityInboxCandidates = useMemo(() => selectLowPriorityInboxEmails(inboxEmails, { maxScore: 40 }), [inboxEmails]);
+  const unscoredActionableInboxCount = useMemo(
+    () => actionableInboxEmails.filter((email) => email.aiScore == null || !String(email.aiSummary || '').trim()).length,
+    [actionableInboxEmails]
+  );
+
   const filteredContacts = useMemo(() => {
     if (contactStageFilter === 'all') return contacts;
     return contacts.filter(c => (c.stage || 'Lead') === contactStageFilter);
@@ -978,6 +1036,61 @@ export default function App() {
     } else {
       setComposerState(prev => ({ ...prev, body: prev.body + tag }));
     }
+  };
+
+  const getComposerResetState = () => createComposerResetState({
+    defaultTone: config.defaultTone,
+    defaultLength: config.defaultLength
+  });
+
+  const clearWorkspace = () => {
+    if (activeAIRequestRef.current) {
+      activeAIRequestRef.current.abort();
+    }
+    setComposerState(getComposerResetState());
+    setComposerErrors({});
+    setInboxFilter('all');
+    setInboxSearch('');
+    setSelectedInboxEmail(null);
+    setUrgentInboxQueueIds([]);
+    setArchiveSelectedInboxAfterSend(false);
+    showNotification('Workspace cleared and composer reset.', 'success');
+  };
+
+  const selectInboxEmailForOutreach = (email, options = {}) => {
+    const { quiet = false } = options;
+    if (!email) return;
+    if (!canReplyToInboxEmail(email)) {
+      showNotification('This email does not include a valid sender address to reply to.', 'error');
+      return;
+    }
+    const replyMetadata = getInboxReplyMetadata(email);
+    setComposerState(buildComposerStateFromInboxEmail({
+      email,
+      defaultTone: config.defaultTone,
+      defaultLength: config.defaultLength,
+      aiContext: `Drafting reply to the selected inbox email from ${replyMetadata.recipientName}.`
+    }));
+    setSelectedInboxEmail(email);
+    setActiveTab('outreach');
+    if (!quiet) {
+      showNotification('Selected inbox email loaded into AI Outreach.', 'success');
+    }
+  };
+
+  const openSelectedInboxEmailInInbox = () => {
+    if (!selectedInboxEmail) return;
+    setInboxFilter(selectedInboxEmail.isArchived ? 'archived' : 'all');
+    setInboxSearch(selectedInboxEmail.subject || selectedInboxEmail.fromEmail || selectedInboxEmail.fromName || '');
+    setActiveTab('inbox');
+  };
+
+  const changeInboxSource = () => {
+    setUrgentInboxQueueIds([]);
+    setInboxFilter('all');
+    setInboxSearch('');
+    setActiveTab('inbox');
+    showNotification('Choose a different email from Smart Inbox.', 'success');
   };
 
   const clearSavedPreferences = () => {
@@ -1217,6 +1330,203 @@ export default function App() {
     }
 
     setInboxEmails(prev => prev.map(e => e.id === emailId ? { ...e, needsResponse: nextNeedsResponse } : e));
+  };
+
+  const setInboxEmailInsight = (emailId, update) => {
+    setInboxEmails(prev =>
+      prev.map(e => (e.id === emailId ? { ...e, ...update } : e))
+    );
+  };
+
+  const analyzeInboxEmailInsight = async (email, options = {}) => {
+    if (!email) {
+      throw new Error('No inbox email selected for analysis.');
+    }
+
+    const useHeuristicFallback = IS_LOCAL_DEV_MODE && !getApiBaseUrl() && !(config.geminiKey || '').trim();
+    if (useHeuristicFallback) {
+      return buildHeuristicInboxInsight(email);
+    }
+
+    const prompt = `You are an elite Virtual Sales Director who understands marketing, advertising, sales, and buyer psychology.\nAnalyze this inbound email and identify the prospect's likely mindset, buying trigger, and the best follow-up approach.\nReturn exactly in this format: Score: [number] || Summary: [one sentence sales insight]\nEmail:\nFrom: ${email.fromName}\nCompany: ${email.company}\nSubject: ${email.subject}\nBody:\n${email.body}\nCRITICAL: NO EMOJIS. RETURN ONLY ONE LINE WITH THE FORMAT ABOVE.`;
+    const result = await callGeminiAPI(prompt, options);
+    const parsed = parseInboxScoreSummary(result);
+
+    if (parsed) {
+      return parsed;
+    }
+
+    return buildHeuristicInboxInsight(email);
+  };
+
+  const addFollowUpTaskFromInboxEmail = (email) => {
+    if (!email) return null;
+
+    const task = createFollowUpTaskFromInboxEmail(email);
+    setTasks(prev => [task, ...prev]);
+    return task;
+  };
+
+  const createTasksFromHottestInboxEmails = () => {
+    if (urgentInboxCandidates.length === 0) {
+      showNotification('No scored urgent inbox emails are ready for task creation yet.', 'error');
+      return;
+    }
+
+    const existingSourceInboxIds = new Set(tasks.map((task) => task.sourceInboxId).filter(Boolean));
+    const newTasks = urgentInboxCandidates
+      .filter((email) => !existingSourceInboxIds.has(email.id))
+      .map((email) => createFollowUpTaskFromInboxEmail(email, {
+        priority: Math.max(70, Math.min(Number(email.aiScore || 70), 100)),
+        offsetDays: Number(email.aiScore || 0) >= 90 ? 1 : 3
+      }));
+
+    if (newTasks.length === 0) {
+      showNotification('Follow-up tasks already exist for the current hottest inbox leads.', 'success');
+      return;
+    }
+
+    setTasks(prev => [...newTasks, ...prev]);
+    showNotification(`Created ${newTasks.length} follow-up task${newTasks.length === 1 ? '' : 's'} from the hottest inbox leads.`);
+  };
+
+  const openTopUrgentInboxReplies = () => {
+    if (urgentInboxCandidates.length === 0) {
+      showNotification('No urgent scored inbox emails are ready for Outreach yet.', 'error');
+      return;
+    }
+
+    setUrgentInboxQueueIds(urgentInboxCandidates.map((email) => email.id));
+    selectInboxEmailForOutreach(urgentInboxCandidates[0], { quiet: true });
+    showNotification(`Loaded ${urgentInboxCandidates.length} urgent inbox repl${urgentInboxCandidates.length === 1 ? 'y' : 'ies'} into Outreach.`);
+  };
+
+  const openNextUrgentInboxReply = () => {
+    if (urgentInboxQueueIds.length === 0) {
+      showNotification('No urgent reply queue is active right now.', 'error');
+      return;
+    }
+
+    const currentIndex = selectedInboxEmail ? urgentInboxQueueIds.indexOf(selectedInboxEmail.id) : -1;
+    const nextId = urgentInboxQueueIds.slice(currentIndex + 1).find((id) => inboxEmails.some((email) => email.id === id && !email.isArchived && email.needsResponse !== false));
+
+    if (!nextId) {
+      setUrgentInboxQueueIds([]);
+      showNotification('Urgent reply queue complete.', 'success');
+      return;
+    }
+
+    const nextEmail = inboxEmails.find((email) => email.id === nextId);
+    if (!nextEmail) {
+      setUrgentInboxQueueIds([]);
+      showNotification('Urgent reply queue could not find the next email.', 'error');
+      return;
+    }
+
+    selectInboxEmailForOutreach(nextEmail, { quiet: true });
+    const nextPosition = urgentInboxQueueIds.indexOf(nextId) + 1;
+    showNotification(`Loaded urgent reply ${nextPosition} of ${urgentInboxQueueIds.length}.`);
+  };
+
+  const markLowPriorityInboxHandled = async () => {
+    if (lowPriorityInboxCandidates.length === 0) {
+      showNotification('No low-priority inbox emails are ready to clear.', 'success');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      let handledCount = 0;
+      let failedCount = 0;
+
+      for (const email of lowPriorityInboxCandidates) {
+        try {
+          await markInboxEmailHandled(email, { updateSelection: false });
+          handledCount += 1;
+        } catch {
+          failedCount += 1;
+        }
+      }
+
+      if (handledCount === 0) {
+        throw new Error('No low-priority inbox emails could be marked handled.');
+      }
+
+      showNotification(
+        failedCount > 0
+          ? `Marked ${handledCount} low-priority email${handledCount === 1 ? '' : 's'} handled. ${failedCount} email${failedCount === 1 ? '' : 's'} could not be updated.`
+          : `Marked ${handledCount} low-priority email${handledCount === 1 ? '' : 's'} handled.`
+      );
+    } catch (error) {
+      showNotification(error.message || 'Failed to clear low-priority inbox emails.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const markInboxEmailHandled = async (email, options = {}) => {
+    if (!email) return null;
+
+    const { archiveOriginal = false, updateSelection = true } = options;
+    let resultingFolder = email.folder;
+
+    if (shouldSyncImapFlags(email)) {
+      if (!email.isRead) {
+        await syncImapMessageState(email, 'setRead', true);
+      }
+
+      if (email.needsResponse) {
+        await syncImapMessageState(email, 'setFlagged', false);
+      }
+
+      if (archiveOriginal && !email.isArchived) {
+        const syncResult = await syncImapMessageState(email, 'setArchived', true);
+        if (syncResult?.folder) {
+          resultingFolder = syncResult.folder;
+        }
+      }
+    }
+
+    const updatedEmail = buildHandledInboxEmailUpdate(email, {
+      archiveOriginal,
+      resultingFolder
+    });
+
+    setInboxEmails(prev => prev.map((item) => (item.id === email.id ? updatedEmail : item)));
+    if (updateSelection) {
+      setSelectedInboxEmail(updatedEmail);
+    }
+    return updatedEmail;
+  };
+
+  const prepareComposerFromInboxEmail = (email) => {
+    if (!email) return;
+    if (!canReplyToInboxEmail(email)) {
+      showNotification('This email does not include a valid sender address to reply to.', 'error');
+      return;
+    }
+    setComposerState(buildComposerStateFromInboxEmail({
+      email,
+      defaultTone: config.defaultTone,
+      defaultLength: config.defaultLength,
+      aiContext: `Use the email below to craft a high-conversion sales reply. Focus on the prospect's intent, match their tone, and use marketing and psychological triggers to make the response feel urgent and relevant.`
+    }));
+    setSelectedInboxEmail(email);
+    setActiveTab('outreach');
+  };
+
+  const handleAnalyzeInboxEmail = async (email) => {
+    if (!email) return;
+    setLoading(true);
+    try {
+      const parsed = await analyzeInboxEmailInsight(email);
+      setInboxEmailInsight(email.id, { aiScore: parsed.score, aiSummary: parsed.summary });
+      showNotification('AI inbox insight added.');
+    } catch (error) {
+      showNotification(error.message || 'Failed to analyze inbox email.', 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const normalizeSyncedInboxEmails = (emails = [], source = 'manual') => {
@@ -1875,29 +2185,107 @@ export default function App() {
             ? '3-Step Sequence generated. Use the step loader buttons to copy one email at a time.'
             : '3-Step Sequence generated successfully'
         );
+      } else if (actionType === 'replyFromInbox') {
+        const inboxEmail = options?.inboxEmail;
+        if (!inboxEmail) {
+          showNotification('No inbox email selected for AI Outreach.', 'error');
+          setLoading(false);
+          return;
+        }
+        if (!canReplyToInboxEmail(inboxEmail)) {
+          showNotification('This email does not include a valid sender address to reply to.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const replyMetadata = getInboxReplyMetadata(inboxEmail);
+        const recipientName = replyMetadata.recipientName;
+        const companyName = replyMetadata.companyName;
+        const to = replyMetadata.to;
+        const subject = replyMetadata.subject;
+        const threadHistory = replyMetadata.threadHistory;
+
+        prompt = `Act as an elite Virtual Sales Director and expert growth marketer. Write a highly personalized response to this inbound email that uses persuasive sales psychology, urgency, and a strong value framing. Do not sound generic.
+Target Prospect: ${recipientName} at ${companyName}
+Prospect Email: ${to}
+Original Email Subject: ${inboxEmail.subject}
+Original Email Body:
+${inboxEmail.body}
+
+Output rules:
+1) Return the subject line first as "Subject: [subject text]".
+2) Return only the email body after that, with no signature.
+3) No emojis.
+4) Keep it professional, concise, and focused on the next step.
+5) Include a brief reason why this response matters in the subject if appropriate.`;
+
+        const resultReply = await callGeminiAPI(prompt);
+        const subjectMatch = resultReply.match(/Subject:\s*(.*)\n/i);
+        let generatedSubject = subject;
+        let generatedBody = resultReply;
+        if (subjectMatch) {
+          generatedSubject = subjectMatch[1].trim();
+          generatedBody = resultReply.replace(subjectMatch[0], '').trim();
+        }
+        if (config.signature && !generatedBody.includes(config.signature.substring(0, 10))) {
+          generatedBody = `${generatedBody}\n\n${config.signature}`;
+        }
+
+        setComposerState(buildComposerStateFromInboxEmail({
+          email: inboxEmail,
+          defaultTone: config.defaultTone,
+          defaultLength: config.defaultLength,
+          subjectOverride: generatedSubject,
+          body: generatedBody,
+          aiContext: `This reply was generated from the selected Smart Inbox email. Use it as the draft for follow-up.`
+        }));
+        setSelectedInboxEmail(inboxEmail);
+        setActiveTab('outreach');
+        showNotification('AI Outreach reply generated from inbox email.');
+
       } else if (actionType === 'analyzeInbox') {
-        const updatedInbox = [...inboxEmails];
-        for (let i = 0; i < updatedInbox.length; i++) {
-          if (updatedInbox[i].needsResponse && updatedInbox[i].aiScore === null) {
-            prompt = `Analyze this sales email from a prospect:
-            From: ${updatedInbox[i].fromName}
-            Subject: ${updatedInbox[i].subject}
-            Body: ${updatedInbox[i].body}
-            
-            Provide a score (1-100, 100 being hottest lead) and a 1-sentence summary.
-            Return EXACTLY in this format: Score: [number] || Summary: [text]
-            CRITICAL: NO EMOJIS.`;
-            
-            const result = await callGeminiAPI(prompt);
-            const parsed = parseInboxScoreSummary(result);
-            if (parsed) {
-              updatedInbox[i].aiScore = parsed.score;
-              updatedInbox[i].aiSummary = parsed.summary;
-            }
+        const emailsToAnalyze = inboxEmails.filter((email) => (
+          !email.isArchived &&
+          email.needsResponse !== false &&
+          (email.aiScore == null || !String(email.aiSummary || '').trim())
+        ));
+
+        if (emailsToAnalyze.length === 0) {
+          showNotification('Inbox is already scored or has no response-worthy emails right now.', 'success');
+          setLoading(false);
+          return;
+        }
+
+        const updates = new Map();
+        let analyzedCount = 0;
+        let failedCount = 0;
+
+        for (const email of emailsToAnalyze) {
+          try {
+            const parsed = await analyzeInboxEmailInsight(email, { abortPrevious: false });
+            updates.set(email.id, parsed);
+            analyzedCount += 1;
+          } catch {
+            failedCount += 1;
           }
         }
-        setInboxEmails(updatedInbox);
-        showNotification("Inbox successfully analyzed and scored.");
+
+        if (updates.size > 0) {
+          setInboxEmails(prev => prev.map((email) => {
+            const parsed = updates.get(email.id);
+            return parsed ? { ...email, aiScore: parsed.score, aiSummary: parsed.summary } : email;
+          }));
+        }
+
+        if (analyzedCount === 0) {
+          throw new Error('Inbox analysis failed for every email in the current queue.');
+        }
+
+        showNotification(
+          failedCount > 0
+            ? `Inbox analysis completed for ${analyzedCount} email${analyzedCount === 1 ? '' : 's'}. ${failedCount} email${failedCount === 1 ? '' : 's'} could not be scored.`
+            : `Inbox successfully analyzed and scored for ${analyzedCount} email${analyzedCount === 1 ? '' : 's'}.`
+        );
 
       } else if (actionType === 'researchContact') {
         const contact = options?.contact;
@@ -1978,7 +2366,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       }
 
     } catch (err) {
-      showNotification(err.message || "An error occurred during AI generation", "error");
+      if (err?.message !== 'AI request cancelled.') {
+        showNotification(err.message || "An error occurred during AI generation", "error");
+      }
     } finally {
       setLoading(false);
     }
@@ -2105,8 +2495,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
     })();
   };
 
-  const handleSendEmail = async () => {
+  const handleSendEmail = async (optionsOrEvent = {}) => {
+    const sendOptions = optionsOrEvent?.nativeEvent ? {} : optionsOrEvent;
+    const { markHandled = false, archiveOriginal = false, createFollowUpTask = false } = sendOptions;
     const recipientEmail = normalizeEmail(composerState.to || '');
+    const selectedInboxMatchesRecipient = selectedInboxEmail
+      ? normalizeEmail(selectedInboxEmail.fromEmail || '') === recipientEmail
+      : false;
 
     if (composerErrors.to) {
       showNotification(composerErrors.to, 'error');
@@ -2120,10 +2515,16 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       showNotification("Please enter a valid recipient email address.", "error");
       return;
     }
+    if ((markHandled || createFollowUpTask) && (!selectedInboxEmail || !selectedInboxMatchesRecipient)) {
+      showNotification('The current draft no longer matches the selected inbox email. Open the source again before marking it handled.', 'error');
+      return;
+    }
     if (!user) return;
 
     setLoading(true);
     try {
+      const notificationParts = ['Email sent and thread saved.'];
+      const partialIssues = [];
       const newMessage = {
         date: new Date().toISOString(),
         subject: composerState.subject,
@@ -2170,12 +2571,31 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               ]
             }
           });
-          showNotification("Email sent, saved, and logged in HubSpot!");
+          notificationParts.push('Logged in HubSpot.');
         } catch {
-          showNotification("Saved locally, but failed to log to HubSpot", "error");
+          partialIssues.push('Failed to log in HubSpot.');
         }
-      } else {
-        showNotification(`Email sent successfully and thread saved!`);
+      }
+
+      if (markHandled && selectedInboxEmail) {
+        try {
+          const handledEmail = await markInboxEmailHandled(selectedInboxEmail, { archiveOriginal });
+          if (archiveOriginal && handledEmail && !selectedInboxEmail.isArchived) {
+            notificationParts.push('Source email marked handled and archived.');
+          } else {
+            notificationParts.push('Source email marked handled.');
+          }
+          setArchiveSelectedInboxAfterSend(false);
+        } catch (error) {
+          partialIssues.push(error.message || 'Failed to mark the source email handled.');
+        }
+      }
+
+      if (createFollowUpTask && selectedInboxEmail) {
+        const followUpTask = addFollowUpTaskFromInboxEmail(selectedInboxEmail);
+        if (followUpTask) {
+          notificationParts.push('Created follow-up task.');
+        }
       }
       
       const historyString = [...existingThread, newMessage]
@@ -2186,12 +2606,28 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         ...prev, body: '', subject: '', threadHistory: historyString, sequenceSteps: []
       }));
       try { window.localStorage.removeItem('salesdirector.draft.v1'); } catch { /* ignore */ }
+
+      showNotification(
+        [...notificationParts, ...partialIssues].join(' '),
+        partialIssues.length > 0 ? 'error' : 'success'
+      );
     } catch (err) {
       showNotification("Error saving thread to database.", "error");
     } finally {
       setLoading(false);
     }
   };
+
+  const selectedInboxMatchesComposer = selectedInboxEmail
+    ? normalizeEmail(composerState.to || '') === normalizeEmail(selectedInboxEmail.fromEmail || '')
+    : false;
+  const currentUrgentQueueIndex = selectedInboxEmail ? urgentInboxQueueIds.indexOf(selectedInboxEmail.id) : -1;
+  const urgentQueueLabel = currentUrgentQueueIndex >= 0 ? `${currentUrgentQueueIndex + 1}/${urgentInboxQueueIds.length}` : '';
+  const hasMoreUrgentReplies = currentUrgentQueueIndex >= 0 && currentUrgentQueueIndex < urgentInboxQueueIds.length - 1;
+  const selectedInboxStatusLabel = selectedInboxEmail
+    ? (selectedInboxEmail.needsResponse ? 'Needs Response' : 'Handled')
+    : '';
+  const sendDisabled = loading || Boolean(composerErrors.to) || !normalizeEmail(composerState.to || '') || !composerState.body;
 
   // --- Views ---
 
@@ -2556,6 +2992,57 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
       </div>
 
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-gradient-to-r from-amber-50 via-white to-zinc-50 dark:from-zinc-950 dark:via-zinc-900 dark:to-zinc-950 p-4 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-black dark:text-white">Bulk Triage</h3>
+            <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400 max-w-2xl">
+              Work the hottest replies first, convert the best opportunities into follow-up tasks, and clear low-priority noise without losing context.
+            </p>
+            <div className="mt-3 flex items-center gap-2 flex-wrap text-[11px]">
+              <span className="px-2.5 py-1 rounded-full border bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-800 dark:text-rose-300 font-bold">
+                Hot Leads: {urgentInboxCandidates.length}
+              </span>
+              <span className="px-2.5 py-1 rounded-full border bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-800 dark:text-amber-300 font-bold">
+                Low Priority: {lowPriorityInboxCandidates.length}
+              </span>
+              <span className="px-2.5 py-1 rounded-full border bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300 font-bold">
+                Unscored: {unscoredActionableInboxCount}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap lg:justify-end">
+            <button
+              onClick={openTopUrgentInboxReplies}
+              disabled={loading || urgentInboxCandidates.length === 0}
+              className="flex items-center bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+              title="Open the top urgent replies in Outreach queue"
+            >
+              <Zap className="w-4 h-4 mr-2" />
+              Open Top 3 Urgent
+            </button>
+            <button
+              onClick={createTasksFromHottestInboxEmails}
+              disabled={loading || urgentInboxCandidates.length === 0}
+              className="flex items-center bg-amber-500 text-black px-4 py-2 rounded-lg hover:bg-amber-400 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+              title="Create follow-up tasks from the hottest scored inbox leads"
+            >
+              <CalendarDays className="w-4 h-4 mr-2" />
+              Create Tasks From Hottest
+            </button>
+            <button
+              onClick={markLowPriorityInboxHandled}
+              disabled={loading || lowPriorityInboxCandidates.length === 0}
+              className="flex items-center bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-800 dark:text-zinc-100 px-4 py-2 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+              title="Mark low-score inbox emails handled so the team can focus on real opportunities"
+            >
+              <CheckCircle className="w-4 h-4 mr-2" />
+              Mark Low-Score Handled
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* Inbox Search & Filters */}
       <div className="flex flex-col md:flex-row gap-4">
         <div className="relative flex-1">
@@ -2595,13 +3082,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <div className="flex items-center gap-2">
                     {!email.isRead && <span className="w-2 h-2 bg-rose-900 dark:bg-rose-500 rounded-full flex-shrink-0"></span>}
                     <h4 className="text-sm font-bold text-black dark:text-white truncate">{email.fromName} <span className="text-zinc-500 font-normal">({email.company})</span></h4>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wide ${
-                      email.source === 'imap'
-                        ? 'bg-emerald-100 border-emerald-200 text-emerald-800 dark:bg-emerald-900/30 dark:border-emerald-800 dark:text-emerald-300'
-                        : email.source === 'hubspot'
-                          ? 'bg-blue-100 border-blue-200 text-blue-800 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300'
-                          : 'bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300'
-                    }`}>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wide ${getInboxSourceBadgeClasses(email.source)}`}>
                       {email.source || 'manual'}
                     </span>
                   </div>
@@ -2630,26 +3111,30 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               )}
 
               <div className="flex items-center gap-2 flex-wrap">
-                {email.needsResponse && (
-                  <button 
-                    onClick={() => {
-                      const historyString = `[${email.date}] ${email.fromName} wrote:\nSubject: ${email.subject}\n${email.body}`;
-                      setComposerState(prev => ({ 
-                        ...prev, 
-                        to: email.fromEmail,
-                        recipientName: email.fromName,
-                        companyName: email.company,
-                        subject: email.subject.startsWith('Re:') ? email.subject : `Re: ${email.subject}`,
-                        threadHistory: historyString,
-                        sequenceSteps: []
-                      }));
-                      setActiveTab('outreach');
-                    }}
-                    className="text-xs bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition"
-                  >
-                    Draft Reply
-                  </button>
-                )}
+                    <button 
+                      onClick={() => prepareComposerFromInboxEmail(email)}
+                      disabled={!canReplyToInboxEmail(email)}
+                      className="text-xs bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50"
+                      title={canReplyToInboxEmail(email) ? 'Load this email into Outreach' : 'This email does not include a valid sender address'}
+                    >
+                      Use in Outreach
+                    </button>
+                    <button
+                      onClick={() => handleAIAction('replyFromInbox', { inboxEmail: email })}
+                      disabled={loading || !canReplyToInboxEmail(email)}
+                      className="text-xs bg-rose-900 text-white px-4 py-2 rounded font-bold hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50"
+                      title={canReplyToInboxEmail(email) ? 'Generate an AI reply for this email and open it in Outreach' : 'This email does not include a valid sender address'}
+                    >
+                      AI Reply
+                    </button>
+                    <button
+                      onClick={() => handleAnalyzeInboxEmail(email)}
+                      disabled={loading}
+                      className="text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-4 py-2 rounded font-medium hover:bg-zinc-200 dark:hover:bg-zinc-700 transition"
+                      title="Analyze this email with sales and marketing psychology"
+                    >
+                      AI Insight
+                    </button>
                 <button
                   onClick={() => toggleInboxRead(email.id)}
                   className="text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-3 py-2 rounded font-medium hover:bg-zinc-200 dark:hover:bg-zinc-700 transition flex items-center"
@@ -2805,34 +3290,71 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
         
         <div className="p-4 flex-1 space-y-6">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-2">Tone</label>
-              <select 
-                name="tone"
-                value={composerState.tone}
-                onChange={handleComposerChange}
+          <div className="space-y-4">
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 p-4">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">Inbox Email Selector</span>
+                <button
+                  type="button"
+                  onClick={clearWorkspace}
+                  className="text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-3 py-2 rounded-lg font-bold hover:bg-zinc-200 dark:hover:bg-zinc-700 transition"
+                >
+                  Clear Workspace
+                </button>
+              </div>
+              <select
+                value={selectedInboxEmail?.id || ''}
+                onChange={(e) => {
+                  const email = inboxEmails.find(item => item.id === e.target.value);
+                  if (email) selectInboxEmailForOutreach(email);
+                }}
                 className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
               >
-                <option value="Professional">Professional</option>
-                <option value="Persuasive">Persuasive</option>
-                <option value="Friendly">Friendly</option>
-                <option value="Direct">Direct & Urgent</option>
-                <option value="Consultative">Consultative</option>
+                <option value="">Choose a recent inbox email...</option>
+                {inboxEmails.filter(item => !item.isArchived && canReplyToInboxEmail(item)).slice(0, 8).map((email) => (
+                  <option key={email.id} value={email.id}>
+                    {`${email.fromName || email.fromEmail} — ${email.subject}`.slice(0, 80)}
+                  </option>
+                ))}
               </select>
+              {selectedInboxEmail && (
+                <div className="mt-3 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 p-3 text-xs text-zinc-800 dark:text-zinc-200">
+                  <div className="font-semibold truncate">{selectedInboxEmail.fromName || selectedInboxEmail.fromEmail}</div>
+                  <div className="truncate">{selectedInboxEmail.subject}</div>
+                  <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">{selectedInboxEmail.date}</div>
+                </div>
+              )}
             </div>
-            <div>
-              <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-2">Length</label>
-              <select 
-                name="length"
-                value={composerState.length}
-                onChange={handleComposerChange}
-                className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
-              >
-                <option value="Concise">Concise (Short)</option>
-                <option value="Standard">Standard</option>
-                <option value="Detailed">Detailed</option>
-              </select>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-2">Tone</label>
+                <select 
+                  name="tone"
+                  value={composerState.tone}
+                  onChange={handleComposerChange}
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                >
+                  <option value="Professional">Professional</option>
+                  <option value="Persuasive">Persuasive</option>
+                  <option value="Friendly">Friendly</option>
+                  <option value="Direct">Direct & Urgent</option>
+                  <option value="Consultative">Consultative</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-2">Length</label>
+                <select 
+                  name="length"
+                  value={composerState.length}
+                  onChange={handleComposerChange}
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                >
+                  <option value="Concise">Concise (Short)</option>
+                  <option value="Standard">Standard</option>
+                  <option value="Detailed">Detailed</option>
+                </select>
+              </div>
             </div>
           </div>
 
@@ -2917,6 +3439,83 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       <div className="w-2/3 flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors">
         <div className="p-6 flex-1 flex flex-col">
           <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 flex flex-col h-full overflow-hidden transition-colors">
+            {selectedInboxEmail && (
+              <div className="border-b border-zinc-200 dark:border-zinc-800 bg-amber-50/70 dark:bg-amber-950/20 px-4 py-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-amber-900 dark:text-amber-300">Working From</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wide ${getInboxSourceBadgeClasses(selectedInboxEmail.source)}`}>
+                        {selectedInboxEmail.source || 'manual'}
+                      </span>
+                      {urgentQueueLabel && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wide bg-black text-white border-black dark:bg-white dark:text-black dark:border-white">
+                          Queue {urgentQueueLabel}
+                        </span>
+                      )}
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wide ${selectedInboxEmail.needsResponse ? 'bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-800 dark:text-amber-300' : 'bg-emerald-100 border-emerald-200 text-emerald-900 dark:bg-emerald-900/30 dark:border-emerald-800 dark:text-emerald-300'}`}>
+                        {selectedInboxStatusLabel}
+                      </span>
+                      {selectedInboxEmail.isArchived && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wide bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300">
+                          Archived
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-2 text-sm font-bold text-black dark:text-white truncate">{selectedInboxEmail.subject}</p>
+                    <p className="mt-1 text-xs text-zinc-700 dark:text-zinc-300 truncate">
+                      Reply target: {selectedInboxEmail.fromName || selectedInboxEmail.fromEmail}
+                      {selectedInboxEmail.fromEmail ? ` <${selectedInboxEmail.fromEmail}>` : ''}
+                    </p>
+                    <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                      {selectedInboxEmail.date} · {selectedInboxEmail.company || formatCompanyFromEmail(selectedInboxEmail.fromEmail)}
+                    </p>
+                    {!selectedInboxMatchesComposer && (
+                      <p className="mt-2 text-xs text-rose-700 dark:text-rose-400">
+                        The current recipient no longer matches the selected inbox source. Open the source again before using Send & Mark Handled.
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {urgentQueueLabel && (
+                      <button
+                        type="button"
+                        onClick={openNextUrgentInboxReply}
+                        className="text-xs bg-amber-500 text-black px-3 py-2 rounded-lg font-bold hover:bg-amber-400 transition flex items-center"
+                      >
+                        <ChevronRight className="w-3 h-3 mr-1" />
+                        {hasMoreUrgentReplies ? 'Next Urgent Reply' : 'Finish Queue'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={changeInboxSource}
+                      className="text-xs bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 px-3 py-2 rounded-lg font-bold hover:bg-zinc-50 dark:hover:bg-zinc-800 transition flex items-center"
+                    >
+                      <RotateCcw className="w-3 h-3 mr-1" />
+                      Change Source
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openSelectedInboxEmailInInbox}
+                      className="text-xs bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 px-3 py-2 rounded-lg font-bold hover:bg-zinc-50 dark:hover:bg-zinc-800 transition flex items-center"
+                    >
+                      <Inbox className="w-3 h-3 mr-1" />
+                      Open Original
+                    </button>
+                  </div>
+                </div>
+                <label className="mt-3 flex items-center gap-2 text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={archiveSelectedInboxAfterSend}
+                    onChange={(e) => setArchiveSelectedInboxAfterSend(e.target.checked)}
+                    className="h-4 w-4 rounded border-zinc-300 text-rose-900 focus:ring-rose-900"
+                  />
+                  Archive original after send
+                </label>
+              </div>
+            )}
             
             {/* Headers & Personalization */}
             <div className="border-b border-zinc-200 dark:border-zinc-800">
@@ -3070,7 +3669,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             ></textarea>
 
             {/* Footer / Actions */}
-            <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 flex justify-between items-center transition-colors">
+            <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 flex justify-between items-center gap-3 flex-wrap transition-colors">
               <div className="flex items-center gap-4">
                 <div className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center font-bold">
                   <Server className="w-4 h-4 mr-1" />
@@ -3083,7 +3682,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   </div>
                 )}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button 
                   onClick={() => handleAIAction('preSendCheck')}
                   disabled={loading || !composerState.body}
@@ -3093,13 +3692,35 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <Shield className="w-4 h-4 mr-2" />
                   Pre-Send Check
                 </button>
+                {selectedInboxEmail && (
+                  <button
+                    onClick={() => handleSendEmail({ markHandled: true, archiveOriginal: archiveSelectedInboxAfterSend })}
+                    disabled={sendDisabled || !selectedInboxMatchesComposer}
+                    className="flex items-center bg-rose-900 text-white px-4 py-2 rounded-lg hover:bg-rose-800 transition font-bold text-sm disabled:opacity-50 shadow-sm"
+                    title={selectedInboxMatchesComposer ? 'Send this reply and mark the source email handled' : 'Re-open the source email before marking it handled'}
+                  >
+                    <CheckCircle className="w-4 h-4 mr-2" />
+                    Send & Mark Handled
+                  </button>
+                )}
+                {selectedInboxEmail && (
+                  <button
+                    onClick={() => handleSendEmail({ markHandled: true, archiveOriginal: archiveSelectedInboxAfterSend, createFollowUpTask: true })}
+                    disabled={sendDisabled || !selectedInboxMatchesComposer}
+                    className="flex items-center bg-amber-500 text-black px-4 py-2 rounded-lg hover:bg-amber-400 transition font-bold text-sm disabled:opacity-50 shadow-sm"
+                    title={selectedInboxMatchesComposer ? 'Send this reply, mark the source handled, and create a follow-up task' : 'Re-open the source email before using the follow-up workflow'}
+                  >
+                    <CalendarDays className="w-4 h-4 mr-2" />
+                    Send, Handle & Follow-Up
+                  </button>
+                )}
                 <button 
-                  onClick={handleSendEmail}
-                  disabled={loading || Boolean(composerErrors.to)}
-                  className="flex items-center bg-black dark:bg-white text-white dark:text-black px-6 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition font-bold disabled:opacity-50 shadow-sm"
+                  onClick={() => handleSendEmail()}
+                  disabled={sendDisabled}
+                  className={`flex items-center px-6 py-2 rounded-lg transition font-bold disabled:opacity-50 shadow-sm ${selectedInboxEmail ? 'bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm' : 'bg-black dark:bg-white text-white dark:text-black hover:bg-zinc-800 dark:hover:bg-zinc-200'}`}
                 >
                   <Send className="w-4 h-4 mr-2" />
-                  Send Email
+                  {selectedInboxEmail ? 'Send Only' : 'Send Email'}
                 </button>
               </div>
             </div>
