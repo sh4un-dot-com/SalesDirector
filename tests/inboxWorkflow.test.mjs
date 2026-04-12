@@ -4,10 +4,15 @@ import {
   canReplyToInboxEmail,
   createComposerResetState,
   buildComposerStateFromInboxEmail,
+  buildOutreachPlayContext,
   buildHandledInboxEmailUpdate,
+  getRecommendedOutreachStrategy,
   getInboxReplyMetadata,
   buildHeuristicInboxInsight,
   createFollowUpTaskFromInboxEmail,
+  createSequenceTasksFromSteps,
+  getSequenceCadenceById,
+  parseSequenceSteps,
   selectUrgentInboxEmails,
   selectLowPriorityInboxEmails
 } from '../utils/inboxWorkflow.mjs';
@@ -34,6 +39,9 @@ test('createComposerResetState uses provided defaults and clears workflow fields
   assert.equal(state.body, '');
   assert.equal(state.aiContext, '');
   assert.equal(state.objection, '');
+  assert.equal(state.selectedPlaybookId, '');
+  assert.equal(state.sequenceCadenceId, 'standard');
+  assert.equal(state.sequenceStepCount, 3);
   assert.deepEqual(state.sequenceSteps, []);
 });
 
@@ -137,4 +145,83 @@ test('selectLowPriorityInboxEmails returns actionable low-score emails', () => {
 
   const selected = selectLowPriorityInboxEmails(emails, { maxScore: 40 });
   assert.deepEqual(selected.map((email) => email.id), ['1']);
+});
+
+test('parseSequenceSteps supports structured delay and goal metadata', () => {
+  const parsed = parseSequenceSteps(`Step 1 - Initial Hook
+Delay: 0 days
+Goal: Open the conversation with a sharp value point.
+Subject: Quick idea for Acme
+Body: Jane, I noticed your team is hiring.
+
+Step 2 - Value Add
+Delay: 3 days
+Goal: Share proof and make the next step feel easy.
+Subject: Acme follow-up
+Body: Sharing a customer example here.`);
+
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].stepNumber, 1);
+  assert.equal(parsed[0].delayDays, 0);
+  assert.equal(parsed[0].goal, 'Open the conversation with a sharp value point.');
+  assert.equal(parsed[1].delayLabel, '3 days');
+  assert.equal(parsed[1].subject, 'Acme follow-up');
+});
+
+test('createSequenceTasksFromSteps creates dated follow-up tasks from parsed steps', () => {
+  const tasks = createSequenceTasksFromSteps([
+    { stepNumber: 1, stepTitle: 'Initial Hook', delayDays: 0, goal: 'Start the sequence.', subject: 'Hi', body: 'Hello there' },
+    { stepNumber: 2, stepTitle: 'Proof', delayDays: 4, goal: 'Add social proof.', subject: 'Case study', body: 'Sharing proof' },
+    { stepNumber: 3, stepTitle: 'Final Attempt', delayDays: 2, goal: 'Close the loop.', subject: 'Last try', body: 'Closing the loop' }
+  ], {
+    baseDateKey: '2026-04-12',
+    recipientName: 'Jane Doe',
+    companyName: 'Acme',
+    recipientEmail: 'jane@example.com',
+    owner: 'Shaun'
+  });
+
+  assert.equal(tasks.length, 3);
+  assert.equal(tasks[0].scheduledDate, '2026-04-12');
+  assert.equal(tasks[1].scheduledDate, '2026-04-16');
+  assert.equal(tasks[2].scheduledDate, '2026-04-18');
+  assert.equal(tasks[1].contactEmail, 'jane@example.com');
+  assert.match(tasks[1].notes, /Case study/);
+  assert.equal(tasks[2].recurrenceLabel, 'Step 3');
+});
+
+test('getRecommendedOutreachStrategy prefers proposal-close and reactivation when context demands it', () => {
+  assert.deepEqual(getRecommendedOutreachStrategy({ stage: 'Proposal' }), {
+    playbookId: 'proposal-close',
+    cadenceId: 'proposal-close'
+  });
+
+  assert.deepEqual(getRecommendedOutreachStrategy({ stage: 'Opportunity', isStale: true }), {
+    playbookId: 'reactivation',
+    cadenceId: 'reactivation'
+  });
+});
+
+test('getSequenceCadenceById returns the requested number of step delays', () => {
+  const cadence = getSequenceCadenceById('same-week', 4);
+  assert.equal(cadence.id, 'same-week');
+  assert.deepEqual(cadence.delays, [0, 2, 4, 7]);
+});
+
+test('buildOutreachPlayContext formats play, cadence, and relationship context for prompts', () => {
+  const context = buildOutreachPlayContext({
+    playbookId: 'opportunity-advance',
+    cadenceId: 'same-week',
+    stepCount: 4,
+    recipientName: 'Jane Doe',
+    companyName: 'Acme',
+    stage: 'Opportunity',
+    nextStep: 'Book the pricing review',
+    followUpAt: '2026-04-15'
+  });
+
+  assert.match(context, /OUTREACH PLAY: Advance Opportunity/);
+  assert.match(context, /Cadence: Same Week Push/);
+  assert.match(context, /Step 4: Day 7/);
+  assert.match(context, /Book the pricing review/);
 });

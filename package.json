@@ -11,6 +11,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
+    "build": "npm run dist:win",
     "build:web": "vite build",
     "preview": "vite preview",
     "test": "node --test",

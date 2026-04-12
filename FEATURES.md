@@ -38,11 +38,13 @@ Never wonder which email to answer first again.
 - **One-sentence AI summaries** — instant context without opening the email
 - **Filter tabs** — All, Unread, Needs Response, Archived — view exactly the slice you need
 - **Inline search** — search by sender, subject, or company across all inbox emails
+- **CRM-linked next best action panel** — every inbox row shows whether the rep should work the thread in Outreach, create a follow-up task, draft a proposal nudge, or review CRM first
+- **Review CRM draft flow** — when a sender is not in CRM yet, SalesDirector opens a reviewed contact draft instead of silently creating a partial record
 - **Mark Read / Unread** — toggle read status per email
 - **Flag for response** — mark or unmark emails as needing a response
 - **Archive** — archive emails to declutter without deleting
 - **Delete** — permanently remove emails from inbox
-- **Draft Reply** quick action — jump straight to the composer with context pre-loaded
+- **Use in Outreach / AI Reply / Add Task** quick actions — jump straight to the right workspace with CRM and inbox context pre-loaded
 - **Bulk inbox analysis** — score and summarize your entire inbox in one click
 - **Email preview** — sender, subject, body snippet visible inline
 
@@ -58,6 +60,7 @@ Your AI sales assistant builds your daily schedule.
 - **Smart scheduling** — suggests time blocks with written rationale for each task
 - **Mini calendar widget** — monthly view with date selection
 - **Daily timeline** — hourly breakdown of your scheduled day
+- **Minimum schedule buffer** — blocks or warns on timed tasks that leave too little prep/travel/follow-up space between bookings
 - **Contact & company association** — every task linked to a CRM record
 - **One-click "Execute"** — jump from task to composer with contact context loaded
 - **Task completion toggle** and deletion
@@ -72,10 +75,13 @@ Your single source of truth for every prospect and customer.
 
 ### Contact Management
 - **Sortable contact table** — Name, Title/Company, Contact Info, Stage, Actions
-- **Stage filter bar** — filter contacts by stage: All, Lead, Contact, Opportunity, Customer, Cold, Warm, Hot — with live result count
-- **Contact stages** — Lead → Opportunity → Customer → Churned
+- **Stage filter bar** — filter contacts by stage: All, Lead, Contact, Opportunity, Proposal, Customer, Churned — with live result count
+- **Contact stages** — Lead → Contact → Opportunity → Proposal → Customer → Churned
 - **Full contact records** — email, phone, name, company, job title, LinkedIn URL, notes
+- **Guided contact editor** — suggested next steps, follow-up dates, and stage-aware priority defaults help reps save complete records faster
+- **Duplicate-aware save flow** — new contact drafts detect matching emails and route the rep into the existing record for review before saving
 - **Edit and delete** — inline contact management
+- **Attention queue with next best actions** — hottest accounts show urgency reasons and the recommended operator move directly in the CRM workspace
 
 ### Contact Dossier View
 - **Full interaction timeline** — every thread message with timestamps
@@ -109,8 +115,11 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 - **Draft auto-save** — composer content automatically saved to localStorage every 2 seconds; recovered on next visit
 - **Draft auto-save indicator** — shows "Draft auto-saved" status in the composer footer
 - **AI context workspace** — dedicated multi-line context pane for CRM research, follow-up strategy, and AI instructions
+- **Linked CRM snapshot card** — open CRM, add a follow-up task, or inject CRM/inbox context into the draft without leaving Outreach
+- **Outreach Play selector** — stage-aware playbooks like Cold Intro, Advance Opportunity, Proposal Close, and Reactivation
+- **Cadence presets + variable step counts** — choose the email rhythm and generate 2–5 sequence steps instead of a fixed 3-step flow
 - **Resizable split-view drafting** — on wide screens the AI context stays visible beside the email body, and reps can drag the divider to rebalance both panes
-- **Step loader** — navigate through multi-step sequence emails
+- **Step loader + planner conversion** — navigate through multi-step sequence emails and convert them into scheduled follow-up tasks
 
 ### AI Writing Actions
 | Action | What It Does |
@@ -119,7 +128,7 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 | **Polish** | Improves your existing draft — enhances clarity, tone, and persuasion |
 | **Suggest Subjects** | Generates 3 clickable subject line options based on the email body |
 | **Pitch Meeting** | Generates a specialized meeting-request email with a 15-minute CTA |
-| **Sequence** | Creates a full 3-step drip campaign: Initial Hook → Value-Add Follow-up → Breakup/Final Attempt (each with custom subject and body) |
+| **Sequence** | Creates a stage-aware 2–5 step drip campaign with delay and goal metadata for every step |
 | **Analyze Draft** | Returns 3-bullet improvement suggestions for conversion optimization |
 | **Pre-Send Check** | AI analyzes your email across 6 dimensions (tone, clarity, personalization, CTA strength, length, professionalism) before sending |
 | **Research Contact** | Generates a B2B sales intelligence dossier with role analysis, pain points, conversation starters, and deal potential (from dossier) |
@@ -128,6 +137,7 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 ### Strategy Sidebar
 - **Tone selector** — Professional, Persuasive, Friendly, Direct & Urgent, Consultative
 - **Length selector** — Concise, Standard, Detailed
+- **Recommended play + cadence defaults** — Outreach auto-suggests a playbook and sequence rhythm from CRM stage, stale status, and inbox signals
 - **Thread history context** — feed prior conversation into AI for continuity
 - **Ask Director for Strategy** — get psychological sales strategies and prospect-specific playbooks
 - **Objection Crusher** — AI generates psychology-backed rebuttals and persuasive scripts

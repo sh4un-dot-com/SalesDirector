@@ -98,12 +98,16 @@ Click **Analyze & Score Inbox** to run AI scoring across all inbound emails:
 - Each email gets a **lead score from 1 to 100** (100 = hottest lead)
 - Visual badges: **Hot** (70+), **Warm** (40–69), **Cold** (below 40)
 - **One-sentence AI summary** per email for instant context
+- **CRM-linked next best action** tells the rep whether to work the email in Outreach, create a task, push a proposal follow-up, or review CRM first
 
 ### Per-Email Actions
 
 | Action | What It Does |
 |---|---|
-| **Draft Reply** | Opens the AI Outreach composer with contact and thread context pre-loaded |
+| **Use in Outreach** | Opens the AI Outreach composer with inbox plus CRM context pre-loaded |
+| **AI Reply** | Generates a reply draft using inbox and CRM context, then opens it in Outreach |
+| **Review CRM / Open CRM** | Opens a reviewed CRM draft for new senders or jumps into the linked contact dossier |
+| **Add Task** | Creates a follow-up task tied to the sender and the linked CRM record when available |
 | **Read / Unread** | Toggle read status — unread emails appear bold with a rose dot |
 | **Flag** | Mark or unmark an email as needing a response |
 | **Archive** | Archive an email to remove it from the default view (viewable in Archived tab) |
@@ -129,6 +133,7 @@ Click **Prioritize with AI** to:
 
 - **Mini calendar** with monthly navigation and date selection
 - **Daily timeline** — hourly breakdown from your active hours start to end
+- **Schedule issue badges** — overlapping bookings and insufficient buffer windows are called out before the day gets overloaded
 - **Execute buttons** — jump from any task directly to the AI composer with context
 
 ### Editing Tasks
@@ -151,16 +156,18 @@ Click **Save Changes** to persist. Tasks with due dates show a date badge in the
 
 ### Adding Contacts
 
-- **Manual entry** — click "Add Contact" and fill in the form
+- **Manual entry** — click "Add Contact" and use the operator guidance card to apply suggested next steps, follow-up dates, and stage defaults
+- **Inbox review flow** — from Smart Inbox, use **Review CRM** to open a draft contact instead of silently creating one
 - **CSV import** — click "Import CSV" to bulk-import contacts
 - **HubSpot sync** — click "Sync HubSpot" to pull contacts from your CRM
+- **Duplicate review** — if a new draft matches an existing email, SalesDirector opens the existing record so you can review and save updates without creating a duplicate
 
 ### Filtering Contacts
 
 Use the **stage filter bar** above the contacts table to filter by stage:
 
 - **All Stages** — show every contact
-- **Lead, Contact, Opportunity, Customer, Cold, Warm, Hot** — filter to a specific stage
+- **Lead, Contact, Opportunity, Proposal, Customer, Churned** — filter to a specific stage
 - A live count shows how many contacts match when a filter is active
 
 ### CSV Import
@@ -182,8 +189,8 @@ Duplicate emails are automatically skipped during import.
 
 ### Contact Stages
 
-Contacts progress through four lifecycle stages:
-- **Lead** → **Opportunity** → **Customer** → **Churned**
+Contacts progress through six lifecycle stages:
+- **Lead** → **Contact** → **Opportunity** → **Proposal** → **Customer** → **Churned**
 
 ### Contact Dossier
 
@@ -199,6 +206,7 @@ Click any contact to open their full dossier:
 - **AI Intelligence panel:**
   - **Research Contact** — generates a B2B sales intelligence dossier (role analysis, pain points, conversation starters, approach, deal potential)
   - **Follow-Up Strategy** — AI recommends follow-up urgency, timing, channel, opening line, and strategic approach
+- **Attention queue and next best action cards** — the CRM workspace surfaces urgency reasons plus the recommended action for the hottest accounts
 
 ---
 
@@ -210,12 +218,16 @@ The AI-powered email composition workspace. Split into two panels:
 
 - **Tone selector** — Professional, Persuasive, Friendly, Direct & Urgent, Consultative
 - **Length selector** — Concise, Standard, Detailed
+- **Outreach Play selector** — choose or accept a recommended playbook based on CRM stage and relationship state
+- **Cadence selector** — choose the rhythm for follow-up sequences
+- **Sequence Steps selector** — build between 2 and 5 steps instead of a fixed 3-step sequence
 - **Thread history** — paste or auto-load conversation context
 - **Ask Director for Strategy** — get prospect-specific sales playbooks and psychological approaches
 - **Objection Crusher** — input a prospect objection, get psychology-backed rebuttals
 - **Summarize Context** — condense long thread history into a quick summary
 - **Director's Insight** — persistent display of the AI's latest strategic recommendation
 - **AI Context Workspace** — large editable context area for CRM research, follow-up strategy, and AI instructions
+- **Linked CRM card** — open the contact record, create a follow-up task, or load the CRM snapshot into the draft
 
 ### Composer Area (right)
 
@@ -232,9 +244,15 @@ The AI-powered email composition workspace. Split into two panels:
 | **Polish** | Improves your existing draft's tone, clarity, and persuasiveness |
 | **Suggest Subjects** | Generates 3 subject line options — click to apply |
 | **Pitch Meeting** | Creates a meeting-request email with 15-minute CTA |
-| **Sequence** | Builds a 3-step drip campaign (Hook → Value-Add → Breakup) |
+| **Sequence** | Builds a 2–5 step drip campaign with per-step delay and goal metadata |
 | **Analyze** | Returns 3 bullet points of improvement suggestions |
 | **Pre-Send Check** | AI analyzes your email across 6 dimensions before sending (tone, clarity, personalization, CTA, length, professionalism) |
+
+### Sequence Workspace
+
+- **Sequence step cards** — each generated step shows its subject, delay, and goal
+- **Load Into Composer** — load any step into Subject + Body for manual review or sending
+- **Create Follow-Up Tasks** — convert the generated sequence into dated planner tasks so execution does not depend on memory alone
 
 **Merge tags:** Insert `[First Name]`, `[Company Name]`, or `[Meeting Link]` placeholders via toolbar buttons.
 

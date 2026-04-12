@@ -13,10 +13,10 @@ SalesDirector is a desktop application that combines AI email drafting, CRM cont
 
 | Capability | What It Does |
 |---|---|
-| **AI Outreach Engine** | Draft, polish, analyze emails. Generate subject lines, meeting pitches, 3-step drip sequences, and objection-crushing strategies — all from one composer. |
-| **Smart Inbox** | AI scores every inbound email 1–100 and generates one-sentence summaries so you know who to reply to first. |
-| **CRM & Contacts** | Import CSV, sync HubSpot, or add contacts manually. Full dossiers with interaction timelines, quick actions, and stage tracking. |
-| **Tasks & Calendar** | AI generates and prioritizes your daily sales actions with time blocks, rationale, and one-click execution. |
+| **AI Outreach Engine** | Draft, polish, analyze, and sequence outbound emails from one composer. Reps can apply outreach plays, cadence presets, and turn sequence steps into planner tasks. |
+| **Smart Inbox** | AI scores every inbound email 1–100, summarizes intent, and surfaces a CRM-linked next best action so the rep knows whether to reply, create a task, or review the account. |
+| **CRM & Contacts** | Import CSV, sync HubSpot, or review guided contact drafts manually. Full dossiers, attention queues, duplicate-aware editing, and stage tracking keep account data clean. |
+| **Tasks & Calendar** | AI generates and prioritizes your daily sales actions with time blocks, rationale, minimum booking buffers, and one-click execution. |
 | **AI Context Workspace** | CRM research, follow-up strategy, and proposal guidance stay visible in a dedicated, user-resizable context pane while reps write outbound emails. |
 | **Encrypted Local Database** | AES-256-GCM encryption with PBKDF2 key derivation. Your data stays on your machine, protected by your passphrase. |
 | **HubSpot Integration** | Two-way contact sync and automatic email engagement logging. |

@@ -23,13 +23,22 @@ import {
   parseInboxScoreSummary
 } from './utils/dataParsers.mjs';
 import {
+  buildOutreachPlayContext,
   canReplyToInboxEmail,
   createComposerResetState,
   buildComposerStateFromInboxEmail,
   buildHandledInboxEmailUpdate,
+  createSequenceTasksFromSteps,
+  DEFAULT_SEQUENCE_CADENCE_ID,
+  DEFAULT_SEQUENCE_STEP_COUNT,
   getInboxReplyMetadata,
+  getRecommendedOutreachStrategy,
+  getSequenceCadenceById,
+  OUTREACH_PLAYBOOKS,
+  SEQUENCE_CADENCE_OPTIONS,
   formatCompanyFromEmail,
   buildHeuristicInboxInsight,
+  parseSequenceSteps,
   createFollowUpTaskFromInboxEmail,
   selectUrgentInboxEmails,
   selectLowPriorityInboxEmails
@@ -48,11 +57,13 @@ import {
   buildUpcomingMeetingQueue,
   buildPipelineOverview,
   buildCrmOverview,
+  buildContactActionPlan,
   buildSalesPerformanceSnapshot,
   getContactAttentionSummary,
   buildTaskSummary,
   buildCalendarMonth,
   buildTaskConflictMap,
+  buildTaskScheduleIssueMap,
   sortTasksForPlanner,
   getTasksForDate,
   getTaskBucket,
@@ -376,6 +387,7 @@ const PERSISTED_CONFIG_KEYS = [
   'sendDelay',
   'activeHoursStart',
   'activeHoursEnd',
+  'scheduleBufferMinutes',
   'timezone',
   'defaultTone',
   'defaultLength',
@@ -483,6 +495,7 @@ export default function App() {
     sendDelay: '30',
     activeHoursStart: '09:00',
     activeHoursEnd: '17:00',
+    scheduleBufferMinutes: '15',
     timezone: SYSTEM_TIMEZONE_VALUE,
     defaultTone: 'Professional',
     defaultLength: 'Concise',
@@ -507,6 +520,9 @@ export default function App() {
     objection: '',
     tone: 'Persuasive',
     length: 'Concise',
+    selectedPlaybookId: '',
+    sequenceCadenceId: DEFAULT_SEQUENCE_CADENCE_ID,
+    sequenceStepCount: DEFAULT_SEQUENCE_STEP_COUNT,
     suggestedSubjects: [],
     sequenceSteps: []
   });
@@ -1156,8 +1172,172 @@ export default function App() {
     });
     return nextMap;
   }, [normalizedContacts, normalizedTasks, threads]);
+  const getContactActionPlan = useCallback(
+    (contact, attention = null) => buildContactActionPlan(contact, attention, new Date()),
+    []
+  );
+  const editingContactInsights = useMemo(() => {
+    if (!editingContact) return null;
+
+    const normalizedEmail = normalizeEmail(editingContact.email || '');
+    const duplicateContact = editingContact._isNew && normalizedEmail
+      ? normalizedContacts.find((contact) => normalizeEmail(contact.email) === normalizedEmail) || null
+      : null;
+    const suggestedCompany = String(editingContact.company || '').trim() || (normalizedEmail ? formatCompanyFromEmail(normalizedEmail) : '');
+
+    return {
+      normalizedEmail,
+      hasValidEmail: Boolean(normalizedEmail && isValidEmail(normalizedEmail)),
+      missingName: !String(editingContact.name || '').trim(),
+      duplicateContact,
+      actionPlan: getContactActionPlan(
+        {
+          ...editingContact,
+          email: normalizedEmail || editingContact.email,
+          company: suggestedCompany
+        },
+        normalizedEmail ? contactAttentionMap.get(normalizedEmail) || null : null
+      )
+    };
+  }, [contactAttentionMap, editingContact, getContactActionPlan, normalizedContacts]);
+  const joinContextBlocks = useCallback((...blocks) => blocks
+    .map((block) => String(block || '').trim())
+    .filter(Boolean)
+    .join('\n\n'), []);
+  const findLinkedContact = useCallback((options = {}) => {
+    const normalizedAddress = normalizeEmail(options.email || '');
+    const normalizedHubspotId = String(options.hubspotId || '').trim();
+    const normalizedName = String(options.name || '').trim().toLowerCase();
+
+    if (normalizedAddress) {
+      const byEmail = normalizedContacts.find((contact) => normalizeEmail(contact.email) === normalizedAddress);
+      if (byEmail) return byEmail;
+    }
+
+    if (normalizedHubspotId) {
+      const byHubspotId = normalizedContacts.find((contact) => String(contact.hubspotId || '').trim() === normalizedHubspotId);
+      if (byHubspotId) return byHubspotId;
+    }
+
+    if (normalizedName) {
+      return normalizedContacts.find((contact) => String(contact.name || '').trim().toLowerCase() === normalizedName) || null;
+    }
+
+    return null;
+  }, [normalizedContacts]);
+  const buildOutreachRelationshipState = useCallback((options = {}) => {
+    const inboxEmail = options.inboxEmail || null;
+    const matchedContact = options.contact
+      ? normalizeContactRecord(options.contact)
+      : findLinkedContact({
+          email: options.email,
+          name: options.name,
+          hubspotId: options.hubspotId
+        });
+    const attention = matchedContact
+      ? (contactAttentionMap.get(matchedContact.email || matchedContact.id) || getContactAttentionSummary(matchedContact, normalizedTasks, threads))
+      : null;
+
+    const crmLines = matchedContact ? [
+      '[CRM SNAPSHOT]',
+      `Contact: ${matchedContact.name || options.name || 'Unknown'}`,
+      `Company: ${matchedContact.company || options.company || 'Unknown'}`,
+      `Stage: ${matchedContact.stage || 'Contact'}`,
+      `Priority Score: ${matchedContact.priorityScore || 0}`,
+      `Estimated Value: ${formatCurrencyCompact(matchedContact.estimatedValue)}`,
+      `Open Tasks: ${attention?.openTasksCount || 0}`,
+      `Follow-Up Due: ${attention?.followUpDue ? 'Yes' : 'No'}`,
+      `Next Follow-Up: ${matchedContact.nextFollowUpAt || 'Not set'}`,
+      `Next Step: ${matchedContact.nextStep || 'Not defined'}`,
+      matchedContact.aiSummary ? `AI Summary: ${matchedContact.aiSummary}` : '',
+      matchedContact.timelineSummary ? `Timeline Summary: ${matchedContact.timelineSummary}` : ''
+    ].filter(Boolean).join('\n') : '';
+
+    const inboxLines = inboxEmail ? [
+      '[INBOX SIGNAL]',
+      `Latest Subject: ${inboxEmail.subject || 'No subject'}`,
+      `Received: ${inboxEmail.date || 'Unknown date'}`,
+      inboxEmail.aiScore != null ? `AI Score: ${inboxEmail.aiScore}/100` : '',
+      inboxEmail.aiSummary ? `Inbox Insight: ${inboxEmail.aiSummary}` : '',
+      'Requested Reply Goal: Move the conversation toward a clear next step.'
+    ].filter(Boolean).join('\n') : '';
+
+    return {
+      matchedContact,
+      attention,
+      context: joinContextBlocks(crmLines, inboxLines)
+    };
+  }, [contactAttentionMap, findLinkedContact, joinContextBlocks, normalizedTasks, threads]);
+  const activeOutreachRelationshipState = useMemo(() => buildOutreachRelationshipState({
+    email: composerState.to || selectedInboxEmail?.fromEmail,
+    name: composerState.recipientName || selectedInboxEmail?.fromName,
+    company: composerState.companyName || selectedInboxEmail?.company,
+    hubspotId: composerState.hubspotId,
+    inboxEmail: selectedInboxEmail
+  }), [buildOutreachRelationshipState, composerState.companyName, composerState.hubspotId, composerState.recipientName, composerState.to, selectedInboxEmail]);
+  const recommendedOutreachStrategy = useMemo(() => getRecommendedOutreachStrategy({
+    stage: activeOutreachRelationshipState?.matchedContact?.stage,
+    isStale: activeOutreachRelationshipState?.attention?.isStale,
+    followUpDue: activeOutreachRelationshipState?.attention?.followUpDue,
+    threadHistory: composerState.threadHistory,
+    hasInboxSignal: Boolean(selectedInboxEmail)
+  }), [activeOutreachRelationshipState?.attention?.followUpDue, activeOutreachRelationshipState?.attention?.isStale, activeOutreachRelationshipState?.matchedContact?.stage, composerState.threadHistory, selectedInboxEmail]);
+  const selectedPlaybook = useMemo(
+    () => OUTREACH_PLAYBOOKS.find((playbook) => playbook.id === composerState.selectedPlaybookId) || null,
+    [composerState.selectedPlaybookId]
+  );
+  const selectedSequenceCadence = useMemo(
+    () => getSequenceCadenceById(composerState.sequenceCadenceId || recommendedOutreachStrategy.cadenceId || DEFAULT_SEQUENCE_CADENCE_ID, composerState.sequenceStepCount || DEFAULT_SEQUENCE_STEP_COUNT),
+    [composerState.sequenceCadenceId, composerState.sequenceStepCount, recommendedOutreachStrategy.cadenceId]
+  );
+  const outreachPlayContext = useMemo(() => buildOutreachPlayContext({
+    playbookId: composerState.selectedPlaybookId || recommendedOutreachStrategy.playbookId,
+    cadenceId: composerState.sequenceCadenceId || recommendedOutreachStrategy.cadenceId,
+    stepCount: composerState.sequenceStepCount || DEFAULT_SEQUENCE_STEP_COUNT,
+    recipientName: composerState.recipientName || activeOutreachRelationshipState?.matchedContact?.name || selectedInboxEmail?.fromName || '',
+    companyName: composerState.companyName || activeOutreachRelationshipState?.matchedContact?.company || selectedInboxEmail?.company || '',
+    stage: activeOutreachRelationshipState?.matchedContact?.stage || '',
+    nextStep: activeOutreachRelationshipState?.matchedContact?.nextStep || '',
+    followUpAt: activeOutreachRelationshipState?.matchedContact?.nextFollowUpAt || '',
+    aiSummary: activeOutreachRelationshipState?.matchedContact?.aiSummary || selectedInboxEmail?.aiSummary || '',
+    timelineSummary: activeOutreachRelationshipState?.matchedContact?.timelineSummary || ''
+  }), [activeOutreachRelationshipState?.matchedContact?.aiSummary, activeOutreachRelationshipState?.matchedContact?.company, activeOutreachRelationshipState?.matchedContact?.name, activeOutreachRelationshipState?.matchedContact?.nextFollowUpAt, activeOutreachRelationshipState?.matchedContact?.nextStep, activeOutreachRelationshipState?.matchedContact?.stage, activeOutreachRelationshipState?.matchedContact?.timelineSummary, composerState.companyName, composerState.recipientName, composerState.selectedPlaybookId, composerState.sequenceCadenceId, composerState.sequenceStepCount, recommendedOutreachStrategy.cadenceId, recommendedOutreachStrategy.playbookId, selectedInboxEmail?.aiSummary, selectedInboxEmail?.company, selectedInboxEmail?.fromName]);
+  useEffect(() => {
+    setComposerState((prev) => {
+      const nextPlaybookId = prev.selectedPlaybookId || recommendedOutreachStrategy.playbookId || '';
+      const nextCadenceId = prev.sequenceCadenceId || recommendedOutreachStrategy.cadenceId || DEFAULT_SEQUENCE_CADENCE_ID;
+      const nextStepCount = prev.sequenceStepCount || DEFAULT_SEQUENCE_STEP_COUNT;
+
+      if (
+        nextPlaybookId === prev.selectedPlaybookId
+        && nextCadenceId === prev.sequenceCadenceId
+        && nextStepCount === prev.sequenceStepCount
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        selectedPlaybookId: nextPlaybookId,
+        sequenceCadenceId: nextCadenceId,
+        sequenceStepCount: nextStepCount
+      };
+    });
+  }, [recommendedOutreachStrategy.cadenceId, recommendedOutreachStrategy.playbookId]);
   const taskSummary = useMemo(() => buildTaskSummary(normalizedTasks, selectedCalendarDate), [normalizedTasks, selectedCalendarDate]);
-  const taskConflictMap = useMemo(() => buildTaskConflictMap(normalizedTasks), [normalizedTasks]);
+  const scheduleBufferMinutes = useMemo(() => {
+    const parsed = Number(config.scheduleBufferMinutes || 0);
+    if (!Number.isFinite(parsed)) return 0;
+    return Math.max(0, Math.min(120, Math.round(parsed)));
+  }, [config.scheduleBufferMinutes]);
+  const taskScheduleIssueMap = useMemo(
+    () => buildTaskScheduleIssueMap(normalizedTasks, { minimumGapMinutes: scheduleBufferMinutes }),
+    [normalizedTasks, scheduleBufferMinutes]
+  );
+  const taskConflictMap = useMemo(
+    () => buildTaskConflictMap(normalizedTasks, { minimumGapMinutes: scheduleBufferMinutes }),
+    [normalizedTasks, scheduleBufferMinutes]
+  );
   const activeHoursWindow = useMemo(() => {
     const startMinutes = parseTimeToMinutes(config.activeHoursStart);
     const endMinutes = parseTimeToMinutes(config.activeHoursEnd);
@@ -1170,7 +1350,10 @@ export default function App() {
   const calendarDays = useMemo(() => buildCalendarMonth(normalizedTasks, activeCalendarMonth, selectedCalendarDate), [normalizedTasks, activeCalendarMonth, selectedCalendarDate]);
   const selectedDayTasks = useMemo(() => getTasksForDate(normalizedTasks, selectedCalendarDate), [normalizedTasks, selectedCalendarDate]);
   const selectedDayOpenTasks = useMemo(() => selectedDayTasks.filter((task) => task.status !== 'completed'), [selectedDayTasks]);
-  const selectedDayConflictCount = useMemo(() => selectedDayOpenTasks.filter((task) => (taskConflictMap.get(task.id) || []).length > 0).length, [selectedDayOpenTasks, taskConflictMap]);
+  const selectedDayScheduleIssueCount = useMemo(
+    () => selectedDayOpenTasks.filter((task) => (taskScheduleIssueMap.get(task.id) || []).length > 0).length,
+    [selectedDayOpenTasks, taskScheduleIssueMap]
+  );
   const selectedCalendarDateLabel = useMemo(() => formatFriendlyDate(selectedCalendarDate, 'No day selected'), [selectedCalendarDate]);
   const activeCalendarMonthLabel = useMemo(() => {
     const monthDate = dateKeyToDate(`${activeCalendarMonth}-01`);
@@ -1189,37 +1372,45 @@ export default function App() {
     return `${startDate.toLocaleTimeString(undefined, timeOptions)} - ${endDate.toLocaleTimeString(undefined, timeOptions)}`;
   }, []);
 
-  const getTaskScheduleState = useCallback((task, conflictMap = taskConflictMap) => {
+  const getTaskScheduleState = useCallback((task, issueMap = taskScheduleIssueMap) => {
     const normalizedTask = normalizeTaskRecord(task);
     const parsedStartMinutes = parseTimeToMinutes(normalizedTask.time);
     const hasExplicitTime = normalizedTask.time !== '';
-    const conflictIds = conflictMap.get(normalizedTask.id) || [];
+    const issueDetails = issueMap.get(normalizedTask.id) || [];
+    const overlapIssues = issueDetails.filter((issue) => issue.kind === 'overlap');
+    const bufferIssues = issueDetails.filter((issue) => issue.kind === 'buffer');
+    const conflictIds = Array.from(new Set(issueDetails.map((issue) => issue.otherTaskId).filter(Boolean)));
 
     return {
       invalidTime: hasExplicitTime && parsedStartMinutes == null,
       outsideActiveHours: parsedStartMinutes != null && activeHoursWindow.isValid
         ? parsedStartMinutes < activeHoursWindow.startMinutes || (parsedStartMinutes + (normalizedTask.durationMinutes || 30)) > activeHoursWindow.endMinutes
         : false,
+      issueDetails,
+      overlapIssues,
+      bufferIssues,
       conflictIds,
-      hasConflict: conflictIds.length > 0,
+      hasConflict: issueDetails.length > 0,
+      hasOverlap: overlapIssues.length > 0,
+      hasBufferConflict: bufferIssues.length > 0,
       startDate: getTaskScheduledStart(normalizedTask),
       endDate: getTaskScheduledEnd(normalizedTask)
     };
-  }, [activeHoursWindow, taskConflictMap]);
+  }, [activeHoursWindow, taskScheduleIssueMap]);
 
   const editingTaskScheduleState = useMemo(() => {
     if (!editingTask) return null;
 
     const candidateTask = normalizeTaskRecord(editingTask);
     const candidateTasks = normalizedTasks.map((task) => (task.id === candidateTask.id ? candidateTask : normalizeTaskRecord(task)));
-    const candidateConflictMap = buildTaskConflictMap(candidateTasks);
-    const state = getTaskScheduleState(candidateTask, candidateConflictMap);
+    const candidateIssueMap = buildTaskScheduleIssueMap(candidateTasks, { minimumGapMinutes: scheduleBufferMinutes });
+    const state = getTaskScheduleState(candidateTask, candidateIssueMap);
 
     return {
       ...state,
       conflictingTasks: candidateTasks.filter((task) => state.conflictIds.includes(task.id))
     };
-  }, [editingTask, getTaskScheduleState, normalizedTasks]);
+  }, [editingTask, getTaskScheduleState, normalizedTasks, scheduleBufferMinutes]);
 
   const plannerPrepCandidates = useMemo(() => normalizedContacts
     .filter((contact) => {
@@ -1372,6 +1563,13 @@ export default function App() {
       }
     }
 
+    if (name === 'scheduleBufferMinutes') {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 120) {
+        return 'Enter a whole number between 0 and 120 minutes.';
+      }
+    }
+
     const start = nextConfig.activeHoursStart;
     const end = nextConfig.activeHoursEnd;
     if ((name === 'activeHoursStart' || name === 'activeHoursEnd') && start && end && start >= end) {
@@ -1451,11 +1649,20 @@ export default function App() {
       return;
     }
     const replyMetadata = getInboxReplyMetadata(email);
+    const relationshipState = buildOutreachRelationshipState({
+      email: email.fromEmail,
+      name: email.fromName,
+      company: email.company,
+      inboxEmail: email
+    });
     setComposerState(buildComposerStateFromInboxEmail({
       email,
       defaultTone: config.defaultTone,
       defaultLength: config.defaultLength,
-      aiContext: `Drafting reply to the selected inbox email from ${replyMetadata.recipientName}.`
+      aiContext: joinContextBlocks(
+        relationshipState.context,
+        `Drafting reply to the selected inbox email from ${replyMetadata.recipientName}.`
+      )
     }));
     setSelectedInboxEmail(email);
     setActiveTab('outreach');
@@ -1535,28 +1742,6 @@ export default function App() {
     return data;
   };
 
-  const parseSequenceSteps = (sequenceText = '') => {
-    const normalized = String(sequenceText || '').replace(/\r\n/g, '\n').trim();
-    if (!normalized) return [];
-
-    const stepRegex = /Step\s*(\d+)\s*-\s*([^\n]+)\nSubject:\s*([^\n]+)\nBody:\s*([\s\S]*?)(?=\nStep\s*\d+\s*-|$)/gi;
-    const steps = [];
-    let match;
-
-    while ((match = stepRegex.exec(normalized)) !== null) {
-      const stepNumber = Number(match[1]);
-      const stepTitle = String(match[2] || '').trim();
-      const subject = String(match[3] || '').trim();
-      const body = String(match[4] || '').trim();
-
-      if (stepNumber && subject && body) {
-        steps.push({ stepNumber, stepTitle, subject, body });
-      }
-    }
-
-    return steps.sort((a, b) => a.stepNumber - b.stepNumber);
-  };
-
   const loadSequenceStepToComposer = (step) => {
     if (!step) return;
     setComposerState(prev => ({
@@ -1565,6 +1750,79 @@ export default function App() {
       body: step.body
     }));
     showNotification(`Loaded Step ${step.stepNumber} into composer.`);
+  };
+
+  const injectCurrentRelationshipContext = () => {
+    if (!activeOutreachRelationshipState?.context) {
+      showNotification('No linked CRM or inbox context is available for this draft yet.', 'error');
+      return;
+    }
+
+    setComposerState((prev) => ({
+      ...prev,
+      aiContext: joinContextBlocks(prev.aiContext, activeOutreachRelationshipState.context)
+    }));
+    showNotification('CRM and inbox context added to the outreach workspace.', 'success');
+  };
+
+  const openOrCreateOutreachContact = async () => {
+    if (activeOutreachRelationshipState?.matchedContact) {
+      openDossier(activeOutreachRelationshipState.matchedContact);
+      setActiveTab('contacts');
+      return;
+    }
+
+    const recipientEmail = normalizeEmail(composerState.to || selectedInboxEmail?.fromEmail || '');
+    if (!recipientEmail || !isValidEmail(recipientEmail)) {
+      showNotification('Add a valid recipient email before creating a CRM contact from Outreach.', 'error');
+      return;
+    }
+
+    const savedContact = await ensureContactFromActivity({
+      email: recipientEmail,
+      name: composerState.recipientName || selectedInboxEmail?.fromName || 'Unknown',
+      company: composerState.companyName || selectedInboxEmail?.company || formatCompanyFromEmail(recipientEmail),
+      source: selectedInboxEmail ? 'Inbox' : 'Manual',
+      stage: 'Contact',
+      priorityScore: selectedInboxEmail?.aiScore || undefined,
+      aiSummary: selectedInboxEmail?.aiSummary || undefined
+    });
+
+    if (!savedContact) {
+      showNotification('Unable to create a CRM contact from the current outreach draft.', 'error');
+      return;
+    }
+
+    openDossier(savedContact);
+    setActiveTab('contacts');
+    showNotification('CRM contact created from the current outreach recipient.', 'success');
+  };
+
+  const createSequenceTasksFromComposer = () => {
+    if (!Array.isArray(composerState.sequenceSteps) || composerState.sequenceSteps.length === 0) {
+      showNotification('Generate a sequence first so there are steps to schedule.', 'error');
+      return;
+    }
+
+    const sequenceTasks = createSequenceTasksFromSteps(composerState.sequenceSteps, {
+      baseDateKey: selectedCalendarDate || formatDateKey(new Date()),
+      recipientName: composerState.recipientName || activeOutreachRelationshipState?.matchedContact?.name || '',
+      companyName: composerState.companyName || activeOutreachRelationshipState?.matchedContact?.company || '',
+      recipientEmail: composerState.to,
+      owner: activeOutreachRelationshipState?.matchedContact?.owner || config.senderName || ''
+    });
+
+    if (sequenceTasks.length === 0) {
+      showNotification('The generated sequence could not be converted into planner tasks.', 'error');
+      return;
+    }
+
+    const savedTasks = appendTaskBatchLocally(sequenceTasks);
+    if (savedTasks[0]?.scheduledDate) {
+      setSelectedCalendarDate(savedTasks[0].scheduledDate);
+    }
+    setActiveTab('tasks');
+    showNotification(`Created ${savedTasks.length} sequence follow-up task${savedTasks.length === 1 ? '' : 's'} in the planner.`, 'success');
   };
 
   const buildHistoryStringFromMessages = (messages = []) => {
@@ -1811,6 +2069,7 @@ No emojis.`;
     const normalizedContact = normalizeContactRecord(contact);
     const attention = contactAttentionMap.get(normalizedContact.email || normalizedContact.id);
     const historyString = attention?.contact?.historyString || selectedContact?.historyString || '';
+    const relationshipState = buildOutreachRelationshipState({ contact: normalizedContact });
 
     setComposerState(prev => ({
       ...createComposerResetState({ defaultTone: config.defaultTone, defaultLength: config.defaultLength }),
@@ -1820,7 +2079,7 @@ No emojis.`;
       companyName: normalizedContact.company,
       jobTitle: normalizedContact.jobTitle || '',
       threadHistory: historyString,
-      aiContext: normalizedContact.aiSummary || prev.aiContext || ''
+      aiContext: joinContextBlocks(relationshipState.context, normalizedContact.aiSummary || prev.aiContext || '')
     }));
     setSelectedInboxEmail(null);
     setActiveTab('outreach');
@@ -1846,6 +2105,61 @@ No emojis.`;
     setSelectedCalendarDate(getTaskCalendarDate(task) || selectedCalendarDate);
     setActiveTab('tasks');
     showNotification(`Task created for ${normalizedContact.name}.`);
+  };
+
+  const runContactPrimaryAction = (contact, attention = null, event) => {
+    event?.stopPropagation();
+
+    const normalizedContact = normalizeContactRecord(contact);
+    const actionPlan = getContactActionPlan(normalizedContact, attention);
+
+    switch (actionPlan.primaryAction.key) {
+      case 'edit-contact':
+        openContactEditor(normalizedContact, { isNew: false });
+        break;
+      case 'proposal-follow-up':
+        void handleAIAction('proposalFollowUp', { contact: normalizedContact });
+        break;
+      case 'outreach':
+        loadContactIntoOutreach(normalizedContact);
+        break;
+      case 'create-task':
+        createTaskForContact(normalizedContact);
+        break;
+      default:
+        openDossier(normalizedContact);
+        setActiveTab('contacts');
+        break;
+    }
+  };
+
+  const runInboxPrimaryAction = (email, relationshipState) => {
+    if (!relationshipState?.matchedContact) {
+      void openOrCreateContactFromInboxEmail(email);
+      return;
+    }
+
+    const normalizedContact = normalizeContactRecord(relationshipState.matchedContact);
+    const actionPlan = getContactActionPlan(normalizedContact, relationshipState.attention);
+
+    switch (actionPlan.primaryAction.key) {
+      case 'edit-contact':
+        openContactEditor(normalizedContact, { isNew: false });
+        break;
+      case 'proposal-follow-up':
+        void handleAIAction('proposalFollowUp', { contact: normalizedContact });
+        break;
+      case 'create-task':
+        addFollowUpTaskFromInboxEmail(email);
+        break;
+      case 'outreach':
+        prepareComposerFromInboxEmail(email);
+        break;
+      default:
+        openDossier(normalizedContact);
+        setActiveTab('contacts');
+        break;
+    }
   };
 
   const inferTaskTypeFromTitle = (title = '') => {
@@ -2059,9 +2373,16 @@ No emojis.`;
     }
 
     const nextTasks = normalizedTasks.map((task) => (task.id === nextTask.id ? nextTask : normalizeTaskRecord(task)));
-    const nextConflictMap = buildTaskConflictMap(nextTasks);
-    if (nextTask.status !== 'completed' && (nextConflictMap.get(nextTask.id) || []).length > 0) {
-      showNotification('This task overlaps with another scheduled task. Resolve the conflict before saving.', 'error');
+    const nextIssueMap = buildTaskScheduleIssueMap(nextTasks, { minimumGapMinutes: scheduleBufferMinutes });
+    const nextIssues = nextIssueMap.get(nextTask.id) || [];
+    if (nextTask.status !== 'completed' && nextIssues.length > 0) {
+      const hasOverlap = nextIssues.some((issue) => issue.kind === 'overlap');
+      showNotification(
+        hasOverlap
+          ? 'This task overlaps with another scheduled task. Resolve the conflict before saving.'
+          : `Leave at least ${scheduleBufferMinutes} minutes between scheduled tasks before saving.`,
+        'error'
+      );
       return;
     }
 
@@ -2205,9 +2526,68 @@ No emojis.`;
   const addFollowUpTaskFromInboxEmail = (email) => {
     if (!email) return null;
 
-    const task = createFollowUpTaskFromInboxEmail(email);
-    setTasks(prev => [task, ...prev]);
-    return task;
+    const existingTask = normalizedTasks.find((task) => task.sourceInboxId === email.id && task.status !== 'completed');
+    if (existingTask) {
+      showNotification('A follow-up task already exists for this inbox email.', 'success');
+      return existingTask;
+    }
+
+    const relationshipState = buildOutreachRelationshipState({
+      email: email.fromEmail,
+      name: email.fromName,
+      company: email.company,
+      inboxEmail: email
+    });
+    const suggestedPriority = Math.max(65, Math.min(Number(email.aiScore || 70), 95));
+    const baseTask = createFollowUpTaskFromInboxEmail(email, {
+      priority: suggestedPriority,
+      offsetDays: Number(email.aiScore || 0) >= 90 ? 1 : Number(email.aiScore || 0) >= 75 ? 2 : 3
+    });
+    const nextTask = appendTaskLocally({
+      ...baseTask,
+      dueDate: relationshipState.matchedContact?.nextFollowUpAt || baseTask.dueDate,
+      scheduledDate: relationshipState.matchedContact?.nextFollowUpAt || baseTask.dueDate,
+      contact: relationshipState.matchedContact?.name || baseTask.contact,
+      contactEmail: relationshipState.matchedContact?.email || baseTask.contactEmail,
+      company: relationshipState.matchedContact?.company || baseTask.company,
+      owner: relationshipState.matchedContact?.owner || config.senderName || '',
+      rationale: email.aiSummary || baseTask.rationale,
+      notes: joinContextBlocks(baseTask.notes, relationshipState.context)
+    });
+    showNotification('Follow-up task added from Smart Inbox.', 'success');
+    return nextTask;
+  };
+
+  const openOrCreateContactFromInboxEmail = async (email) => {
+    if (!email) return;
+
+    const relationshipState = buildOutreachRelationshipState({
+      email: email.fromEmail,
+      name: email.fromName,
+      company: email.company,
+      inboxEmail: email
+    });
+
+    if (relationshipState.matchedContact) {
+      openDossier(relationshipState.matchedContact);
+      setActiveTab('contacts');
+      return;
+    }
+
+    openAddContact({
+      email: normalizeEmail(email.fromEmail || ''),
+      id: normalizeEmail(email.fromEmail || ''),
+      name: email.fromName || '',
+      company: email.company || formatCompanyFromEmail(email.fromEmail || ''),
+      source: 'Inbox',
+      stage: 'Contact',
+      priorityScore: Math.max(Number(email.aiScore || 55), 55),
+      aiSummary: email.aiSummary || '',
+      lastContactedAt: formatDateKey(email.dateRaw || email.date),
+      notes: email.subject ? `Latest inbox subject: ${email.subject}` : ''
+    });
+    setActiveTab('contacts');
+    showNotification('Review the CRM draft, then save the contact.', 'success');
   };
 
   const createTasksFromHottestInboxEmails = () => {
@@ -2379,11 +2759,20 @@ No emojis.`;
       showNotification('This email does not include a valid sender address to reply to.', 'error');
       return;
     }
+    const relationshipState = buildOutreachRelationshipState({
+      email: email.fromEmail,
+      name: email.fromName,
+      company: email.company,
+      inboxEmail: email
+    });
     setComposerState(buildComposerStateFromInboxEmail({
       email,
       defaultTone: config.defaultTone,
       defaultLength: config.defaultLength,
-      aiContext: `Use the email below to craft a high-conversion sales reply. Focus on the prospect's intent, match their tone, and use marketing and psychological triggers to make the response feel urgent and relevant.`
+      aiContext: joinContextBlocks(
+        relationshipState.context,
+        `Use the email below to craft a high-conversion sales reply. Focus on the prospect's intent, match their tone, and use marketing and psychological triggers to make the response feel urgent and relevant.`
+      )
     }));
     setSelectedInboxEmail(email);
     setActiveTab('outreach');
@@ -2708,19 +3097,116 @@ No emojis.`;
 
   // --- CRM Logic ---
 
-  const openAddContact = () => {
-    setEditingContact(createEmptyContact());
+  const closeContactModal = () => {
+    setIsContactModalOpen(false);
+    setEditingContact(null);
+  };
+
+  const openContactEditor = (contactInput = {}, options = {}) => {
+    const normalizedEmail = normalizeEmail(contactInput.email || '');
+    const nextContact = normalizeContactRecord({
+      ...contactInput,
+      email: normalizedEmail || contactInput.email || '',
+      id: options.isNew ? (normalizedEmail || contactInput.id || '') : (contactInput.id || normalizedEmail || contactInput.email || ''),
+      company: String(contactInput.company || '').trim() || (options.prefillCompanyFromEmail && normalizedEmail ? formatCompanyFromEmail(normalizedEmail) : '')
+    });
+
+    setEditingContact({
+      ...nextContact,
+      name: options.isNew ? String(contactInput.name || '') : nextContact.name,
+      email: normalizedEmail || String(contactInput.email || ''),
+      company: String(contactInput.company || '').trim() || nextContact.company,
+      _isNew: Boolean(options.isNew)
+    });
     setIsContactModalOpen(true);
+  };
+
+  const openAddContact = (seed = {}) => {
+    openContactEditor(createEmptyContact(seed), { isNew: true, prefillCompanyFromEmail: true });
   };
 
   const openEditContact = (contact, e) => {
     e.stopPropagation();
-    setEditingContact({ ...normalizeContactRecord(contact), _isNew: false });
-    setIsContactModalOpen(true);
+    openContactEditor(contact, { isNew: false });
   };
 
   const handleContactFormChange = (e) => {
     setEditingContact(prev => ({ ...prev, [e.target.name]: e.target.value }));
+  };
+
+  const mergeDraftIntoExistingContact = (existingContact, draftContact) => {
+    const existing = normalizeContactRecord(existingContact);
+    const draft = draftContact || {};
+    const normalizeStringField = (value) => String(value ?? '').trim();
+    const pickStringField = (draftValue, existingValue) => normalizeStringField(draftValue) || existingValue;
+    const pickNumberField = (draftValue, existingValue, mode = 'replace') => {
+      if (draftValue === '' || draftValue == null) return existingValue;
+      const parsed = Number(draftValue);
+      if (!Number.isFinite(parsed)) return existingValue;
+      return mode === 'max' ? Math.max(parsed, Number(existingValue) || 0) : parsed;
+    };
+    const getLeadTemperatureRank = (value = 'Cold') => {
+      const normalizedValue = normalizeStringField(value) || 'Cold';
+      const rank = CONTACT_TEMPERATURE_OPTIONS.indexOf(normalizedValue);
+      return rank >= 0 ? rank : 0;
+    };
+    const normalizedEmail = normalizeEmail(draft.email || existing.email || '');
+    const draftLeadTemperature = normalizeStringField(draft.leadTemperature) || existing.leadTemperature;
+
+    return {
+      ...existing,
+      id: normalizedEmail || existing.id,
+      email: normalizedEmail || existing.email,
+      name: pickStringField(draft.name, existing.name),
+      company: pickStringField(draft.company, existing.company),
+      jobTitle: pickStringField(draft.jobTitle, existing.jobTitle),
+      phone: pickStringField(draft.phone, existing.phone),
+      website: pickStringField(draft.website, existing.website),
+      owner: pickStringField(draft.owner, existing.owner),
+      source: pickStringField(draft.source, existing.source),
+      linkedin: pickStringField(draft.linkedin, existing.linkedin),
+      nextStep: pickStringField(draft.nextStep, existing.nextStep),
+      aiSummary: pickStringField(draft.aiSummary, existing.aiSummary),
+      painPoints: pickStringField(draft.painPoints, existing.painPoints),
+      notes: pickStringField(draft.notes, existing.notes),
+      nextFollowUpAt: pickStringField(draft.nextFollowUpAt, existing.nextFollowUpAt),
+      lastContactedAt: pickStringField(draft.lastContactedAt, existing.lastContactedAt),
+      estimatedValue: pickNumberField(draft.estimatedValue, existing.estimatedValue),
+      priorityScore: pickNumberField(draft.priorityScore, existing.priorityScore, 'max'),
+      leadTemperature: getLeadTemperatureRank(draftLeadTemperature) > getLeadTemperatureRank(existing.leadTemperature)
+        ? draftLeadTemperature
+        : existing.leadTemperature,
+      stage: existing.stage,
+      _isNew: false
+    };
+  };
+
+  const applyEditingContactGuidance = (mode = 'all') => {
+    if (!editingContactInsights?.actionPlan) return;
+
+    const { actionPlan, normalizedEmail } = editingContactInsights;
+    setEditingContact((prev) => ({
+      ...prev,
+      company: mode === 'all' && !String(prev.company || '').trim() && normalizedEmail
+        ? formatCompanyFromEmail(normalizedEmail)
+        : prev.company,
+      priorityScore: mode === 'all' ? actionPlan.suggestedPriorityScore : prev.priorityScore,
+      leadTemperature: mode === 'all' ? actionPlan.suggestedLeadTemperature : prev.leadTemperature,
+      nextFollowUpAt: mode === 'all' || mode === 'follow-up' ? actionPlan.suggestedNextFollowUpAt : prev.nextFollowUpAt,
+      nextStep: mode === 'all' || mode === 'next-step' ? actionPlan.suggestedNextStep : prev.nextStep
+    }));
+  };
+
+  const openExistingDuplicateContact = () => {
+    if (!editingContactInsights?.duplicateContact) return;
+
+    openContactEditor(
+      mergeDraftIntoExistingContact(editingContactInsights.duplicateContact, {
+        ...editingContact,
+        email: editingContactInsights.normalizedEmail || editingContact.email || editingContactInsights.duplicateContact.email
+      }),
+      { isNew: false }
+    );
   };
 
   const saveContact = async () => {
@@ -2737,11 +3223,47 @@ No emojis.`;
 
     setLoading(true);
     try {
-      await saveContactRecord({ ...editingContact, email: normalizedEmail, id: normalizedEmail, _isNew: false });
+      const existingContact = normalizedContacts.find((contact) => normalizeEmail(contact.email) === normalizedEmail) || null;
+
+      if (editingContact._isNew && existingContact) {
+        setEditingContact({
+          ...normalizeContactRecord(mergeDraftIntoExistingContact(existingContact, {
+            ...editingContact,
+            email: normalizedEmail,
+            id: normalizedEmail
+          })),
+          _isNew: false
+        });
+        showNotification('A contact with this email already exists. Review and save updates instead.', 'success');
+        return;
+      }
+
+      const actionPlan = buildContactActionPlan({
+        ...editingContact,
+        email: normalizedEmail,
+        company: String(editingContact.company || '').trim() || formatCompanyFromEmail(normalizedEmail)
+      }, contactAttentionMap.get(normalizedEmail) || null, new Date());
+      const currentPriorityScore = Number(editingContact.priorityScore || 0);
+      const currentLeadTemperature = String(editingContact.leadTemperature || '').trim() || 'Cold';
+
+      await saveContactRecord({
+        ...editingContact,
+        email: normalizedEmail,
+        id: normalizedEmail,
+        _isNew: false,
+        company: String(editingContact.company || '').trim() || formatCompanyFromEmail(normalizedEmail),
+        priorityScore: editingContact._isNew && currentPriorityScore === 50 && actionPlan.suggestedPriorityScore > currentPriorityScore
+          ? actionPlan.suggestedPriorityScore
+          : (currentPriorityScore || actionPlan.suggestedPriorityScore),
+        leadTemperature: editingContact._isNew && currentLeadTemperature === 'Cold' && actionPlan.suggestedLeadTemperature !== 'Cold'
+          ? actionPlan.suggestedLeadTemperature
+          : currentLeadTemperature,
+        nextStep: editingContact.nextStep || actionPlan.suggestedNextStep,
+        nextFollowUpAt: editingContact.nextFollowUpAt || actionPlan.suggestedNextFollowUpAt
+      });
 
       showNotification(`Contact ${editingContact._isNew ? 'added' : 'updated'} successfully!`);
-      setIsContactModalOpen(false);
-      setEditingContact(null);
+      closeContactModal();
     } catch (err) {
       console.error(err);
       showNotification("Failed to save contact.", "error");
@@ -3509,11 +4031,12 @@ Be concise, practical, and specific. No emojis.`;
         if (composerState.companyName) contextParts.push(`Recipient Company: ${composerState.companyName}`);
         if (composerState.threadHistory) contextParts.push(`Thread History (Read this carefully to respond appropriately):\n${composerState.threadHistory}`);
         if (composerState.aiContext) contextParts.push(`User Instructions: ${composerState.aiContext}`);
+        if (outreachPlayContext) contextParts.push(outreachPlayContext);
 
         prompt = `Write a professional B2B cold outreach or follow-up email. Target Recipient Email: ${composerState.to || 'a potential client'}.
         Context & Guidelines: ${contextParts.join('\n\n')}
         Formatting Directives: Tone: ${composerState.tone}, Length: ${composerState.length}
-        Instructions: Make it highly relevant. Write clearly, compellingly, and end with a soft call to action. Output the subject line first starting with "Subject: ". Do not include a signature, as one will be appended automatically. Remember: NO EMOJIS.`;
+        Instructions: Make it highly relevant. Use the active outreach play if one is provided. Write clearly, compellingly, and end with a soft call to action. Output the subject line first starting with "Subject: ". Do not include a signature, as one will be appended automatically. Remember: NO EMOJIS.`;
         
         const result = await callGeminiAPI(prompt);
         const subjectMatch = result.match(/Subject:\s*(.*)\n/i);
@@ -3538,6 +4061,7 @@ Be concise, practical, and specific. No emojis.`;
         if (config.companyUrl) contextParts.push(`Our Company: ${config.companyUrl}`);
         if (composerState.recipientName) contextParts.push(`Recipient Name: ${composerState.recipientName}`);
         if (composerState.companyName) contextParts.push(`Company: ${composerState.companyName}`);
+        if (outreachPlayContext) contextParts.push(outreachPlayContext);
         
         prompt = `Write a highly-converting, short B2B email to schedule a discovery/demo meeting with ${composerState.recipientName || 'the prospect'} at ${composerState.companyName || 'their company'}.
         Context: ${contextParts.join(' | ')}.
@@ -3578,7 +4102,7 @@ Be concise, practical, and specific. No emojis.`;
         showNotification("Thread summarized");
 
       } else if (actionType === 'coach') {
-        prompt = `Act as my Virtual Sales Director. Review the prospect details and thread history below. Give me a step-by-step strategic playbook on exactly how to close this deal, what psychological levers to pull, and what my next exact move should be. NO EMOJIS.\n\nProspect: ${composerState.recipientName}, ${composerState.jobTitle} at ${composerState.companyName}\nThread History:\n${composerState.threadHistory}`;
+        prompt = `Act as my Virtual Sales Director. Review the prospect details, CRM state, and thread history below. Give me a step-by-step strategic playbook on exactly how to close this deal, what psychological levers to pull, what sequence cadence to use, and what my next exact move should be. NO EMOJIS.\n\nProspect: ${composerState.recipientName}, ${composerState.jobTitle} at ${composerState.companyName}\n${outreachPlayContext || ''}\nThread History:\n${composerState.threadHistory}`;
         const result = await callGeminiAPI(prompt);
         setComposerState(prev => ({ ...prev, aiContext: result }));
         showNotification("Director's strategy generated");
@@ -3606,14 +4130,31 @@ Be concise, practical, and specific. No emojis.`;
         if (config.companyUrl) contextParts.push(`Our Company Profile: ${config.companyUrl}`);
         if (composerState.recipientName) contextParts.push(`Recipient Name: ${composerState.recipientName}`);
         if (composerState.companyName) contextParts.push(`Recipient Company: ${composerState.companyName}`);
+        if (config.senderName) contextParts.push(`Sender Name: ${config.senderName}`);
+        const relationshipContext = joinContextBlocks(
+          outreachPlayContext,
+          activeOutreachRelationshipState?.context,
+          composerState.aiContext,
+          composerState.threadHistory ? `[THREAD HISTORY]\n${composerState.threadHistory}` : ''
+        );
+        const sequenceStepCount = Math.max(2, Math.min(5, Number(composerState.sequenceStepCount) || DEFAULT_SEQUENCE_STEP_COUNT));
+        const cadenceSummary = selectedSequenceCadence.delays
+          .map((delay, index) => `Step ${index + 1}: day ${delay}`)
+          .join(' | ');
         
-        prompt = `Act as an elite Virtual Sales Director. Write a complete 3-step B2B sales email drip sequence for ${composerState.to || 'this prospect'}.
+        prompt = `Act as an elite Virtual Sales Director. Write a complete ${sequenceStepCount}-step B2B sales email drip sequence for ${composerState.to || 'this prospect'}.
         Context: ${contextParts.join(' | ')} | Tone: ${composerState.tone}
-        Requirements: Step 1: Initial Hook. Step 2: Value-Add Follow Up. Step 3: Breakup/Final Attempt.
+        Relationship Context:
+        ${relationshipContext || 'No CRM snapshot is linked yet.'}
+        Sequence Cadence: ${selectedSequenceCadence.label} (${cadenceSummary})
+        Requirements: tailor the progression to the current stage and playbook. Use ${sequenceStepCount === 2 ? 'two' : sequenceStepCount} steps.
         For each step, output exactly this structure:
         Step X - [Step Name]
+        Delay: [number of days after the previous step]
+        Goal: [what this step is trying to unlock]
         Subject: [specific subject line]
         Body: [complete, send-ready email copy with greeting, value, and CTA]
+        Make the sequence commercially sharp, vary the angle across steps, and use the CRM or inbox context when it helps.
         Write final email copy, not instructions. Do not output placeholders like "Share one..." or "Offer...".
         Do not include signatures. CRITICAL: NO EMOJIS.`;
         
@@ -3649,6 +4190,12 @@ Be concise, practical, and specific. No emojis.`;
         const to = replyMetadata.to;
         const subject = replyMetadata.subject;
         const threadHistory = replyMetadata.threadHistory;
+        const relationshipState = buildOutreachRelationshipState({
+          email: inboxEmail.fromEmail,
+          name: inboxEmail.fromName,
+          company: inboxEmail.company,
+          inboxEmail
+        });
 
         prompt = `Act as an elite Virtual Sales Director and expert growth marketer. Write a highly personalized response to this inbound email that uses persuasive sales psychology, urgency, and a strong value framing. Do not sound generic.
 Target Prospect: ${recipientName} at ${companyName}
@@ -3656,6 +4203,9 @@ Prospect Email: ${to}
 Original Email Subject: ${inboxEmail.subject}
 Original Email Body:
 ${inboxEmail.body}
+
+Linked CRM and inbox context:
+${relationshipState.context || 'No CRM snapshot is linked yet.'}
 
 Output rules:
 1) Return the subject line first as "Subject: [subject text]".
@@ -3682,7 +4232,10 @@ Output rules:
           defaultLength: config.defaultLength,
           subjectOverride: generatedSubject,
           body: generatedBody,
-          aiContext: `This reply was generated from the selected Smart Inbox email. Use it as the draft for follow-up.`
+          aiContext: joinContextBlocks(
+            relationshipState.context,
+            'This reply was generated from the selected Smart Inbox email. Use it as the draft for follow-up.'
+          )
         }));
         setSelectedInboxEmail(inboxEmail);
         setActiveTab('outreach');
@@ -4671,7 +5224,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       )}
                       {!isCompleted && scheduleState.hasConflict && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-900 dark:text-rose-400">
-                          Conflict
+                          {scheduleState.hasOverlap ? 'Overlap' : 'Needs Buffer'}
                         </span>
                       )}
                       {!isCompleted && scheduleState.outsideActiveHours && (
@@ -4708,7 +5261,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
                       {scheduleState.hasConflict && (
                         <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">
-                          Overlaps with {scheduleState.conflictIds.length} scheduled task{scheduleState.conflictIds.length === 1 ? '' : 's'}
+                          {scheduleState.hasOverlap
+                            ? `Overlaps with ${scheduleState.overlapIssues.length} scheduled task${scheduleState.overlapIssues.length === 1 ? '' : 's'}`
+                            : `Needs ${scheduleBufferMinutes} minutes of buffer before the next booking`}
                         </span>
                       )}
                       {scheduleState.outsideActiveHours && (
@@ -4819,7 +5374,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   </div>
                   {(scheduleState.hasConflict || scheduleState.outsideActiveHours) && (
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-                      {scheduleState.hasConflict && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">Conflict on calendar</span>}
+                      {scheduleState.hasConflict && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">{scheduleState.hasOverlap ? 'Conflict on calendar' : `Needs ${scheduleBufferMinutes}m buffer`}</span>}
                       {scheduleState.outsideActiveHours && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 font-bold text-amber-900 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300">Outside active hours</span>}
                     </div>
                   )}
@@ -4876,9 +5431,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               </h3>
               <div className="flex items-center gap-2 text-xs font-bold text-zinc-500 dark:text-zinc-400">
                 <span>{selectedDayOpenTasks.length} task{selectedDayOpenTasks.length === 1 ? '' : 's'}</span>
-                {selectedDayConflictCount > 0 && (
+                {selectedDayScheduleIssueCount > 0 && (
                   <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">
-                    {selectedDayConflictCount} conflict{selectedDayConflictCount === 1 ? '' : 's'}
+                    {selectedDayScheduleIssueCount} schedule issue{selectedDayScheduleIssueCount === 1 ? '' : 's'}
                   </span>
                 )}
               </div>
@@ -4896,7 +5451,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{task.contact}</p>
                       {(scheduleState.hasConflict || scheduleState.outsideActiveHours) && (
                         <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-                          {scheduleState.hasConflict && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">Overlapping booking</span>}
+                          {scheduleState.hasConflict && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">{scheduleState.hasOverlap ? 'Overlapping booking' : `Needs ${scheduleBufferMinutes}m buffer`}</span>}
                           {scheduleState.outsideActiveHours && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 font-bold text-amber-900 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300">Outside active hours</span>}
                         </div>
                       )}
@@ -5068,7 +5623,27 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       
       <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors">
         <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
-          {filteredInboxEmails.map(email => (
+          {filteredInboxEmails.map((email) => {
+            const relationshipState = buildOutreachRelationshipState({
+              email: email.fromEmail,
+              name: email.fromName,
+              company: email.company,
+              inboxEmail: email
+            });
+            const contactActionPlan = relationshipState.matchedContact
+              ? getContactActionPlan(relationshipState.matchedContact, relationshipState.attention)
+              : null;
+            const inboxPrimaryAction = contactActionPlan?.primaryAction || {
+              key: 'review-crm-draft',
+              label: 'Review CRM draft',
+              detail: 'Create a CRM record before this thread loses shared context across inbox, CRM, and outreach.'
+            };
+            const inboxActionReasons = contactActionPlan?.actionReasons?.slice(0, 3) || [
+              'No CRM record',
+              Number(email.aiScore || 0) >= 70 ? 'High-intent inbox signal' : 'Shared context missing'
+            ];
+
+            return (
             <div key={email.id} className={`p-6 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors ${email.isRead ? 'opacity-60' : ''}`}>
               <div className="flex justify-between items-start mb-2">
                 <div className="flex-1 min-w-0">
@@ -5102,6 +5677,57 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <span className="text-sm text-zinc-800 dark:text-zinc-200 font-medium">AI Summary: {email.aiSummary}</span>
                 </div>
               )}
+
+              <div className="mb-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">CRM Link & Next Best Action</p>
+                    {relationshipState.matchedContact ? (
+                      <>
+                        <p className="mt-1 text-sm font-bold text-black dark:text-white">{relationshipState.matchedContact.name} · {relationshipState.matchedContact.stage}</p>
+                        <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{relationshipState.matchedContact.company || email.company || 'Unknown company'} · Open tasks: {relationshipState.attention?.openTasksCount || 0}</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="mt-1 text-sm font-bold text-black dark:text-white">No CRM contact yet</p>
+                        <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">Create this sender as a CRM record so Inbox, outreach, and tasks share the same account context.</p>
+                      </>
+                    )}
+                    <p className="mt-2 text-xs font-bold text-black dark:text-white">{inboxPrimaryAction.label}</p>
+                    <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-300 max-w-xl">{inboxPrimaryAction.detail}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => runInboxPrimaryAction(email, relationshipState)}
+                      className="text-xs bg-black dark:bg-white text-white dark:text-black px-3 py-2 rounded font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition"
+                    >
+                      {inboxPrimaryAction.label}
+                    </button>
+                    <button
+                      onClick={() => openOrCreateContactFromInboxEmail(email)}
+                      className="text-xs bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-3 py-2 rounded font-bold hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
+                    >
+                      {relationshipState.matchedContact ? 'Open CRM' : 'Review CRM'}
+                    </button>
+                    <button
+                      onClick={() => addFollowUpTaskFromInboxEmail(email)}
+                      className="text-xs bg-amber-400 text-black px-3 py-2 rounded font-bold hover:bg-amber-300 transition"
+                    >
+                      Add Task
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                  {inboxActionReasons.map((reason) => (
+                    <span key={`${email.id}-${reason}`} className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-1 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                      {reason}
+                    </span>
+                  ))}
+                </div>
+                {relationshipState.matchedContact && relationshipState.matchedContact.nextStep && (
+                  <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300">Next step: {relationshipState.matchedContact.nextStep}</p>
+                )}
+              </div>
 
               <div className="flex items-center gap-2 flex-wrap">
                     <button 
@@ -5159,7 +5785,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </button>
               </div>
             </div>
-          ))}
+          )})}
           {filteredInboxEmails.length === 0 && (
             <div className="p-12 text-center text-zinc-500 dark:text-zinc-400">
               {inboxSearch ? 'No emails match your search.' : inboxFilter === 'archived' ? 'No archived emails.' : 'Inbox is empty.'}
@@ -5335,10 +5961,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400 max-w-2xl">These are the accounts most likely to need action because of deal value, timing, follow-up debt, or open work.</p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full lg:w-auto">
-            {crmOverview.attentionContacts.map((item) => (
-              <button
+            {crmOverview.attentionContacts.map((item) => {
+              const actionPlan = getContactActionPlan(item.contact, item);
+
+              return (
+              <div
                 key={item.contact.email || item.contact.id}
-                onClick={() => openDossier(item.contact)}
                 className="text-left p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/70 hover:border-amber-400 dark:hover:border-amber-500 transition"
               >
                 <div className="flex items-center justify-between gap-3">
@@ -5349,8 +5977,29 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <span className="text-[10px] px-2 py-1 rounded-full font-bold border bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-300">{item.urgencyScore}</span>
                 </div>
                 <p className="mt-2 text-xs text-zinc-700 dark:text-zinc-300 line-clamp-2">{item.contact.nextStep || item.contact.aiSummary || 'Needs a defined next step.'}</p>
-              </button>
-            ))}
+                <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                  {actionPlan.actionReasons.slice(0, 3).map((reason) => (
+                    <span key={`${item.contact.email || item.contact.id}-${reason}`} className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-1 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                      {reason}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-3 flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={(event) => runContactPrimaryAction(item.contact, item, event)}
+                    className="text-xs bg-black dark:bg-white text-white dark:text-black px-3 py-2 rounded font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition"
+                  >
+                    {actionPlan.primaryAction.label}
+                  </button>
+                  <button
+                    onClick={() => openDossier(item.contact)}
+                    className="text-xs bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-3 py-2 rounded font-bold hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
+                  >
+                    Open Dossier
+                  </button>
+                </div>
+              </div>
+            )})}
           </div>
         </div>
       </div>
@@ -5396,6 +6045,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <tbody>
             {filteredContacts.map(contact => {
               const attention = contactAttentionMap.get(contact.email || contact.id);
+              const actionPlan = getContactActionPlan(contact, attention);
               return (
               <tr key={contact.id || contact.email} className="border-b border-zinc-100 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors cursor-pointer" onClick={() => openDossier(contact)}>
                 <td className="p-4 text-sm text-zinc-600 dark:text-zinc-300">
@@ -5420,6 +6070,18 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <span>Follow-up: {formatFriendlyDate(contact.nextFollowUpAt)}</span>
                       <span>Open tasks: {attention?.openTasksCount || 0}</span>
                     </div>
+                    <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Next best action</div>
+                      <div className="mt-1 text-xs font-bold text-black dark:text-white">{actionPlan.primaryAction.label}</div>
+                      <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{actionPlan.primaryAction.detail}</div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      {actionPlan.actionReasons.slice(0, 3).map((reason) => (
+                        <span key={`${contact.email || contact.id}-${reason}`} className="rounded-full border border-zinc-200 bg-white px-2 py-1 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                          {reason}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </td>
                 <td className="p-4 text-sm text-zinc-600 dark:text-zinc-300">
@@ -5428,27 +6090,35 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <div className="text-xs mt-1">Priority: {contact.priorityScore || 50}</div>
                 </td>
                 <td className="p-4 text-sm text-right">
-                  <div className="flex items-center justify-end space-x-2">
-                    <button onClick={(e) => openEditContact(contact, e)} className="p-1.5 text-zinc-500 hover:text-black dark:text-zinc-400 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Edit Contact">
-                      <Edit3 className="w-4 h-4" />
+                  <div className="flex flex-col items-end gap-2">
+                    <button
+                      onClick={(event) => runContactPrimaryAction(contact, attention, event)}
+                      className="text-xs bg-black dark:bg-white text-white dark:text-black px-3 py-2 rounded font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition"
+                    >
+                      {actionPlan.primaryAction.label}
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); setContactToDelete(contact); }} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-500 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Delete Contact">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); createTaskForContact(contact); }} className="p-1.5 text-zinc-500 hover:text-amber-600 dark:text-zinc-400 dark:hover:text-amber-400 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Create follow-up task">
-                      <CheckSquare className="w-4 h-4" />
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); handleAIAction('aiContactPlan', { contact }); }} disabled={loading} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-400 bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Create AI contact plan">
-                      <Sparkles className="w-4 h-4" />
-                    </button>
-                    {contact.stage === 'Proposal' && (
-                      <button onClick={(e) => { e.stopPropagation(); handleAIAction('proposalFollowUp', { contact }); }} disabled={loading} className="p-1.5 text-zinc-500 hover:text-black dark:text-zinc-400 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Draft proposal follow-up">
-                        <Send className="w-4 h-4" />
+                    <div className="flex items-center justify-end space-x-2">
+                      <button onClick={(e) => openEditContact(contact, e)} className="p-1.5 text-zinc-500 hover:text-black dark:text-zinc-400 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Edit Contact">
+                        <Edit3 className="w-4 h-4" />
                       </button>
-                    )}
-                    <button onClick={(e) => { e.stopPropagation(); openDossier(contact); }} className="text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white font-bold text-sm flex items-center ml-2 transition-colors">
-                      View <ChevronRight className="w-4 h-4 ml-0.5" />
-                    </button>
+                      <button onClick={(e) => { e.stopPropagation(); setContactToDelete(contact); }} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-500 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Delete Contact">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                      <button onClick={(e) => { e.stopPropagation(); createTaskForContact(contact); }} className="p-1.5 text-zinc-500 hover:text-amber-600 dark:text-zinc-400 dark:hover:text-amber-400 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Create follow-up task">
+                        <CheckSquare className="w-4 h-4" />
+                      </button>
+                      <button onClick={(e) => { e.stopPropagation(); handleAIAction('aiContactPlan', { contact }); }} disabled={loading} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-400 bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Create AI contact plan">
+                        <Sparkles className="w-4 h-4" />
+                      </button>
+                      {contact.stage === 'Proposal' && (
+                        <button onClick={(e) => { e.stopPropagation(); handleAIAction('proposalFollowUp', { contact }); }} disabled={loading} className="p-1.5 text-zinc-500 hover:text-black dark:text-zinc-400 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Draft proposal follow-up">
+                          <Send className="w-4 h-4" />
+                        </button>
+                      )}
+                      <button onClick={(e) => { e.stopPropagation(); openDossier(contact); }} className="text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white font-bold text-sm flex items-center ml-2 transition-colors">
+                        View <ChevronRight className="w-4 h-4 ml-0.5" />
+                      </button>
+                    </div>
                   </div>
                 </td>
               </tr>
@@ -5515,6 +6185,80 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">{selectedInboxEmail.date}</div>
                 </div>
               )}
+            </div>
+
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 p-4 space-y-3">
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">Outreach Play</span>
+                  {recommendedOutreachStrategy.playbookId && selectedPlaybook?.id !== recommendedOutreachStrategy.playbookId && (
+                    <button
+                      type="button"
+                      onClick={() => setComposerState((prev) => ({
+                        ...prev,
+                        selectedPlaybookId: recommendedOutreachStrategy.playbookId,
+                        sequenceCadenceId: recommendedOutreachStrategy.cadenceId || prev.sequenceCadenceId || DEFAULT_SEQUENCE_CADENCE_ID
+                      }))}
+                      className="text-[11px] font-bold text-rose-900 dark:text-rose-400 hover:underline"
+                    >
+                      Use Recommended
+                    </button>
+                  )}
+                </div>
+                <select
+                  name="selectedPlaybookId"
+                  value={composerState.selectedPlaybookId}
+                  onChange={handleComposerChange}
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                >
+                  <option value="">Auto-select based on CRM stage</option>
+                  {OUTREACH_PLAYBOOKS.map((playbook) => (
+                    <option key={playbook.id} value={playbook.id}>{playbook.label}</option>
+                  ))}
+                </select>
+                {(selectedPlaybook || recommendedOutreachStrategy.playbookId) && (
+                  <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300 leading-relaxed">
+                    {(selectedPlaybook || OUTREACH_PLAYBOOKS.find((playbook) => playbook.id === recommendedOutreachStrategy.playbookId))?.description}
+                  </p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-2">Cadence</label>
+                  <select
+                    name="sequenceCadenceId"
+                    value={composerState.sequenceCadenceId}
+                    onChange={handleComposerChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  >
+                    {SEQUENCE_CADENCE_OPTIONS.map((cadence) => (
+                      <option key={cadence.id} value={cadence.id}>{cadence.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-2">Sequence Steps</label>
+                  <select
+                    name="sequenceStepCount"
+                    value={composerState.sequenceStepCount}
+                    onChange={handleComposerChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  >
+                    {[2, 3, 4, 5].map((count) => (
+                      <option key={count} value={count}>{count} steps</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 p-3 text-xs text-zinc-700 dark:text-zinc-300">
+                <div className="font-bold text-black dark:text-white">Current cadence: {selectedSequenceCadence.label}</div>
+                <div className="mt-1 leading-relaxed">{selectedSequenceCadence.description}</div>
+                <div className="mt-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  {selectedSequenceCadence.delays.map((delay, index) => `Step ${index + 1}: day ${delay}`).join(' | ')}
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -5777,19 +6521,44 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               {composerState.sequenceSteps.length > 0 && (
                 <div className="px-4 py-3 bg-zinc-50 dark:bg-zinc-950/50 border-t border-zinc-200 dark:border-zinc-800">
                   <div className="flex items-center justify-between gap-3 mb-2">
-                    <span className="text-xs font-bold text-black dark:text-white uppercase tracking-wide">Sequence Step Loader</span>
-                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400">Copy one step into Subject + Body</span>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {composerState.sequenceSteps.map((step) => (
+                    <span className="text-xs font-bold text-black dark:text-white uppercase tracking-wide">Sequence Steps</span>
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
+                      <span className="text-[11px] text-zinc-500 dark:text-zinc-400">Load one step into Subject + Body or push the sequence into the planner.</span>
                       <button
-                        key={`sequence-step-${step.stepNumber}`}
-                        onClick={() => loadSequenceStepToComposer(step)}
-                        className="text-xs bg-black dark:bg-zinc-800 text-white px-3 py-1.5 rounded-md font-bold hover:bg-zinc-800 dark:hover:bg-zinc-700 transition"
-                        title={`${step.stepTitle}: ${step.subject}`}
+                        onClick={createSequenceTasksFromComposer}
+                        className="text-xs bg-amber-400 text-black px-3 py-1.5 rounded-md font-bold hover:bg-amber-300 transition"
                       >
-                        Copy Step {step.stepNumber} To Composer
+                        Create Follow-Up Tasks
                       </button>
+                    </div>
+                  </div>
+                  <div className="grid gap-2 lg:grid-cols-3">
+                    {composerState.sequenceSteps.map((step) => (
+                      <div
+                        key={`sequence-step-${step.stepNumber}`}
+                        className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Step {step.stepNumber}</p>
+                            <p className="text-sm font-bold text-black dark:text-white">{step.stepTitle || `Step ${step.stepNumber}`}</p>
+                          </div>
+                          <span className="text-[10px] px-2 py-1 rounded-full border bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300">
+                            {step.delayLabel || (step.stepNumber === 1 ? 'Send now' : '3 days')}
+                          </span>
+                        </div>
+                        {step.goal && (
+                          <p className="mt-2 text-[11px] text-zinc-600 dark:text-zinc-300 leading-relaxed">Goal: {step.goal}</p>
+                        )}
+                        <p className="mt-2 text-xs font-medium text-rose-900 dark:text-rose-400 line-clamp-2">{step.subject}</p>
+                        <button
+                          onClick={() => loadSequenceStepToComposer(step)}
+                          className="mt-3 text-xs bg-black dark:bg-zinc-800 text-white px-3 py-1.5 rounded-md font-bold hover:bg-zinc-800 dark:hover:bg-zinc-700 transition"
+                          title={`${step.stepTitle}: ${step.subject}`}
+                        >
+                          Load Into Composer
+                        </button>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -5818,6 +6587,71 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       </div>
                       <span className="text-[11px] font-medium normal-case tracking-normal text-zinc-500">CRM research, follow-up strategy, and AI notes stay visible here while you draft.</span>
                     </div>
+                    {(activeOutreachRelationshipState?.matchedContact || normalizeEmail(composerState.to || '')) && (
+                      <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+                        <div className="flex items-start justify-between gap-3 flex-wrap">
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">
+                              {activeOutreachRelationshipState?.matchedContact ? 'Linked CRM Contact' : 'CRM Opportunity'}
+                            </p>
+                            {activeOutreachRelationshipState?.matchedContact ? (
+                              <>
+                                <p className="mt-1 text-sm font-bold text-white">{activeOutreachRelationshipState.matchedContact.name} · {activeOutreachRelationshipState.matchedContact.stage}</p>
+                                <p className="mt-1 text-xs text-zinc-400">{activeOutreachRelationshipState.matchedContact.company || 'Unknown company'} · Next step: {activeOutreachRelationshipState.matchedContact.nextStep || 'Not defined yet'}</p>
+                              </>
+                            ) : (
+                              <>
+                                <p className="mt-1 text-sm font-bold text-white">No CRM contact linked to this draft yet</p>
+                                <p className="mt-1 text-xs text-zinc-400">Create the recipient in CRM so outreach can inherit stage, value, next step, and follow-up timing.</p>
+                              </>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <button
+                              onClick={injectCurrentRelationshipContext}
+                              disabled={!activeOutreachRelationshipState?.context}
+                              className="text-xs bg-zinc-800 text-zinc-100 px-3 py-1.5 rounded-md font-medium hover:bg-zinc-700 transition disabled:opacity-50"
+                            >
+                              Load CRM Snapshot
+                            </button>
+                            {activeOutreachRelationshipState?.matchedContact && (
+                              <button
+                                onClick={() => createTaskForContact(activeOutreachRelationshipState.matchedContact)}
+                                className="text-xs bg-amber-400 text-black px-3 py-1.5 rounded-md font-bold hover:bg-amber-300 transition"
+                              >
+                                Add Task
+                              </button>
+                            )}
+                            <button
+                              onClick={openOrCreateOutreachContact}
+                              className="text-xs bg-white text-black px-3 py-1.5 rounded-md font-bold hover:bg-zinc-200 transition"
+                            >
+                              {activeOutreachRelationshipState?.matchedContact ? 'Open CRM' : 'Create CRM Contact'}
+                            </button>
+                          </div>
+                        </div>
+                        {activeOutreachRelationshipState?.matchedContact && (
+                          <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                            <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-1 font-bold text-zinc-300">
+                              Open tasks: {activeOutreachRelationshipState.attention?.openTasksCount || 0}
+                            </span>
+                            <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-1 font-bold text-zinc-300">
+                              Follow-up: {activeOutreachRelationshipState.matchedContact.nextFollowUpAt || 'Not set'}
+                            </span>
+                            {activeOutreachRelationshipState.attention?.followUpDue && (
+                              <span className="rounded-full border border-amber-800 bg-amber-950/40 px-2 py-1 font-bold text-amber-300">
+                                Follow-up due
+                              </span>
+                            )}
+                            {activeOutreachRelationshipState.attention?.isStale && (
+                              <span className="rounded-full border border-rose-800 bg-rose-950/40 px-2 py-1 font-bold text-rose-300">
+                                Relationship is stale
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <textarea
                       name="aiContext"
                       value={composerState.aiContext}
@@ -6490,6 +7324,16 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   </select>
                 </div>
               </div>
+              <div>
+                <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Minimum Buffer Between Timed Tasks (min)</label>
+                <input 
+                  type="number" name="scheduleBufferMinutes" value={config.scheduleBufferMinutes} onChange={handleConfigChange}
+                  min="0" max="120"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                />
+                {configErrors.scheduleBufferMinutes && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.scheduleBufferMinutes}</p>}
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Protect travel, prep, and follow-up time by requiring a minimum gap between timed bookings.</p>
+              </div>
             </div>
           </div>
 
@@ -6837,19 +7681,65 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="bg-white dark:bg-zinc-900 w-full max-w-3xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
             <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center bg-zinc-50 dark:bg-zinc-950/50">
               <h2 className="text-xl font-bold text-black dark:text-white">{editingContact._isNew ? 'Add Contact' : 'Edit Contact'}</h2>
-              <button onClick={() => { setIsContactModalOpen(false); setEditingContact(null); }} className="text-zinc-400 hover:text-black dark:hover:text-white transition">
+              <button onClick={closeContactModal} className="text-zinc-400 hover:text-black dark:hover:text-white transition">
                 <X className="w-6 h-6" />
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {editingContactInsights?.actionPlan && (
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Operator Guidance</p>
+                      <p className="mt-1 text-sm font-bold text-black dark:text-white">{editingContactInsights.actionPlan.primaryAction.label}</p>
+                      <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-300 max-w-2xl">{editingContactInsights.actionPlan.primaryAction.detail}</p>
+                      <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        {editingContactInsights.actionPlan.actionReasons.slice(0, 4).map((reason) => (
+                          <span key={`contact-guidance-${reason}`} className="rounded-full border border-zinc-200 bg-white px-2 py-1 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                            {reason}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap lg:justify-end">
+                      <button onClick={() => applyEditingContactGuidance('all')} className="text-xs bg-black dark:bg-white text-white dark:text-black px-3 py-2 rounded font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition">
+                        Apply stage defaults
+                      </button>
+                      <button onClick={() => applyEditingContactGuidance('next-step')} className="text-xs bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-3 py-2 rounded font-bold hover:bg-zinc-50 dark:hover:bg-zinc-700 transition">
+                        Use suggested next step
+                      </button>
+                      <button onClick={() => applyEditingContactGuidance('follow-up')} className="text-xs bg-amber-400 text-black px-3 py-2 rounded font-bold hover:bg-amber-300 transition">
+                        Set follow-up date
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {editingContactInsights?.duplicateContact && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-900/20">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <p className="text-sm font-bold text-amber-900 dark:text-amber-300">Existing CRM record found for this email.</p>
+                      <p className="mt-1 text-xs text-amber-900/80 dark:text-amber-200">Open the existing record, keep your new details, and save updates instead of creating a duplicate.</p>
+                    </div>
+                    <button onClick={openExistingDuplicateContact} className="text-xs bg-amber-500 text-black px-3 py-2 rounded font-bold hover:bg-amber-400 transition">
+                      Review existing record
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Full Name</label>
                   <input type="text" name="name" value={editingContact.name} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  {editingContactInsights?.missingName && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">A clear contact name makes outreach prompts and CRM search more reliable.</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Email <span className="text-rose-900">*</span></label>
                   <input type="email" name="email" disabled={!editingContact._isNew} value={editingContact.email} onChange={handleContactFormChange} className={`w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white transition-colors ${!editingContact._isNew ? 'bg-zinc-100 dark:bg-zinc-950 opacity-70' : 'bg-white dark:bg-zinc-800'}`} />
+                  {editingContact.email && !editingContactInsights?.hasValidEmail && <p className="mt-1 text-xs text-rose-700 dark:text-rose-400">Enter a valid email so this record can link Inbox, CRM, and Outreach automatically.</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Company</label>
@@ -6919,6 +7809,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               <div>
                 <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Next Step</label>
                 <textarea name="nextStep" value={editingContact.nextStep || ''} onChange={handleContactFormChange} rows="2" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
+                {editingContactInsights?.actionPlan?.suggestedNextStep && !editingContact.nextStep && (
+                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Suggested: {editingContactInsights.actionPlan.suggestedNextStep}</p>
+                )}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -6936,8 +7829,8 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               </div>
             </div>
             <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-end space-x-3">
-              <button onClick={() => { setIsContactModalOpen(false); setEditingContact(null); }} className="px-4 py-2 text-sm font-bold text-zinc-600 dark:text-zinc-400 hover:text-black dark:hover:text-white transition">Cancel</button>
-              <button onClick={saveContact} disabled={loading} className="px-6 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50">Save</button>
+              <button onClick={closeContactModal} className="px-4 py-2 text-sm font-bold text-zinc-600 dark:text-zinc-400 hover:text-black dark:hover:text-white transition">Cancel</button>
+              <button onClick={saveContact} disabled={loading} className="px-6 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50">{editingContact._isNew ? 'Save Contact' : 'Save Updates'}</button>
             </div>
           </div>
         </div>
@@ -7052,7 +7945,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       {editingTaskScheduleState.invalidTime && <p className="font-bold text-rose-900 dark:text-rose-300">Use a start time like 09:00 AM or 14:30.</p>}
                       {editingTaskScheduleState.hasConflict && (
                         <p className="font-bold text-rose-900 dark:text-rose-300">
-                          This booking overlaps with {editingTaskScheduleState.conflictingTasks.map((task) => task.title).join(', ')}.
+                          {editingTaskScheduleState.hasOverlap
+                            ? `This booking overlaps with ${editingTaskScheduleState.conflictingTasks.map((task) => task.title).join(', ')}.`
+                            : `This booking needs at least ${scheduleBufferMinutes} minutes of buffer before or after the surrounding task.`}
                         </p>
                       )}
                       {editingTaskScheduleState.outsideActiveHours && (

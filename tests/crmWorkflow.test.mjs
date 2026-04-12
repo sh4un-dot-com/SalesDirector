@@ -6,11 +6,13 @@ import {
   normalizeTaskRecord,
   buildPipelineOverview,
   buildCrmOverview,
+  buildContactActionPlan,
   buildUpcomingMeetingQueue,
   buildSalesPerformanceSnapshot,
   buildTaskSummary,
   buildCalendarMonth,
   buildTaskConflictMap,
+  buildTaskScheduleIssueMap,
   dateKeyToDate,
   getTaskScheduledEnd,
   getTaskScheduledStart,
@@ -75,6 +77,19 @@ test('buildTaskConflictMap finds overlapping timed tasks on the same planner day
   assert.deepEqual(conflicts.get('b'), ['a']);
   assert.equal(conflicts.has('c'), false);
   assert.equal(conflicts.has('d'), false);
+});
+
+test('buildTaskScheduleIssueMap flags bookings that violate the required buffer window', () => {
+  const issues = buildTaskScheduleIssueMap([
+    { id: 'a', title: 'Discovery call', scheduledDate: '2026-04-12', time: '09:00 AM', durationMinutes: 30, status: 'pending' },
+    { id: 'b', title: 'Proposal review', scheduledDate: '2026-04-12', time: '09:40 AM', durationMinutes: 20, status: 'pending' },
+    { id: 'c', title: 'Customer handoff', scheduledDate: '2026-04-12', time: '10:30 AM', durationMinutes: 30, status: 'pending' }
+  ], { minimumGapMinutes: 15 });
+
+  assert.equal(issues.get('a')?.[0]?.kind, 'buffer');
+  assert.equal(issues.get('a')?.[0]?.otherTaskId, 'b');
+  assert.equal(issues.get('b')?.[0]?.gapMinutes, 10);
+  assert.equal(issues.has('c'), false);
 });
 
 test('normalizeContactRecord fills CRM defaults and normalizes pipeline fields', () => {
@@ -151,6 +166,55 @@ test('buildCrmOverview surfaces due follow-ups, stale contacts, and pipeline val
   assert.equal(overview.staleContactsCount, 1);
   assert.equal(overview.hotContactsCount, 1);
   assert.equal(overview.attentionContacts[0].contact.email, 'hot@example.com');
+});
+
+test('buildContactActionPlan recommends a proposal follow-up for due proposal-stage contacts', () => {
+  const actionPlan = buildContactActionPlan(
+    {
+      name: 'Jane Doe',
+      email: 'jane@example.com',
+      stage: 'Proposal',
+      nextStep: 'Follow up on the active proposal.',
+      nextFollowUpAt: '2026-04-10',
+      priorityScore: 82
+    },
+    {
+      openTasksCount: 0,
+      followUpDue: true,
+      isStale: false,
+      lastTouchedDaysAgo: 2
+    },
+    new Date('2026-04-11T09:00:00.000Z')
+  );
+
+  assert.equal(actionPlan.primaryAction.key, 'proposal-follow-up');
+  assert.equal(actionPlan.primaryAction.label, 'Draft proposal follow-up');
+  assert.ok(actionPlan.actionReasons.includes('Follow-up due'));
+});
+
+test('buildContactActionPlan fills operator defaults for contacts missing a next step', () => {
+  const actionPlan = buildContactActionPlan(
+    {
+      name: 'Jane Doe',
+      email: 'jane@example.com',
+      stage: 'Opportunity',
+      priorityScore: 40,
+      leadTemperature: 'Cold'
+    },
+    {
+      openTasksCount: 0,
+      followUpDue: false,
+      isStale: false,
+      lastTouchedDaysAgo: 1
+    },
+    new Date('2026-04-11T09:00:00.000Z')
+  );
+
+  assert.equal(actionPlan.primaryAction.key, 'edit-contact');
+  assert.equal(actionPlan.suggestedPriorityScore, 70);
+  assert.equal(actionPlan.suggestedLeadTemperature, 'Hot');
+  assert.equal(actionPlan.suggestedNextFollowUpAt, '2026-04-12');
+  assert.match(actionPlan.suggestedNextStep, /decision timeline/i);
 });
 
 test('buildPipelineOverview groups contacts by stage and calculates weighted forecast', () => {

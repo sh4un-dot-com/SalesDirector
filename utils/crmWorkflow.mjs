@@ -269,6 +269,12 @@ const STAGE_POSITION = {
   Customer: 4
 };
 
+const TEMPERATURE_RANK = {
+  Cold: 0,
+  Warm: 1,
+  Hot: 2
+};
+
 const normalizeStageHistory = (history = []) => {
   if (!Array.isArray(history)) return [];
 
@@ -559,8 +565,16 @@ export const sortTasksForPlanner = (tasks = [], selectedDateKey = '', referenceD
   return (left.title || '').localeCompare(right.title || '');
 });
 
-export const buildTaskConflictMap = (tasks = []) => {
-  const conflicts = new Map();
+const addScheduleIssue = (issueMap, taskId, issue) => {
+  const nextIssues = issueMap.get(taskId) || [];
+  nextIssues.push(issue);
+  issueMap.set(taskId, nextIssues);
+};
+
+export const buildTaskScheduleIssueMap = (tasks = [], options = {}) => {
+  const issueMap = new Map();
+  const minimumGapMinutes = Math.max(0, Number(options.minimumGapMinutes || 0) || 0);
+  const minimumGapMs = minimumGapMinutes * 60 * 1000;
   const timedTasks = normalizeTasks(tasks)
     .filter((task) => task.status !== 'completed')
     .map((task) => ({
@@ -586,18 +600,43 @@ export const buildTaskConflictMap = (tasks = []) => {
     for (let nextIndex = index + 1; nextIndex < timedTasks.length; nextIndex += 1) {
       const next = timedTasks[nextIndex];
       if (next.dateKey !== current.dateKey) break;
-      if (next.start.getTime() >= current.end.getTime()) break;
-      if (next.end.getTime() <= current.start.getTime()) continue;
+      const gapMs = next.start.getTime() - current.end.getTime();
+      const hasOverlap = next.start.getTime() < current.end.getTime() && next.end.getTime() > current.start.getTime();
+      const needsBuffer = !hasOverlap && minimumGapMs > 0 && gapMs >= 0 && gapMs < minimumGapMs;
+      if (!hasOverlap && !needsBuffer && gapMs >= minimumGapMs) break;
+      if (!hasOverlap && !needsBuffer) continue;
 
-      const currentConflicts = conflicts.get(current.task.id) || [];
-      currentConflicts.push(next.task.id);
-      conflicts.set(current.task.id, currentConflicts);
+      const kind = hasOverlap ? 'overlap' : 'buffer';
+      const gapMinutes = hasOverlap ? 0 : Math.max(0, Math.round(gapMs / 60000));
 
-      const nextConflicts = conflicts.get(next.task.id) || [];
-      nextConflicts.push(current.task.id);
-      conflicts.set(next.task.id, nextConflicts);
+      addScheduleIssue(issueMap, current.task.id, {
+        otherTaskId: next.task.id,
+        kind,
+        gapMinutes,
+        minimumGapMinutes
+      });
+      addScheduleIssue(issueMap, next.task.id, {
+        otherTaskId: current.task.id,
+        kind,
+        gapMinutes,
+        minimumGapMinutes
+      });
     }
   }
+
+  return issueMap;
+};
+
+export const buildTaskConflictMap = (tasks = [], options = {}) => {
+  const issueMap = buildTaskScheduleIssueMap(tasks, options);
+  const conflicts = new Map();
+
+  issueMap.forEach((issues, taskId) => {
+    const conflictIds = Array.from(new Set((issues || []).map((issue) => issue.otherTaskId).filter(Boolean)));
+    if (conflictIds.length > 0) {
+      conflicts.set(taskId, conflictIds);
+    }
+  });
 
   return conflicts;
 };
@@ -697,6 +736,170 @@ export const buildCrmOverview = (contacts = [], tasks = [], threads = {}, refere
     hotContactsCount: normalizedContacts.filter((contact) => (contact.priorityScore || 0) >= 75 || contact.leadTemperature === 'Hot').length,
     openPipelineCount: normalizedContacts.filter((contact) => ['Opportunity', 'Proposal'].includes(contact.stage)).length,
     attentionContacts: attentionContacts.slice(0, 5)
+  };
+};
+
+const pickHotterTemperature = (left = 'Cold', right = 'Cold') => {
+  const normalizedLeft = CONTACT_TEMPERATURE_OPTIONS.includes(left) ? left : 'Cold';
+  const normalizedRight = CONTACT_TEMPERATURE_OPTIONS.includes(right) ? right : 'Cold';
+  return (TEMPERATURE_RANK[normalizedRight] ?? 0) > (TEMPERATURE_RANK[normalizedLeft] ?? 0)
+    ? normalizedRight
+    : normalizedLeft;
+};
+
+const addDaysToDateKey = (referenceDate = new Date(), days = 0) => {
+  const baseDate = referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
+    ? new Date(referenceDate.getTime())
+    : new Date();
+  baseDate.setHours(0, 0, 0, 0);
+  baseDate.setDate(baseDate.getDate() + days);
+  return formatDateKey(baseDate);
+};
+
+const getContactStageDefaults = (contact = {}, referenceDate = new Date()) => {
+  const normalizedContact = normalizeContactRecord(contact);
+  const contactLabel = normalizedContact.name && normalizedContact.name !== 'Unknown'
+    ? normalizedContact.name
+    : 'this contact';
+  const stageDefaults = {
+    Lead: {
+      priorityScore: 45,
+      leadTemperature: 'Cold',
+      followUpOffsetDays: 3,
+      buildNextStep: () => `Send a tailored intro and ask ${contactLabel} for a short discovery call.`
+    },
+    Contact: {
+      priorityScore: 55,
+      leadTemperature: 'Warm',
+      followUpOffsetDays: 2,
+      buildNextStep: () => `Qualify pain, confirm stakeholders, and book a discovery call with ${contactLabel}.`
+    },
+    Opportunity: {
+      priorityScore: 70,
+      leadTemperature: 'Hot',
+      followUpOffsetDays: 1,
+      buildNextStep: () => `Confirm the buying process, decision timeline, and next commercial call with ${contactLabel}.`
+    },
+    Proposal: {
+      priorityScore: 85,
+      leadTemperature: 'Hot',
+      followUpOffsetDays: 1,
+      buildNextStep: () => `Follow up on the proposal, resolve objections, and secure a decision checkpoint with ${contactLabel}.`
+    },
+    Customer: {
+      priorityScore: 80,
+      leadTemperature: 'Warm',
+      followUpOffsetDays: 14,
+      buildNextStep: () => `Confirm delivered value with ${contactLabel} and identify the next expansion or referral move.`
+    },
+    Churned: {
+      priorityScore: 30,
+      leadTemperature: 'Cold',
+      followUpOffsetDays: 30,
+      buildNextStep: () => `Check whether timing changed for ${contactLabel} and test for a reactivation angle.`
+    }
+  }[normalizedContact.stage] || {
+    priorityScore: 50,
+    leadTemperature: 'Cold',
+    followUpOffsetDays: 3,
+    buildNextStep: () => `Define the next action for ${contactLabel}.`
+  };
+
+  return {
+    priorityScore: Math.max(normalizedContact.priorityScore || 0, stageDefaults.priorityScore),
+    leadTemperature: pickHotterTemperature(normalizedContact.leadTemperature || 'Cold', stageDefaults.leadTemperature),
+    nextFollowUpAt: normalizedContact.nextFollowUpAt || addDaysToDateKey(referenceDate, stageDefaults.followUpOffsetDays),
+    nextStep: normalizedContact.nextStep || stageDefaults.buildNextStep()
+  };
+};
+
+export const buildContactActionPlan = (contact = {}, attention = null, referenceDate = new Date()) => {
+  const normalizedContact = normalizeContactRecord(contact);
+  const resolvedAttention = attention || getContactAttentionSummary(normalizedContact, [], {}, referenceDate);
+  const stageDefaults = getContactStageDefaults(normalizedContact, referenceDate);
+  const actionReasons = [];
+
+  if (resolvedAttention.followUpDue) {
+    actionReasons.push('Follow-up due');
+  }
+
+  if (!normalizedContact.nextStep) {
+    actionReasons.push('Missing next step');
+  }
+
+  if (resolvedAttention.isStale) {
+    actionReasons.push(resolvedAttention.lastTouchedDaysAgo != null ? `Stale ${resolvedAttention.lastTouchedDaysAgo}d` : 'Stale relationship');
+  }
+
+  if ((resolvedAttention.openTasksCount || 0) === 0 && !['Customer', 'Churned'].includes(normalizedContact.stage)) {
+    actionReasons.push('No open task');
+  }
+
+  if ((normalizedContact.estimatedValue || 0) >= 10000) {
+    actionReasons.push('High value');
+  }
+
+  if ((normalizedContact.priorityScore || 0) >= 80) {
+    actionReasons.push('High priority');
+  }
+
+  if (actionReasons.length === 0) {
+    actionReasons.push('Healthy momentum');
+  }
+
+  let primaryAction = {
+    key: 'review-dossier',
+    label: 'Review dossier',
+    detail: 'Inspect the latest context and keep the relationship moving.'
+  };
+
+  if (!normalizedContact.nextStep) {
+    primaryAction = {
+      key: 'edit-contact',
+      label: 'Define next step',
+      detail: 'Capture a concrete next move so the account does not drift.'
+    };
+  } else if (normalizedContact.stage === 'Proposal' && (resolvedAttention.followUpDue || resolvedAttention.isStale)) {
+    primaryAction = {
+      key: 'proposal-follow-up',
+      label: 'Draft proposal follow-up',
+      detail: 'Push the commercial decision toward a clear yes, no, or checkpoint.'
+    };
+  } else if (resolvedAttention.followUpDue || resolvedAttention.isStale) {
+    primaryAction = {
+      key: 'outreach',
+      label: 'Work in Outreach',
+      detail: 'Reply while the thread still has context and urgency.'
+    };
+  } else if ((resolvedAttention.openTasksCount || 0) === 0 && !['Customer', 'Churned'].includes(normalizedContact.stage)) {
+    primaryAction = {
+      key: 'create-task',
+      label: 'Create follow-up task',
+      detail: 'Protect the next action in the planner before the account goes stale.'
+    };
+  } else if (normalizedContact.stage === 'Opportunity') {
+    primaryAction = {
+      key: 'outreach',
+      label: 'Advance opportunity',
+      detail: 'Move the buyer toward the next meeting, stakeholder, or decision point.'
+    };
+  } else if (normalizedContact.stage === 'Customer') {
+    primaryAction = {
+      key: 'review-dossier',
+      label: 'Review relationship',
+      detail: 'Check delivery momentum, value realized, and expansion signals.'
+    };
+  }
+
+  return {
+    contact: normalizedContact,
+    attention: resolvedAttention,
+    actionReasons,
+    suggestedPriorityScore: stageDefaults.priorityScore,
+    suggestedLeadTemperature: stageDefaults.leadTemperature,
+    suggestedNextFollowUpAt: stageDefaults.nextFollowUpAt,
+    suggestedNextStep: stageDefaults.nextStep,
+    primaryAction
   };
 };
 
