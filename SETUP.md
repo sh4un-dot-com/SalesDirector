@@ -81,7 +81,7 @@ In desktop runtime, all CRM data is stored in an encrypted local database:
 
 ### Direct mode (fastest setup)
 
-Enter API keys directly in app Settings. Quick to start, but the frontend handles credentials in memory during the session. Keys are **never persisted** to disk.
+Enter API keys directly in app Settings. Quick to start, and the app persists those settings locally on the device so the same workstation is ready after restart. Use proxy mode instead if you do not want vendor credentials stored on the client.
 
 ### Proxy mode (production recommended)
 

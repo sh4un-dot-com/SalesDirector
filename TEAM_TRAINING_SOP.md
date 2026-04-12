@@ -31,7 +31,7 @@ Pass criteria:
 
 - Configure sender name, reply-to, and signature.
 - Set AI access (Gemini key or proxy base URL).
-- Explain security rule: secrets are not persisted to local storage.
+- Explain security rule: settings persist locally on the device until cleared; use proxy mode when vendor API keys must stay server-side.
 
 Pass criteria:
 - User can save valid sender profile and AI access path.

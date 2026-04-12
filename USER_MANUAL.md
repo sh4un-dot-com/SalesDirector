@@ -215,12 +215,14 @@ The AI-powered email composition workspace. Split into two panels:
 - **Objection Crusher** — input a prospect objection, get psychology-backed rebuttals
 - **Summarize Context** — condense long thread history into a quick summary
 - **Director's Insight** — persistent display of the AI's latest strategic recommendation
+- **AI Context Workspace** — large editable context area for CRM research, follow-up strategy, and AI instructions
 
 ### Composer Area (right)
 
 - **Personalization** — Recipient Name, Job Title, Company Name fields
 - **To field** — recipient email with real-time validation
 - **Subject line** — manual entry or AI suggestions
+- **Resizable wide-screen split** — drag the divider between context and draft to give either pane more room; double-click the divider to reset
 
 **AI Actions:**
 
@@ -273,7 +275,7 @@ All settings auto-save as you type. A **✅ Settings saved** confirmation appear
 ### Secure Proxy Routing
 
 - **Proxy Base URL** — server address for API forwarding
-- **Proxy Shared Secret** — session-only, never persisted
+- **Proxy Shared Secret** — persists locally on-device until cleared
 
 ### Company & Sender Profile
 
@@ -295,12 +297,12 @@ All settings auto-save as you type. A **✅ Settings saved** confirmation appear
 - Max Daily Emails (1–5,000)
 - Send Delay between messages (0–3,600 seconds)
 - Active Hours Start / End Time
-- Timezone (EST / CST / MST / PST)
+- Timezone (System default, or EST / CST / MST / PST override)
 
 ### AI Defaults & Provider Keys
 
 - Default Tone and Length preferences
-- Provider keys (session-only, never saved to disk):
+- Provider keys (persist locally on-device until cleared):
   - Google Gemini · OpenAI · Anthropic · xAI · Meta
 
 ---
@@ -316,7 +318,7 @@ The About tab shows:
 
 ## Data & Security
 
-- **API keys never persisted** — all provider keys are session-only React state
+- **Settings persist locally on-device** — provider keys, HubSpot token, mail credentials, and proxy settings survive restarts until cleared
 - **Encrypted at rest** — local data uses AES-256-GCM with PBKDF2 (250,000 iterations)
 - **Passphrase never stored** — not in memory after lock, never written to disk
 - **Proxy mode** — keeps all secrets server-side

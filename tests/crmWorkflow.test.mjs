@@ -10,15 +10,72 @@ import {
   buildSalesPerformanceSnapshot,
   buildTaskSummary,
   buildCalendarMonth,
+  buildTaskConflictMap,
+  dateKeyToDate,
+  getTaskScheduledEnd,
+  getTaskScheduledStart,
   materializeTaskTemplate,
   createMeetingPrepPack,
   parseAiContactPlan,
   parseAiIdeaOrganizer,
+  parseTimeToMinutes,
   createTaskFromContactPlan,
   applyAiFocusDayPlan,
   getTasksForDate,
   buildHeuristicTimelineSummary
 } from '../utils/crmWorkflow.mjs';
+
+test('dateKeyToDate keeps date-only planner keys on the intended local calendar day', () => {
+  const date = dateKeyToDate('2026-04-12');
+
+  assert.ok(date instanceof Date);
+  assert.equal(date.getFullYear(), 2026);
+  assert.equal(date.getMonth(), 3);
+  assert.equal(date.getDate(), 12);
+});
+
+test('parseTimeToMinutes handles 12-hour and 24-hour planner times', () => {
+  assert.equal(parseTimeToMinutes('09:00 AM'), 540);
+  assert.equal(parseTimeToMinutes('2:30 pm'), 870);
+  assert.equal(parseTimeToMinutes('14:45'), 885);
+  assert.equal(parseTimeToMinutes(''), null);
+});
+
+test('getTaskScheduledStart and getTaskScheduledEnd derive real booking timestamps from planner date, time, and duration', () => {
+  const task = normalizeTaskRecord({
+    title: 'Discovery call',
+    scheduledDate: '2026-04-12',
+    time: '09:15 AM',
+    durationMinutes: 45
+  });
+
+  const start = getTaskScheduledStart(task);
+  const end = getTaskScheduledEnd(task);
+
+  assert.ok(start instanceof Date);
+  assert.ok(end instanceof Date);
+  assert.equal(start.getFullYear(), 2026);
+  assert.equal(start.getMonth(), 3);
+  assert.equal(start.getDate(), 12);
+  assert.equal(start.getHours(), 9);
+  assert.equal(start.getMinutes(), 15);
+  assert.equal(end.getHours(), 10);
+  assert.equal(end.getMinutes(), 0);
+});
+
+test('buildTaskConflictMap finds overlapping timed tasks on the same planner day', () => {
+  const conflicts = buildTaskConflictMap([
+    { id: 'a', title: 'Call Jane', scheduledDate: '2026-04-12', time: '09:00 AM', durationMinutes: 60, status: 'pending' },
+    { id: 'b', title: 'Internal sync', scheduledDate: '2026-04-12', time: '09:30 AM', durationMinutes: 30, status: 'pending' },
+    { id: 'c', title: 'Proposal review', scheduledDate: '2026-04-12', time: '11:00 AM', durationMinutes: 30, status: 'pending' },
+    { id: 'd', title: 'Next day meeting', scheduledDate: '2026-04-13', time: '09:15 AM', durationMinutes: 30, status: 'pending' }
+  ]);
+
+  assert.deepEqual(conflicts.get('a'), ['b']);
+  assert.deepEqual(conflicts.get('b'), ['a']);
+  assert.equal(conflicts.has('c'), false);
+  assert.equal(conflicts.has('d'), false);
+});
 
 test('normalizeContactRecord fills CRM defaults and normalizes pipeline fields', () => {
   const contact = normalizeContactRecord({
@@ -124,22 +181,26 @@ test('buildTaskSummary and getTasksForDate use scheduled work dates', () => {
   assert.equal(selected[0].title, 'Plan proposal');
 });
 
-test('buildUpcomingMeetingQueue returns today and future meetings with matched contacts', () => {
+test('buildUpcomingMeetingQueue keeps future meetings and excludes same-day meetings that already passed', () => {
   const queue = buildUpcomingMeetingQueue(
     [
-      { id: 1, title: 'Today call', type: 'call', scheduledDate: '2026-04-11', contactEmail: 'jane@example.com' },
+      { id: 1, title: 'Past morning call', type: 'call', scheduledDate: '2026-04-11', time: '08:00 AM', contactEmail: 'jane@example.com' },
+      { id: 5, title: 'Late morning call', type: 'call', scheduledDate: '2026-04-11', time: '11:30 AM', contactEmail: 'jane@example.com' },
+      { id: 6, title: 'Untimed follow-up meeting', type: 'meeting', scheduledDate: '2026-04-11', contactEmail: 'jane@example.com' },
       { id: 2, title: 'Future meeting', type: 'meeting', scheduledDate: '2026-04-14', contactEmail: 'jane@example.com' },
       { id: 3, title: 'Old meeting', type: 'meeting', scheduledDate: '2026-04-09', contactEmail: 'jane@example.com' },
       { id: 4, title: 'Not a meeting', type: 'follow-up', scheduledDate: '2026-04-12', contactEmail: 'jane@example.com' }
     ],
     [{ name: 'Jane Doe', email: 'jane@example.com', company: 'Acme' }],
-    new Date('2026-04-11T09:00:00.000Z')
+    new Date('2026-04-11T09:30:00')
   );
 
-  assert.equal(queue.length, 2);
-  assert.equal(queue[0].task.title, 'Today call');
+  assert.equal(queue.length, 3);
+  assert.equal(queue[0].task.title, 'Late morning call');
   assert.equal(queue[0].isToday, true);
   assert.equal(queue[0].contact.email, 'jane@example.com');
+  assert.equal(queue[1].task.title, 'Untimed follow-up meeting');
+  assert.equal(queue[2].task.title, 'Future meeting');
 });
 
 test('buildSalesPerformanceSnapshot summarizes response rate, wins, losses, and stalled proposals', () => {

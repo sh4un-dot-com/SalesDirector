@@ -59,6 +59,20 @@ const MONTH_KEY_PATTERN = /^\d{4}-\d{2}$/;
 const ensureString = (value = '') => String(value ?? '').trim();
 const padNumber = (value) => String(value).padStart(2, '0');
 
+const parseDateKeyParts = (value = '') => {
+  const normalized = ensureString(value);
+  if (!DATE_KEY_PATTERN.test(normalized)) return null;
+
+  const [year, month, day] = normalized.split('-').map((part) => Number(part));
+  if (![year, month, day].every((part) => Number.isInteger(part))) return null;
+
+  return {
+    year,
+    monthIndex: month - 1,
+    day
+  };
+};
+
 const clampNumber = (value, min, max, fallback = null) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -90,9 +104,69 @@ export const formatDateKey = (value) => {
   return `${date.getFullYear()}-${padNumber(date.getMonth() + 1)}-${padNumber(date.getDate())}`;
 };
 
+export const dateKeyToDate = (value = '') => {
+  const normalizedDateKey = formatDateKey(value);
+  const parts = parseDateKeyParts(normalizedDateKey);
+  if (!parts) return null;
+
+  const date = new Date(parts.year, parts.monthIndex, parts.day, 0, 0, 0, 0);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
 export const formatMonthKey = (value = new Date()) => {
   const dateKey = formatDateKey(value);
   return dateKey ? dateKey.slice(0, 7) : formatDateKey(new Date()).slice(0, 7);
+};
+
+export const parseTimeToMinutes = (value = '') => {
+  const normalized = ensureString(value)
+    .replace(/^\[|\]$/g, '')
+    .replace(/\./g, '')
+    .replace(/\s+/g, ' ')
+    .toUpperCase();
+
+  if (!normalized) return null;
+
+  const hourMinuteMatch = normalized.match(/^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$/);
+  if (hourMinuteMatch) {
+    let hours = Number(hourMinuteMatch[1]);
+    const minutes = Number(hourMinuteMatch[2]);
+    const meridiem = hourMinuteMatch[3] || '';
+
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes) || minutes < 0 || minutes > 59) {
+      return null;
+    }
+
+    if (meridiem) {
+      if (hours < 1 || hours > 12) return null;
+      if (meridiem === 'AM') {
+        hours = hours === 12 ? 0 : hours;
+      } else {
+        hours = hours === 12 ? 12 : hours + 12;
+      }
+    } else if (hours < 0 || hours > 23) {
+      return null;
+    }
+
+    return hours * 60 + minutes;
+  }
+
+  const hourOnlyMatch = normalized.match(/^(\d{1,2})(?:\s*(AM|PM))$/);
+  if (hourOnlyMatch) {
+    let hours = Number(hourOnlyMatch[1]);
+    const meridiem = hourOnlyMatch[2];
+    if (!Number.isInteger(hours) || hours < 1 || hours > 12) return null;
+
+    if (meridiem === 'AM') {
+      hours = hours === 12 ? 0 : hours;
+    } else {
+      hours = hours === 12 ? 12 : hours + 12;
+    }
+
+    return hours * 60;
+  }
+
+  return null;
 };
 
 const toTitleCase = (value = '') => value
@@ -405,6 +479,37 @@ const compareDateKeys = (left = '', right = '') => {
 
 export const getTaskCalendarDate = (task = {}) => formatDateKey(task.scheduledDate || task.dueDate);
 
+export const getTaskScheduledStart = (task = {}) => {
+  const normalizedTask = normalizeTaskRecord(task);
+  const taskDate = dateKeyToDate(getTaskCalendarDate(normalizedTask));
+  if (!taskDate) return null;
+
+  const taskMinutes = parseTimeToMinutes(normalizedTask.time);
+  if (taskMinutes == null) return null;
+
+  taskDate.setHours(Math.floor(taskMinutes / 60), taskMinutes % 60, 0, 0);
+  return taskDate;
+};
+
+export const getTaskScheduledEnd = (task = {}) => {
+  const normalizedTask = normalizeTaskRecord(task);
+  const startDate = getTaskScheduledStart(normalizedTask);
+  if (!startDate) return null;
+
+  return new Date(startDate.getTime() + ((normalizedTask.durationMinutes || 30) * 60 * 1000));
+};
+
+const getTaskScheduledDateTime = (task = {}) => {
+  const taskDate = dateKeyToDate(getTaskCalendarDate(task));
+  if (!taskDate) return null;
+
+  const startDate = getTaskScheduledStart(task);
+  if (startDate) return startDate;
+
+  taskDate.setHours(23, 59, 59, 999);
+  return taskDate;
+};
+
 export const getTaskBucket = (task = {}, selectedDateKey = '', referenceDate = new Date()) => {
   const normalizedTask = normalizeTaskRecord(task);
   if (normalizedTask.status === 'completed') return 'completed';
@@ -437,6 +542,14 @@ export const sortTasksForPlanner = (tasks = [], selectedDateKey = '', referenceD
   const dateDelta = compareDateKeys(getTaskCalendarDate(left), getTaskCalendarDate(right));
   if (dateDelta !== 0) return dateDelta;
 
+  const leftTimeMinutes = parseTimeToMinutes(left.time);
+  const rightTimeMinutes = parseTimeToMinutes(right.time);
+  if (leftTimeMinutes != null || rightTimeMinutes != null) {
+    if (leftTimeMinutes == null) return 1;
+    if (rightTimeMinutes == null) return -1;
+    if (leftTimeMinutes !== rightTimeMinutes) return leftTimeMinutes - rightTimeMinutes;
+  }
+
   const timeDelta = (left.time || '').localeCompare(right.time || '');
   if (timeDelta !== 0) return timeDelta;
 
@@ -445,6 +558,49 @@ export const sortTasksForPlanner = (tasks = [], selectedDateKey = '', referenceD
 
   return (left.title || '').localeCompare(right.title || '');
 });
+
+export const buildTaskConflictMap = (tasks = []) => {
+  const conflicts = new Map();
+  const timedTasks = normalizeTasks(tasks)
+    .filter((task) => task.status !== 'completed')
+    .map((task) => ({
+      task,
+      dateKey: getTaskCalendarDate(task),
+      start: getTaskScheduledStart(task),
+      end: getTaskScheduledEnd(task)
+    }))
+    .filter((entry) => entry.dateKey && entry.start && entry.end)
+    .sort((left, right) => {
+      const dateDelta = compareDateKeys(left.dateKey, right.dateKey);
+      if (dateDelta !== 0) return dateDelta;
+
+      const startDelta = left.start.getTime() - right.start.getTime();
+      if (startDelta !== 0) return startDelta;
+
+      return left.end.getTime() - right.end.getTime();
+    });
+
+  for (let index = 0; index < timedTasks.length; index += 1) {
+    const current = timedTasks[index];
+
+    for (let nextIndex = index + 1; nextIndex < timedTasks.length; nextIndex += 1) {
+      const next = timedTasks[nextIndex];
+      if (next.dateKey !== current.dateKey) break;
+      if (next.start.getTime() >= current.end.getTime()) break;
+      if (next.end.getTime() <= current.start.getTime()) continue;
+
+      const currentConflicts = conflicts.get(current.task.id) || [];
+      currentConflicts.push(next.task.id);
+      conflicts.set(current.task.id, currentConflicts);
+
+      const nextConflicts = conflicts.get(next.task.id) || [];
+      nextConflicts.push(current.task.id);
+      conflicts.set(next.task.id, nextConflicts);
+    }
+  }
+
+  return conflicts;
+};
 
 export const normalizeTasks = (tasks = []) => {
   if (!Array.isArray(tasks)) return [];
@@ -462,6 +618,9 @@ const taskMatchesContact = (task = {}, contact = {}) => {
 export const buildUpcomingMeetingQueue = (tasks = [], contacts = [], referenceDate = new Date()) => {
   const normalizedContacts = normalizeContacts(contacts);
   const todayKey = formatDateKey(referenceDate);
+  const referenceTime = referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
+    ? referenceDate.getTime()
+    : Date.now();
 
   return sortTasksForPlanner(
     normalizeTasks(tasks).filter((task) => task.status !== 'completed' && ['meeting', 'call'].includes(task.type)),
@@ -470,7 +629,12 @@ export const buildUpcomingMeetingQueue = (tasks = [], contacts = [], referenceDa
   )
     .filter((task) => {
       const dateKey = getTaskCalendarDate(task);
-      return !dateKey || dateKey >= todayKey;
+      if (!dateKey) return true;
+      if (dateKey > todayKey) return true;
+      if (dateKey < todayKey) return false;
+
+      const scheduledAt = getTaskScheduledDateTime(task);
+      return !scheduledAt || scheduledAt.getTime() >= referenceTime;
     })
     .map((task) => ({
       task,

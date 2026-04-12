@@ -17,9 +17,11 @@ SalesDirector is a desktop application that combines AI email drafting, CRM cont
 | **Smart Inbox** | AI scores every inbound email 1–100 and generates one-sentence summaries so you know who to reply to first. |
 | **CRM & Contacts** | Import CSV, sync HubSpot, or add contacts manually. Full dossiers with interaction timelines, quick actions, and stage tracking. |
 | **Tasks & Calendar** | AI generates and prioritizes your daily sales actions with time blocks, rationale, and one-click execution. |
+| **AI Context Workspace** | CRM research, follow-up strategy, and proposal guidance stay visible in a dedicated, user-resizable context pane while reps write outbound emails. |
 | **Encrypted Local Database** | AES-256-GCM encryption with PBKDF2 key derivation. Your data stays on your machine, protected by your passphrase. |
 | **HubSpot Integration** | Two-way contact sync and automatic email engagement logging. |
-| **Multi-Provider AI** | Gemini (default), OpenAI, Anthropic, xAI, and Meta provider slots — keys are session-only, never saved to disk. |
+| **Persistent Settings** | AI provider keys, HubSpot token, SMTP/IMAP credentials, and proxy settings persist locally on-device until cleared. |
+| **Multi-Provider AI** | Gemini (default), OpenAI, Anthropic, xAI, and Meta provider slots, with optional proxy mode when teams want vendor secrets kept server-side. |
 | **Desktop-First** | Native installers for Windows (NSIS) and macOS (DMG). Works fully offline after setup. |
 
 For the complete feature list, see [FEATURES.md](FEATURES.md).
@@ -39,7 +41,7 @@ npm run dev:desktop
 npm run dev
 ```
 
-Open the app → go to **Settings** → configure sender profile, AI provider key, and optionally HubSpot credentials. You're ready to sell.
+Open the app → go to **Settings** → configure sender profile, AI provider key, and optionally HubSpot or mail credentials. Those settings persist locally on the device until cleared, so you're ready to restart and keep working.
 
 For full setup including proxy mode, environment configuration, and packaging, see [SETUP.md](SETUP.md).
 
@@ -134,10 +136,10 @@ vite.config.mjs            → Vite build config (base: './' for Electron)
 
 ## Security
 
-- **API keys are never persisted.** All provider keys and tokens are session-only.
+- **Settings persist locally on-device.** AI provider keys, HubSpot token, mail credentials, and proxy settings survive restarts until you clear saved settings.
 - **Encrypted at rest.** Local CRM data uses AES-256-GCM with a PBKDF2-derived key (250,000 iterations).
 - **Passphrase never stored.** The app never saves your database passphrase.
-- **Proxy mode available.** Keep all secrets server-side — the frontend only knows the proxy URL.
+- **Proxy mode available.** Keep vendor API keys server-side and use the client only for the proxy URL plus optional shared secret.
 - **Sandboxed Electron.** Context isolation enabled, node integration disabled.
 
 ---

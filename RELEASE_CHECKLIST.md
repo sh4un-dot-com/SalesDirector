@@ -47,7 +47,7 @@ npm run build:web
 
 ## 5. Security and Compliance
 
-- [ ] Confirm sensitive settings are not persisted locally.
+- [ ] Confirm locally persisted settings behavior is intentional, documented, and clearable from Settings.
 - [ ] Confirm proxy shared secret behavior (if configured) rejects mismatched requests.
 - [ ] Confirm rate-limiting and request-size constraints are active in proxy mode.
 - [ ] Confirm CORS origin policy is appropriate for deployment.

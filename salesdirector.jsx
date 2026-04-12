@@ -52,12 +52,17 @@ import {
   getContactAttentionSummary,
   buildTaskSummary,
   buildCalendarMonth,
+  buildTaskConflictMap,
   sortTasksForPlanner,
   getTasksForDate,
   getTaskBucket,
   getTaskCalendarDate,
+  getTaskScheduledStart,
+  getTaskScheduledEnd,
   formatDateKey,
+  dateKeyToDate,
   formatMonthKey,
+  parseTimeToMinutes,
   TASK_TYPE_OPTIONS,
   TASK_STATUS_OPTIONS,
   TASK_FOCUS_OPTIONS,
@@ -108,8 +113,13 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const CONFIG_STORAGE_KEY = 'salesdirector.config.v1';
 const THEME_STORAGE_KEY = 'salesdirector.theme.v1';
 const LOCAL_DB_STORAGE_KEY = 'salesdirector.localdb.enc.v1';
+const OUTREACH_CONTEXT_WIDTH_STORAGE_KEY = 'salesdirector.outreach.contextWidth.v1';
 const LOCAL_DB_ENCRYPTION_VERSION = 1;
 const LOCAL_DB_PBKDF2_ITERATIONS = 250000;
+const OUTREACH_CONTEXT_MIN_WIDTH = 320;
+const OUTREACH_CONTEXT_DEFAULT_WIDTH = 420;
+const OUTREACH_DRAFT_MIN_WIDTH = 480;
+const OUTREACH_SPLIT_HANDLE_WIDTH = 12;
 const AKITA_CREDITS = {
   companyName: 'Akita Engineering',
   supportEmail: 'support@akitaengineering.com',
@@ -145,6 +155,10 @@ const getDesktopImapApi = () => {
 const DEFAULT_TASKS = [];
 
 const DEFAULT_INBOX_EMAILS = [];
+const SYSTEM_TIMEZONE_LABEL = typeof Intl !== 'undefined'
+  ? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local system time')
+  : 'Local system time';
+const SYSTEM_TIMEZONE_VALUE = 'system';
 
 const normalizeInboxDate = (value) => {
   const date = new Date(value || Date.now());
@@ -236,10 +250,8 @@ const formatCurrencyCompact = (value) => {
 };
 
 const formatFriendlyDate = (value, fallback = 'Not scheduled') => {
-  const dateKey = formatDateKey(value);
-  if (!dateKey) return fallback;
-  const date = new Date(`${dateKey}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return fallback;
+  const date = dateKeyToDate(value);
+  if (!date || Number.isNaN(date.getTime())) return fallback;
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
@@ -471,7 +483,7 @@ export default function App() {
     sendDelay: '30',
     activeHoursStart: '09:00',
     activeHoursEnd: '17:00',
-    timezone: 'EST',
+    timezone: SYSTEM_TIMEZONE_VALUE,
     defaultTone: 'Professional',
     defaultLength: 'Concise',
     selectedAI: 'gemini',
@@ -502,10 +514,24 @@ export default function App() {
   const [composerErrors, setComposerErrors] = useState({});
   const notificationTimerRef = useRef(null);
   const activeAIRequestRef = useRef(null);
+  const outreachWorkspaceRef = useRef(null);
   const hasLoadedLocalConfigRef = useRef(false);
   const configChangeCountRef = useRef(0);
   const configSaveTimerRef = useRef(null);
   const [configSaveStatus, setConfigSaveStatus] = useState(null);
+  const [outreachContextWidth, setOutreachContextWidth] = useState(() => {
+    if (typeof window === 'undefined') return OUTREACH_CONTEXT_DEFAULT_WIDTH;
+    try {
+      const savedWidth = Number(window.localStorage.getItem(OUTREACH_CONTEXT_WIDTH_STORAGE_KEY));
+      if (Number.isFinite(savedWidth) && savedWidth >= OUTREACH_CONTEXT_MIN_WIDTH) {
+        return savedWidth;
+      }
+    } catch {
+      // Ignore malformed widths and fall back to the default split.
+    }
+    return OUTREACH_CONTEXT_DEFAULT_WIDTH;
+  });
+  const [isOutreachSplitDragging, setIsOutreachSplitDragging] = useState(false);
   const [localDbPassphraseInput, setLocalDbPassphraseInput] = useState('');
   const [localDbPassphrase, setLocalDbPassphrase] = useState('');
   const [localDbUnlocked, setLocalDbUnlocked] = useState(false);
@@ -518,7 +544,123 @@ export default function App() {
   const imapSyncInFlightRef = useRef(false);
   const imapStartupSyncTriggeredRef = useRef(false);
 
+  const clampOutreachContextWidth = useCallback((requestedWidth) => {
+    const workspaceWidth = outreachWorkspaceRef.current?.getBoundingClientRect()?.width || 0;
+    if (!workspaceWidth) {
+      return Math.max(OUTREACH_CONTEXT_MIN_WIDTH, requestedWidth);
+    }
+
+    const maxWidth = Math.max(
+      OUTREACH_CONTEXT_MIN_WIDTH,
+      workspaceWidth - OUTREACH_DRAFT_MIN_WIDTH - OUTREACH_SPLIT_HANDLE_WIDTH
+    );
+
+    return Math.min(Math.max(requestedWidth, OUTREACH_CONTEXT_MIN_WIDTH), maxWidth);
+  }, []);
+
+  const adjustOutreachContextWidth = useCallback((delta) => {
+    setOutreachContextWidth((currentWidth) => clampOutreachContextWidth(currentWidth + delta));
+  }, [clampOutreachContextWidth]);
+
+  const resetOutreachContextWidth = useCallback(() => {
+    setOutreachContextWidth(clampOutreachContextWidth(OUTREACH_CONTEXT_DEFAULT_WIDTH));
+  }, [clampOutreachContextWidth]);
+
+  const startOutreachSplitDrag = useCallback((event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    setIsOutreachSplitDragging(true);
+  }, []);
+
+  const handleOutreachSplitKeyDown = useCallback((event) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      adjustOutreachContextWidth(event.shiftKey ? -48 : -24);
+      return;
+    }
+
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      adjustOutreachContextWidth(event.shiftKey ? 48 : 24);
+      return;
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault();
+      setOutreachContextWidth(OUTREACH_CONTEXT_MIN_WIDTH);
+      return;
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault();
+      const workspaceWidth = outreachWorkspaceRef.current?.getBoundingClientRect()?.width || 0;
+      const maxWidth = workspaceWidth
+        ? Math.max(OUTREACH_CONTEXT_MIN_WIDTH, workspaceWidth - OUTREACH_DRAFT_MIN_WIDTH - OUTREACH_SPLIT_HANDLE_WIDTH)
+        : OUTREACH_CONTEXT_DEFAULT_WIDTH;
+      setOutreachContextWidth(maxWidth);
+    }
+  }, [adjustOutreachContextWidth]);
+
   // Firebase Auth & Data Sync
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    try {
+      window.localStorage.setItem(OUTREACH_CONTEXT_WIDTH_STORAGE_KEY, String(outreachContextWidth));
+    } catch {
+      // Ignore persistence failures and keep the current split width in memory.
+    }
+
+    return undefined;
+  }, [outreachContextWidth]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const handleResize = () => {
+      setOutreachContextWidth((currentWidth) => clampOutreachContextWidth(currentWidth));
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [clampOutreachContextWidth]);
+
+  useEffect(() => {
+    if (!isOutreachSplitDragging) return undefined;
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    const handlePointerMove = (event) => {
+      const workspaceBounds = outreachWorkspaceRef.current?.getBoundingClientRect();
+      if (!workspaceBounds) return;
+      setOutreachContextWidth(clampOutreachContextWidth(event.clientX - workspaceBounds.left));
+    };
+
+    const stopDragging = () => {
+      setIsOutreachSplitDragging(false);
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopDragging);
+    window.addEventListener('pointercancel', stopDragging);
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopDragging);
+      window.removeEventListener('pointercancel', stopDragging);
+    };
+  }, [clampOutreachContextWidth, isOutreachSplitDragging]);
+
   useEffect(() => {
     if (IS_LOCAL_DEV_MODE || !auth) {
       setUser(LOCAL_DEV_USER);
@@ -1015,13 +1157,69 @@ export default function App() {
     return nextMap;
   }, [normalizedContacts, normalizedTasks, threads]);
   const taskSummary = useMemo(() => buildTaskSummary(normalizedTasks, selectedCalendarDate), [normalizedTasks, selectedCalendarDate]);
+  const taskConflictMap = useMemo(() => buildTaskConflictMap(normalizedTasks), [normalizedTasks]);
+  const activeHoursWindow = useMemo(() => {
+    const startMinutes = parseTimeToMinutes(config.activeHoursStart);
+    const endMinutes = parseTimeToMinutes(config.activeHoursEnd);
+    return {
+      startMinutes,
+      endMinutes,
+      isValid: startMinutes != null && endMinutes != null && endMinutes > startMinutes
+    };
+  }, [config.activeHoursEnd, config.activeHoursStart]);
   const calendarDays = useMemo(() => buildCalendarMonth(normalizedTasks, activeCalendarMonth, selectedCalendarDate), [normalizedTasks, activeCalendarMonth, selectedCalendarDate]);
   const selectedDayTasks = useMemo(() => getTasksForDate(normalizedTasks, selectedCalendarDate), [normalizedTasks, selectedCalendarDate]);
+  const selectedDayOpenTasks = useMemo(() => selectedDayTasks.filter((task) => task.status !== 'completed'), [selectedDayTasks]);
+  const selectedDayConflictCount = useMemo(() => selectedDayOpenTasks.filter((task) => (taskConflictMap.get(task.id) || []).length > 0).length, [selectedDayOpenTasks, taskConflictMap]);
   const selectedCalendarDateLabel = useMemo(() => formatFriendlyDate(selectedCalendarDate, 'No day selected'), [selectedCalendarDate]);
   const activeCalendarMonthLabel = useMemo(() => {
-    const monthDate = new Date(`${activeCalendarMonth}-01T00:00:00`);
+    const monthDate = dateKeyToDate(`${activeCalendarMonth}-01`);
+    if (!monthDate || Number.isNaN(monthDate.getTime())) return 'Unknown month';
     return monthDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   }, [activeCalendarMonth]);
+  const formatTaskTimeRangeLabel = useCallback((task) => {
+    const normalizedTask = normalizeTaskRecord(task);
+    const startDate = getTaskScheduledStart(normalizedTask);
+    const endDate = getTaskScheduledEnd(normalizedTask);
+    if (!startDate || !endDate) {
+      return normalizedTask.time ? `${normalizedTask.time} · ${normalizedTask.durationMinutes || 30}m` : 'No time set';
+    }
+
+    const timeOptions = { hour: 'numeric', minute: '2-digit' };
+    return `${startDate.toLocaleTimeString(undefined, timeOptions)} - ${endDate.toLocaleTimeString(undefined, timeOptions)}`;
+  }, []);
+
+  const getTaskScheduleState = useCallback((task, conflictMap = taskConflictMap) => {
+    const normalizedTask = normalizeTaskRecord(task);
+    const parsedStartMinutes = parseTimeToMinutes(normalizedTask.time);
+    const hasExplicitTime = normalizedTask.time !== '';
+    const conflictIds = conflictMap.get(normalizedTask.id) || [];
+
+    return {
+      invalidTime: hasExplicitTime && parsedStartMinutes == null,
+      outsideActiveHours: parsedStartMinutes != null && activeHoursWindow.isValid
+        ? parsedStartMinutes < activeHoursWindow.startMinutes || (parsedStartMinutes + (normalizedTask.durationMinutes || 30)) > activeHoursWindow.endMinutes
+        : false,
+      conflictIds,
+      hasConflict: conflictIds.length > 0,
+      startDate: getTaskScheduledStart(normalizedTask),
+      endDate: getTaskScheduledEnd(normalizedTask)
+    };
+  }, [activeHoursWindow, taskConflictMap]);
+
+  const editingTaskScheduleState = useMemo(() => {
+    if (!editingTask) return null;
+
+    const candidateTask = normalizeTaskRecord(editingTask);
+    const candidateTasks = normalizedTasks.map((task) => (task.id === candidateTask.id ? candidateTask : normalizeTaskRecord(task)));
+    const candidateConflictMap = buildTaskConflictMap(candidateTasks);
+    const state = getTaskScheduleState(candidateTask, candidateConflictMap);
+
+    return {
+      ...state,
+      conflictingTasks: candidateTasks.filter((task) => state.conflictIds.includes(task.id))
+    };
+  }, [editingTask, getTaskScheduleState, normalizedTasks]);
 
   const plannerPrepCandidates = useMemo(() => normalizedContacts
     .filter((contact) => {
@@ -1853,7 +2051,21 @@ No emojis.`;
 
   const saveTask = () => {
     if (!editingTask) return;
-    setTasks(prev => sortTasksForPlanner(prev.map((task) => task.id === editingTask.id ? normalizeTaskRecord(editingTask) : normalizeTaskRecord(task)), selectedCalendarDate));
+
+    const nextTask = normalizeTaskRecord(editingTask);
+    if (nextTask.time && parseTimeToMinutes(nextTask.time) == null) {
+      showNotification('Use a start time like 09:00 AM or 14:30.', 'error');
+      return;
+    }
+
+    const nextTasks = normalizedTasks.map((task) => (task.id === nextTask.id ? nextTask : normalizeTaskRecord(task)));
+    const nextConflictMap = buildTaskConflictMap(nextTasks);
+    if (nextTask.status !== 'completed' && (nextConflictMap.get(nextTask.id) || []).length > 0) {
+      showNotification('This task overlaps with another scheduled task. Resolve the conflict before saving.', 'error');
+      return;
+    }
+
+    setTasks(prev => sortTasksForPlanner(prev.map((task) => task.id === editingTask.id ? nextTask : normalizeTaskRecord(task)), selectedCalendarDate));
     setIsTaskModalOpen(false);
     setEditingTask(null);
     showNotification('Task updated.');
@@ -2700,8 +2912,10 @@ No emojis.`;
           showNotification("No pending tasks to prioritize.", "error"); setLoading(false); return;
         }
         const taskString = pendingTasks.map(t => `ID: ${t.id} | Contact: ${t.contact} | Task: ${t.type}`).join('\n');
+        const planningTimeZone = config.timezone === SYSTEM_TIMEZONE_VALUE ? `System (${SYSTEM_TIMEZONE_LABEL})` : config.timezone;
         prompt = `Act as an elite Virtual Sales Director. Review these sales tasks and organize my schedule.
         Assign a Priority Score (1-100), a suggested time block (e.g., '09:00 AM' or '02:30 PM'), and a 1-sentence rationale for the priority.
+        Respect the operator's planning window of ${config.activeHoursStart}-${config.activeHoursEnd} (${planningTimeZone}). The current system timezone is ${SYSTEM_TIMEZONE_LABEL}.
         Format EACH line EXACTLY as follows with no extra characters:
         [ID] || [Score] || [Time] || [Rationale]
         
@@ -2734,8 +2948,10 @@ No emojis.`;
         }
 
         const taskLines = selectedTasks.map((task) => `ID: ${task.id} | Task: ${task.title} | Priority: ${task.priority || 50} | Contact: ${task.contact || 'General'} | Current Time: ${task.time || 'Unscheduled'}`).join('\n');
+        const planningTimeZone = config.timezone === SYSTEM_TIMEZONE_VALUE ? `System (${SYSTEM_TIMEZONE_LABEL})` : config.timezone;
         prompt = `Act as a world-class small-business operating chief. Build a focused workday plan for ${selectedCalendarDateLabel}.
 For each task below, choose the best start time, an estimated duration in minutes, and one short reason.
+      Keep the schedule inside ${config.activeHoursStart}-${config.activeHoursEnd} (${planningTimeZone}). The current system timezone is ${SYSTEM_TIMEZONE_LABEL}.
 Format EACH line EXACTLY like this:
 [ID] || [Start Time] || [Duration Minutes] || [Reason]
 
@@ -2795,12 +3011,12 @@ Be concise, practical, and specific. No emojis.`;
       }
 
       if (actionType === 'dailyRevenueBrief') {
-        const todayKey = new Date().toDateString();
+        const todayKey = formatDateKey(new Date());
         const outboundTodayCount = Object.values(threads).flatMap((thread) => thread?.messages || [])
           .filter((message) => message.direction === 'outbound')
           .filter((message) => {
             const sentAt = new Date(message.date);
-            return !Number.isNaN(sentAt.getTime()) && sentAt.toDateString() === todayKey;
+            return !Number.isNaN(sentAt.getTime()) && formatDateKey(sentAt) === todayKey;
           }).length;
         const topTaskLines = sortTasksForPlanner(normalizedTasks, selectedCalendarDate)
           .filter((task) => task.status !== 'completed')
@@ -3921,7 +4137,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   // --- Views ---
 
   const renderDashboard = () => {
-    const todayKey = new Date().toDateString();
+    const todayKey = formatDateKey(new Date());
     const pendingTasks = normalizedTasks.filter(t => t.status === 'pending');
     const outboundMessages = Object.values(threads).flatMap(thread =>
       (thread?.messages || [])
@@ -3931,7 +4147,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
     const outboundTodayCount = outboundMessages.filter(message => {
       const sentAt = new Date(message.date);
-      return !Number.isNaN(sentAt.getTime()) && sentAt.toDateString() === todayKey;
+      return !Number.isNaN(sentAt.getTime()) && formatDateKey(sentAt) === todayKey;
     }).length;
 
     const meetingsBookedCount = normalizedTasks.filter(task =>
@@ -4409,6 +4625,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             {filteredTasks.map(task => {
               const taskBucket = getTaskBucket(task, selectedCalendarDate);
               const isCompleted = task.status === 'completed';
+              const scheduleState = getTaskScheduleState(task);
               return (
               <div key={task.id} className={`flex items-start p-4 rounded-lg border transition-colors ${isCompleted ? 'bg-zinc-50 dark:bg-zinc-950/30 border-transparent opacity-60' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 shadow-sm hover:border-zinc-300 dark:hover:border-zinc-700'}`}>
                 <button 
@@ -4435,7 +4652,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     <div className="flex items-center space-x-2">
                       {task.dueDate && !isCompleted && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-900 dark:text-blue-400">
-                          Due: {new Date(task.dueDate).toLocaleDateString()}
+                          Due: {formatFriendlyDate(task.dueDate, 'No due date')}
                         </span>
                       )}
                       {task.priority && !isCompleted && (
@@ -4449,7 +4666,17 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       )}
                       {!isCompleted && task.time && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-emerald-100 border-emerald-200 text-emerald-900 dark:bg-emerald-900/30 dark:border-emerald-900 dark:text-emerald-400">
-                          {task.time} · {task.durationMinutes || 30}m
+                          {formatTaskTimeRangeLabel(task)}
+                        </span>
+                      )}
+                      {!isCompleted && scheduleState.hasConflict && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-900 dark:text-rose-400">
+                          Conflict
+                        </span>
+                      )}
+                      {!isCompleted && scheduleState.outsideActiveHours && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-400">
+                          Outside Hours
                         </span>
                       )}
                       <button onClick={() => openEditTask(task)} className="text-zinc-400 hover:text-black dark:hover:text-white transition" title="Edit Task">
@@ -4476,6 +4703,26 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                        </button>
                     )}
                   </div>
+
+                  {!isCompleted && (scheduleState.hasConflict || scheduleState.outsideActiveHours || scheduleState.invalidTime) && (
+                    <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                      {scheduleState.hasConflict && (
+                        <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">
+                          Overlaps with {scheduleState.conflictIds.length} scheduled task{scheduleState.conflictIds.length === 1 ? '' : 's'}
+                        </span>
+                      )}
+                      {scheduleState.outsideActiveHours && (
+                        <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 font-bold text-amber-900 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300">
+                          Outside active hours {config.activeHoursStart}-{config.activeHoursEnd}
+                        </span>
+                      )}
+                      {scheduleState.invalidTime && (
+                        <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">
+                          Invalid start time format
+                        </span>
+                      )}
+                    </div>
+                  )}
 
                   {!isCompleted && (
                     <div className="mt-3 flex items-center gap-2 flex-wrap">
@@ -4536,7 +4783,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             </div>
 
             <div className="space-y-3">
-              {upcomingMeetingQueue.slice(0, 3).map((item) => (
+              {upcomingMeetingQueue.slice(0, 3).map((item) => {
+                const scheduleState = getTaskScheduleState(item.task);
+                return (
                 <div key={item.task.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -4549,7 +4798,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   </div>
                   <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300 line-clamp-2">{item.task.title}</p>
                   <div className="mt-3 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-zinc-500 dark:text-zinc-400">{item.task.time || 'No time set'}{item.isToday ? ' · Today' : ''}</span>
+                    <span className="text-zinc-500 dark:text-zinc-400">{formatTaskTimeRangeLabel(item.task)}{item.isToday ? ' · Today' : ''}</span>
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => handleAIAction('callPrep', { task: item.task, contact: item.contact })}
@@ -4568,8 +4817,14 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       )}
                     </div>
                   </div>
+                  {(scheduleState.hasConflict || scheduleState.outsideActiveHours) && (
+                    <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                      {scheduleState.hasConflict && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">Conflict on calendar</span>}
+                      {scheduleState.outsideActiveHours && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 font-bold text-amber-900 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300">Outside active hours</span>}
+                    </div>
+                  )}
                 </div>
-              ))}
+              )})}
               {upcomingMeetingQueue.length === 0 && (
                 <div className="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">
                   No upcoming meeting or call tasks yet. Create one, then use AI call prep to walk in with a sharper plan.
@@ -4619,24 +4874,37 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               <h3 className="font-bold text-black dark:text-white flex items-center text-sm">
                  <Clock className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" /> {selectedCalendarDateLabel}
               </h3>
-              <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400">{selectedDayTasks.length} task{selectedDayTasks.length === 1 ? '' : 's'}</span>
+              <div className="flex items-center gap-2 text-xs font-bold text-zinc-500 dark:text-zinc-400">
+                <span>{selectedDayOpenTasks.length} task{selectedDayOpenTasks.length === 1 ? '' : 's'}</span>
+                {selectedDayConflictCount > 0 && (
+                  <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">
+                    {selectedDayConflictCount} conflict{selectedDayConflictCount === 1 ? '' : 's'}
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-3">
               <div className="relative border-l-2 border-zinc-200 dark:border-zinc-800 ml-2 space-y-5">
-                {selectedDayTasks.filter(t => t.status !== 'completed')
-                  .sort((a, b) => (a.time || '').localeCompare(b.time || ''))
-                  .map((task, idx) => (
+                {selectedDayOpenTasks.map((task, idx) => {
+                  const scheduleState = getTaskScheduleState(task);
+                  return (
                   <div key={idx} className="relative pl-5">
                     <div className="absolute -left-[7px] top-1 w-3.5 h-3.5 rounded-full bg-rose-900 dark:bg-rose-600 border-[3px] border-white dark:border-zinc-900"></div>
-                    <h4 className="text-xs font-bold text-rose-900 dark:text-rose-500 mb-1">{task.time || 'No time set'}{task.durationMinutes ? ` · ${task.durationMinutes}m` : ''}</h4>
+                    <h4 className="text-xs font-bold text-rose-900 dark:text-rose-500 mb-1">{formatTaskTimeRangeLabel(task)}</h4>
                     <div className="bg-zinc-50 dark:bg-zinc-950/50 p-2.5 rounded-lg border border-zinc-200 dark:border-zinc-800 shadow-sm">
                       <p className="text-sm font-bold text-black dark:text-white leading-snug">{task.title}</p>
                       <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{task.contact}</p>
+                      {(scheduleState.hasConflict || scheduleState.outsideActiveHours) && (
+                        <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                          {scheduleState.hasConflict && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">Overlapping booking</span>}
+                          {scheduleState.outsideActiveHours && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 font-bold text-amber-900 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300">Outside active hours</span>}
+                        </div>
+                      )}
                       {task.rationale && <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-1.5 leading-relaxed">{task.rationale}</p>}
                     </div>
                   </div>
-                ))}
-                {selectedDayTasks.filter(t => t.status !== 'completed').length === 0 && (
+                )})}
+                {selectedDayOpenTasks.length === 0 && (
                   <div className="pl-6 text-sm text-zinc-500 dark:text-zinc-400">
                     Pick a day and use "Plan Focus Day" to build a realistic work plan.
                   </div>
@@ -5204,7 +5472,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   const renderOutreach = () => (
     <div className="flex flex-col md:flex-row h-full max-w-7xl mx-auto w-full">
       {/* Thread/Context Sidebar */}
-      <div className="w-full md:w-1/3 border-b md:border-b-0 md:border-r border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col overflow-y-auto transition-colors md:max-h-full max-h-[40vh]">
+      <div className="w-full md:w-[34%] xl:w-[30%] border-b md:border-b-0 md:border-r border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col overflow-y-auto transition-colors md:max-h-full max-h-[40vh]">
         <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-between items-center transition-colors">
           <h3 className="font-semibold text-black dark:text-white flex items-center">
             <SlidersHorizontal className="w-4 h-4 mr-2 text-zinc-500 dark:text-zinc-400" />
@@ -5359,7 +5627,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       </div>
 
       {/* Main Composer Area */}
-      <div className="w-full md:w-2/3 flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors min-h-0 flex-1">
+      <div className="w-full md:w-[66%] xl:w-[70%] flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors min-h-0 flex-1">
         <div className="p-6 flex-1 flex flex-col">
           <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 flex flex-col h-full overflow-hidden transition-colors">
             {selectedInboxEmail && (
@@ -5528,68 +5796,107 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               )}
             </div>
 
-            {/* Editing Toolbar & AI Prompter Tool */}
-            <div className="flex flex-col border-b border-zinc-800 bg-zinc-900 dark:bg-black transition-colors">
-              <div className="flex items-center px-4 py-2 border-b border-zinc-800 space-x-2">
+            {/* AI Context + Draft Workspace */}
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="flex items-center px-4 py-2 border-b border-zinc-800 bg-zinc-900 dark:bg-black flex-wrap gap-2">
                  <span className="text-xs text-zinc-500 uppercase font-bold mr-2">Merge Tags:</span>
                  <button onClick={() => insertMergeTag('[First Name]')} className="text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 px-2 py-1 rounded transition">Name</button>
                  <button onClick={() => insertMergeTag('[Company Name]')} className="text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 px-2 py-1 rounded transition">Company</button>
                  <button onClick={() => insertMergeTag('[Meeting Link]')} className="text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 px-2 py-1 rounded transition">Link</button>
               </div>
-              <div className="p-3 flex items-center space-x-2">
-                <Wand2 className="w-5 h-5 text-rose-900 dark:text-rose-600" />
-                <input 
-                  type="text"
-                  name="aiContext"
-                  value={composerState.aiContext}
-                  onChange={handleComposerChange}
-                  placeholder="Instruct AI: E.g., Pitch our new CRM integration..."
-                  className="flex-1 bg-transparent border-none outline-none text-sm text-white placeholder-zinc-500"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleAIAction('write');
-                  }}
-                />
-                <button 
-                  onClick={() => handleAIAction('polish')}
-                  disabled={loading || !composerState.body}
-                  className="bg-zinc-800 text-zinc-100 px-3 py-1.5 rounded-md text-xs font-medium hover:bg-zinc-700 transition disabled:opacity-50 flex items-center border border-zinc-700"
-                  title="Polish Draft"
+              <div
+                ref={outreachWorkspaceRef}
+                style={{ '--outreach-context-width': `${outreachContextWidth}px` }}
+                className="flex-1 min-h-0 grid grid-cols-1 2xl:[grid-template-columns:minmax(320px,var(--outreach-context-width))_12px_minmax(0,1fr)]"
+              >
+                <div className="flex flex-col border-b border-zinc-800 2xl:border-b-0 bg-zinc-900 dark:bg-black transition-colors min-h-0">
+                  <div className="p-3 flex flex-col gap-3 flex-1 min-h-0">
+                    <div className="flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-wide text-zinc-400">
+                      <div className="flex items-center gap-2">
+                        <Wand2 className="w-4 h-4 text-rose-900 dark:text-rose-600" />
+                        <span>AI Context Workspace</span>
+                      </div>
+                      <span className="text-[11px] font-medium normal-case tracking-normal text-zinc-500">CRM research, follow-up strategy, and AI notes stay visible here while you draft.</span>
+                    </div>
+                    <textarea
+                      name="aiContext"
+                      value={composerState.aiContext}
+                      onChange={handleComposerChange}
+                      rows={7}
+                      placeholder="Instruct AI or review CRM intelligence here. Example: Pitch our new CRM integration..."
+                      className="w-full flex-1 min-h-[220px] 2xl:min-h-0 2xl:max-h-none resize-y 2xl:resize-none rounded-xl border border-zinc-800 bg-zinc-950/60 p-4 text-sm leading-relaxed text-white outline-none transition placeholder-zinc-500 focus:border-zinc-600"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                          e.preventDefault();
+                          handleAIAction('write');
+                        }
+                      }}
+                    ></textarea>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[11px] text-zinc-500">Press Ctrl/Cmd + Enter to draft from this context.</span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button 
+                          onClick={() => handleAIAction('polish')}
+                          disabled={loading || !composerState.body}
+                          className="bg-zinc-800 text-zinc-100 px-3 py-1.5 rounded-md text-xs font-medium hover:bg-zinc-700 transition disabled:opacity-50 flex items-center border border-zinc-700"
+                          title="Polish Draft"
+                        >
+                          <Sparkles className="w-3 h-3" />
+                        </button>
+                        <button 
+                          onClick={() => handleAIAction('meeting')}
+                          disabled={loading}
+                          className="bg-zinc-800 text-zinc-100 px-3 py-1.5 rounded-md text-xs font-medium hover:bg-zinc-700 transition disabled:opacity-50 flex items-center border border-zinc-700"
+                          title="Schedule Meeting Script"
+                        >
+                          <Clock className="w-3 h-3 mr-1" /> Pitch Meeting
+                        </button>
+                        <button 
+                          onClick={() => handleAIAction('sequence')}
+                          disabled={loading}
+                          className="bg-black dark:bg-zinc-800 text-white px-3 py-1.5 rounded-md text-xs font-bold hover:bg-zinc-800 dark:hover:bg-zinc-700 transition disabled:opacity-50 shadow-sm flex items-center"
+                        >
+                          <Layers className="w-3 h-3 mr-1" /> Sequence
+                        </button>
+                        <button 
+                          onClick={() => handleAIAction('write')}
+                          disabled={loading}
+                          className="bg-rose-900 text-white px-4 py-1.5 rounded-md text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50 shadow-sm"
+                        >
+                          {loading ? 'Working...' : 'Draft'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  aria-label="Resize AI context workspace"
+                  onPointerDown={startOutreachSplitDrag}
+                  onDoubleClick={resetOutreachContextWidth}
+                  onKeyDown={handleOutreachSplitKeyDown}
+                  className={`hidden 2xl:flex items-center justify-center border-x border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/80 text-zinc-400 dark:text-zinc-500 transition hover:bg-zinc-100 dark:hover:bg-zinc-900 cursor-col-resize focus:outline-none focus:bg-zinc-100 dark:focus:bg-zinc-900 ${isOutreachSplitDragging ? 'bg-zinc-100 dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300' : ''}`}
+                  title="Drag to resize the AI context workspace. Double-click to reset."
                 >
-                  <Sparkles className="w-3 h-3" />
+                  <MoreVertical className="w-4 h-4" />
                 </button>
-                <button 
-                  onClick={() => handleAIAction('meeting')}
-                  disabled={loading}
-                  className="bg-zinc-800 text-zinc-100 px-3 py-1.5 rounded-md text-xs font-medium hover:bg-zinc-700 transition disabled:opacity-50 flex items-center border border-zinc-700"
-                  title="Schedule Meeting Script"
-                >
-                  <Clock className="w-3 h-3 mr-1" /> Pitch Meeting
-                </button>
-                <button 
-                  onClick={() => handleAIAction('sequence')}
-                  disabled={loading}
-                  className="bg-black dark:bg-zinc-800 text-white px-3 py-1.5 rounded-md text-xs font-bold hover:bg-zinc-800 dark:hover:bg-zinc-700 transition disabled:opacity-50 shadow-sm flex items-center"
-                >
-                  <Layers className="w-3 h-3 mr-1" /> Sequence
-                </button>
-                <button 
-                  onClick={() => handleAIAction('write')}
-                  disabled={loading}
-                  className="bg-rose-900 text-white px-4 py-1.5 rounded-md text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50 shadow-sm"
-                >
-                  {loading ? 'Working...' : 'Draft'}
-                </button>
+
+                <div className="flex flex-col min-h-0 bg-white dark:bg-zinc-900 transition-colors">
+                  <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex items-center justify-between gap-2 flex-wrap transition-colors">
+                    <span className="text-xs font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Email Draft</span>
+                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400">Keep the AI context visible while composing. Drag the divider on wide screens to rebalance both panes.</span>
+                  </div>
+                  <textarea
+                    name="body"
+                    value={composerState.body}
+                    onChange={handleComposerChange}
+                    className="flex-1 w-full min-h-[320px] 2xl:min-h-0 p-6 outline-none text-black dark:text-white resize-none leading-relaxed text-sm bg-white dark:bg-zinc-900 transition-colors"
+                    placeholder="Write your email, insert merge tags above, or instruct the AI..."
+                  ></textarea>
+                </div>
               </div>
             </div>
-
-            {/* Body */}
-            <textarea
-              name="body"
-              value={composerState.body}
-              onChange={handleComposerChange}
-              className="flex-1 w-full p-6 outline-none text-black dark:text-white resize-none leading-relaxed text-sm bg-white dark:bg-zinc-900 transition-colors"
-              placeholder="Write your email, insert merge tags above, or instruct the AI..."
-            ></textarea>
 
             {/* Footer / Actions */}
             <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 flex justify-between items-center gap-3 flex-wrap transition-colors">
@@ -5746,7 +6053,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 ))}
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-4">
-                Security note: API keys and tokens are intentionally not persisted in local storage. Email passwords are persisted for convenience.
+                Security note: provider keys, tokens, proxy settings, and mail credentials persist locally on this device until cleared. Use proxy mode when vendor secrets must stay server-side.
               </p>
 
               <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
@@ -5831,7 +6138,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                       placeholder="Matches PROXY_SHARED_SECRET"
                     />
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Kept in memory only for this session.</p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Persisted locally on this device until cleared from Settings.</p>
                   </div>
                 </div>
               </div>
@@ -6175,6 +6482,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     name="timezone" value={config.timezone} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   >
+                    <option value={SYSTEM_TIMEZONE_VALUE}>System ({SYSTEM_TIMEZONE_LABEL})</option>
                     <option value="EST">EST</option>
                     <option value="CST">CST</option>
                     <option value="MST">MST</option>
@@ -6736,6 +7044,26 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   </select>
                 </div>
               </div>
+              {editingTaskScheduleState && (editingTaskScheduleState.invalidTime || editingTaskScheduleState.hasConflict || editingTaskScheduleState.outsideActiveHours) && (
+                <div className={`rounded-lg border p-3 ${editingTaskScheduleState.invalidTime || editingTaskScheduleState.hasConflict ? 'border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-900/20' : 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-900/20'}`}>
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className={`w-4 h-4 mt-0.5 ${editingTaskScheduleState.invalidTime || editingTaskScheduleState.hasConflict ? 'text-rose-700 dark:text-rose-400' : 'text-amber-700 dark:text-amber-400'}`} />
+                    <div className="space-y-1 text-xs">
+                      {editingTaskScheduleState.invalidTime && <p className="font-bold text-rose-900 dark:text-rose-300">Use a start time like 09:00 AM or 14:30.</p>}
+                      {editingTaskScheduleState.hasConflict && (
+                        <p className="font-bold text-rose-900 dark:text-rose-300">
+                          This booking overlaps with {editingTaskScheduleState.conflictingTasks.map((task) => task.title).join(', ')}.
+                        </p>
+                      )}
+                      {editingTaskScheduleState.outsideActiveHours && (
+                        <p className="font-bold text-amber-900 dark:text-amber-300">
+                          This task falls outside active hours {config.activeHoursStart}-{config.activeHoursEnd}.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Rationale</label>
                 <textarea 
@@ -6765,7 +7093,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             </div>
             <div className="p-6 border-t border-zinc-200 dark:border-zinc-800 flex justify-end space-x-3">
               <button onClick={() => { setIsTaskModalOpen(false); setEditingTask(null); }} className="px-4 py-2 text-sm font-bold text-zinc-600 dark:text-zinc-400 hover:text-black dark:hover:text-white transition">Cancel</button>
-              <button onClick={saveTask} className="px-6 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition">Save Changes</button>
+              <button onClick={saveTask} disabled={editingTaskScheduleState?.invalidTime || editingTaskScheduleState?.hasConflict} className="px-6 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50">Save Changes</button>
             </div>
           </div>
         </div>

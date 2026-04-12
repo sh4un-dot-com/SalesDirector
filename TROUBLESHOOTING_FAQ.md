@@ -84,7 +84,7 @@ Reference: [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md)
 
 ### How can I safely reset local configuration without losing secrets in files?
 
-Use the Clear Saved Local Settings button in Settings. This removes persisted non-sensitive local preferences and does not write secrets into project files.
+Use the Clear Saved Local Settings button in Settings. This removes locally persisted app settings from that device, including saved provider and mail credentials, and does not write secrets into project files.
 
 ## Escalation Path
 

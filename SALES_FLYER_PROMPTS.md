@@ -12,6 +12,7 @@ Create a professional one-page sales flyer for SalesDirector, an AI-powered desk
 Product details:
 - Desktop app for Windows and macOS (native installers)
 - AI email composer that drafts, polishes, and analyzes outbound sales emails
+- User-resizable split-view AI context workspace keeps CRM research, follow-up strategy, and AI instructions visible while reps draft
 - AI subject line generator and 3-step drip sequence builder
 - "Objection Crusher" — AI generates psychology-backed rebuttals to prospect objections
 - "Director's Strategy" — AI provides prospect-specific sales playbooks and coaching
@@ -19,6 +20,7 @@ Product details:
 - CRM with contact dossiers, interaction timelines, CSV import, and HubSpot sync
 - AI task generation and priority scheduling with time blocks
 - Encrypted local database (AES-256-GCM) — data stays on your machine
+- Local settings persistence — AI provider keys, HubSpot, SMTP/IMAP, and proxy settings survive restart on the same device
 - Multi-provider AI: Gemini, OpenAI, Anthropic, xAI, Meta
 - Works fully offline after setup
 - Dark mode included
@@ -172,7 +174,7 @@ Cover all major capabilities: AI email drafting, smart inbox scoring, CRM with d
 All versions should include:
 - "by Akita Engineering"
 - The fact that it's a desktop app (not SaaS/cloud)
-- The security angle (encrypted local storage, keys never saved)
+- The security angle (encrypted local storage, local settings persistence on-device, and optional proxy mode for server-side secrets)
 
 Tone: Professional but energetic.
 ```
@@ -188,7 +190,7 @@ Frame the argument around these metrics:
 1. TIME SAVED: Average SDR spends 2+ hours/day switching between email, CRM, AI tools, and calendars. SalesDirector consolidates into one workspace. Estimate time savings.
 2. RESPONSE SPEED: Smart Inbox AI scoring means reps respond to hot leads in minutes, not hours. Reference the impact of response time on conversion rates (cite the common stat: responding in 5 minutes = 21x more likely to qualify).
 3. EMAIL QUALITY: AI-drafted emails with contact context, thread history, and strategy coaching produce more personalized outreach at scale vs. generic templates.
-4. DATA SECURITY: No cloud dependency for CRM data. AES-256-GCM encryption. API keys never persisted. Reduces compliance risk for teams handling sensitive prospect data.
+4. DATA SECURITY: No cloud dependency for CRM data. AES-256-GCM encryption. Settings persist locally on the device, and proxy mode is available when vendor API keys must stay server-side.
 5. COST: Desktop app — no per-seat SaaS subscription. Teams bring their own AI provider keys.
 
 Include:

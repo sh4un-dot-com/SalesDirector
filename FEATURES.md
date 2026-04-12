@@ -80,7 +80,8 @@ Your single source of truth for every prospect and customer.
 ### Contact Dossier View
 - **Full interaction timeline** — every thread message with timestamps
 - **Quick actions** — Draft Outreach, Add Task, Log Call (persists to timeline with timestamp)
-- **AI Intelligence panel** — Research Contact (B2B sales intelligence dossier), Follow-Up Strategy (urgency/timing/action recommendations)
+- **AI Intelligence panel** — Research Contact (B2B sales intelligence dossier), Follow-Up Strategy (urgency/timing/action recommendations), Call Prep Brief (routes to Tasks), Proposal Follow-Up Draft (routes to Outreach), and AI Action Plan generation
+- **Action routing** — dossier AI buttons now close the modal and open the exact workspace where the output lands
 - **Timeline message management** — delete individual timeline messages
 - **Contact detail card** — clickable email, phone, LinkedIn links
 - **Stage badge** and notes display
@@ -107,6 +108,8 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 - **SMTP status indicator** — know if sending is ready before you hit Send
 - **Draft auto-save** — composer content automatically saved to localStorage every 2 seconds; recovered on next visit
 - **Draft auto-save indicator** — shows "Draft auto-saved" status in the composer footer
+- **AI context workspace** — dedicated multi-line context pane for CRM research, follow-up strategy, and AI instructions
+- **Resizable split-view drafting** — on wide screens the AI context stays visible beside the email body, and reps can drag the divider to rebalance both panes
 - **Step loader** — navigate through multi-step sequence emails
 
 ### AI Writing Actions
@@ -120,7 +123,7 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 | **Analyze Draft** | Returns 3-bullet improvement suggestions for conversion optimization |
 | **Pre-Send Check** | AI analyzes your email across 6 dimensions (tone, clarity, personalization, CTA strength, length, professionalism) before sending |
 | **Research Contact** | Generates a B2B sales intelligence dossier with role analysis, pain points, conversation starters, and deal potential (from dossier) |
-| **Follow-Up Strategy** | AI recommends follow-up urgency, timing, channel, opening line, and strategic approach (from dossier) |
+| **Follow-Up Strategy** | AI recommends follow-up urgency, timing, channel, opening line, and strategic approach (from dossier), then loads it into the Outreach context workspace |
 
 ### Strategy Sidebar
 - **Tone selector** — Professional, Persuasive, Friendly, Direct & Urgent, Consultative
@@ -129,7 +132,7 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 - **Ask Director for Strategy** — get psychological sales strategies and prospect-specific playbooks
 - **Objection Crusher** — AI generates psychology-backed rebuttals and persuasive scripts
 - **Summarize Context** — condense conversation history for quick context
-- **Director's Insight** — persistent strategy display box
+- **Director's Insight** — persistent strategy display box mirrored by the larger composer context workspace
 
 ---
 
@@ -150,7 +153,7 @@ Eight real-time status indicators for instant diagnostics:
 
 ### Secure Proxy Routing
 - **Proxy Base URL** configuration
-- **Proxy Shared Secret** — session-only, never persisted to disk
+- **Proxy Shared Secret** — persists locally on-device until cleared
 
 ### Company & Sender Profile
 - Company Website URL (enriches AI context)
@@ -158,7 +161,7 @@ Eight real-time status indicators for instant diagnostics:
 - Multi-line Email Signature (auto-appended to outbound emails)
 
 ### HubSpot CRM Integration
-- Private App Access Token configuration
+- Private App Access Token configuration (persists locally on-device until cleared)
 - Contact sync and email engagement logging
 
 ### Email Server Configuration
@@ -168,11 +171,11 @@ Eight real-time status indicators for instant diagnostics:
 ### Sending Safety & Limits
 - Max Daily Emails (1–5,000)
 - Send Delay between messages (0–3,600 seconds)
-- Active Hours — start time, end time, timezone (EST/CST/MST/PST)
+- Active Hours — start time, end time, timezone (System default plus EST/CST/MST/PST overrides)
 
 ### AI Defaults & Provider Keys
 - Default Tone and Length preferences
-- **Multi-provider support** (session-only keys, never saved to disk):
+- **Multi-provider support** (settings persist locally on-device; use proxy mode if you do not want provider keys stored on the client):
   - Google Gemini (default)
   - OpenAI (ChatGPT)
   - Anthropic (Claude)
@@ -216,8 +219,9 @@ Eight real-time status indicators for instant diagnostics:
 - **AES-256-GCM** encryption for all local data at rest
 - **PBKDF2** key derivation with 250,000 iterations
 - **Passphrase never stored** — not in memory after lock, not on disk ever
-- **API keys session-only** — provider tokens held in React state, never persisted
+- **Settings persist locally on-device** — provider keys, HubSpot token, mail credentials, and proxy settings survive restarts until cleared
 - **Sandboxed Electron** — context isolation, no node integration, IPC-only bridge
+- **Proxy mode** — preferred path when teams want vendor API keys kept server-side
 
 ### HubSpot Integration
 - Two-way contact sync with field mapping
