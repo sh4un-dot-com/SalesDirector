@@ -6,11 +6,14 @@ import {
   normalizeTaskRecord,
   buildPipelineOverview,
   buildCrmOverview,
+  buildUpcomingMeetingQueue,
+  buildSalesPerformanceSnapshot,
   buildTaskSummary,
   buildCalendarMonth,
   materializeTaskTemplate,
   createMeetingPrepPack,
   parseAiContactPlan,
+  parseAiIdeaOrganizer,
   createTaskFromContactPlan,
   applyAiFocusDayPlan,
   getTasksForDate,
@@ -121,6 +124,92 @@ test('buildTaskSummary and getTasksForDate use scheduled work dates', () => {
   assert.equal(selected[0].title, 'Plan proposal');
 });
 
+test('buildUpcomingMeetingQueue returns today and future meetings with matched contacts', () => {
+  const queue = buildUpcomingMeetingQueue(
+    [
+      { id: 1, title: 'Today call', type: 'call', scheduledDate: '2026-04-11', contactEmail: 'jane@example.com' },
+      { id: 2, title: 'Future meeting', type: 'meeting', scheduledDate: '2026-04-14', contactEmail: 'jane@example.com' },
+      { id: 3, title: 'Old meeting', type: 'meeting', scheduledDate: '2026-04-09', contactEmail: 'jane@example.com' },
+      { id: 4, title: 'Not a meeting', type: 'follow-up', scheduledDate: '2026-04-12', contactEmail: 'jane@example.com' }
+    ],
+    [{ name: 'Jane Doe', email: 'jane@example.com', company: 'Acme' }],
+    new Date('2026-04-11T09:00:00.000Z')
+  );
+
+  assert.equal(queue.length, 2);
+  assert.equal(queue[0].task.title, 'Today call');
+  assert.equal(queue[0].isToday, true);
+  assert.equal(queue[0].contact.email, 'jane@example.com');
+});
+
+test('buildSalesPerformanceSnapshot summarizes response rate, wins, losses, and stalled proposals', () => {
+  const snapshot = buildSalesPerformanceSnapshot(
+    [
+      {
+        name: 'Won Deal',
+        email: 'won@example.com',
+        stage: 'Customer',
+        stageHistory: [
+          { stage: 'Lead', date: '2026-03-15T09:00:00.000Z' },
+          { stage: 'Opportunity', date: '2026-03-20T09:00:00.000Z' },
+          { stage: 'Proposal', date: '2026-03-25T09:00:00.000Z' },
+          { stage: 'Customer', date: '2026-04-05T09:00:00.000Z' }
+        ]
+      },
+      {
+        name: 'Lost Deal',
+        email: 'lost@example.com',
+        stage: 'Churned',
+        stageHistory: [
+          { stage: 'Lead', date: '2026-03-18T09:00:00.000Z' },
+          { stage: 'Proposal', date: '2026-03-30T09:00:00.000Z' },
+          { stage: 'Churned', date: '2026-04-08T09:00:00.000Z' }
+        ]
+      },
+      {
+        name: 'Stalled Proposal',
+        email: 'stalled@example.com',
+        stage: 'Proposal',
+        estimatedValue: 12000,
+        lastContactedAt: '2026-03-20',
+        stageHistory: [
+          { stage: 'Opportunity', date: '2026-03-19T09:00:00.000Z' },
+          { stage: 'Proposal', date: '2026-03-24T09:00:00.000Z' }
+        ]
+      }
+    ],
+    {
+      'won@example.com': {
+        messages: [
+          { date: '2026-03-18T09:00:00.000Z', direction: 'outbound', subject: 'Intro' },
+          { date: '2026-03-19T09:00:00.000Z', direction: 'inbound', subject: 'Interested' }
+        ]
+      },
+      'lost@example.com': {
+        messages: [
+          { date: '2026-03-29T09:00:00.000Z', direction: 'outbound', subject: 'Proposal' }
+        ]
+      },
+      'stalled@example.com': {
+        messages: [
+          { date: '2026-03-26T09:00:00.000Z', direction: 'outbound', subject: 'Proposal recap' }
+        ]
+      }
+    },
+    [
+      { id: 1, title: 'Discovery call', type: 'meeting', status: 'completed', scheduledDate: '2026-04-02', contactEmail: 'won@example.com' }
+    ],
+    new Date('2026-04-11T09:00:00.000Z')
+  );
+
+  assert.equal(snapshot.responseRate, 33);
+  assert.equal(snapshot.wonCount, 1);
+  assert.equal(snapshot.lostCount, 1);
+  assert.equal(snapshot.stalledProposalCount, 1);
+  assert.equal(snapshot.completedMeetingCount, 1);
+  assert.equal(snapshot.proposalCount, 1);
+});
+
 test('buildCalendarMonth marks selected dates and task counts', () => {
   const days = buildCalendarMonth(
     [{ id: 1, title: 'Call Jane', scheduledDate: '2026-04-15', priority: 88, status: 'pending' }],
@@ -175,6 +264,23 @@ PAIN POINTS: Lead flow inconsistency, delayed follow-up discipline`);
   assert.equal(plan.followUpDate, '2026-04-14');
   assert.match(plan.nextStep, /pricing recap/i);
   assert.match(plan.painPoints, /Lead flow inconsistency/i);
+});
+
+test('parseAiIdeaOrganizer extracts tasks, CRM note, and outreach angle', () => {
+  const plan = parseAiIdeaOrganizer(`SUMMARY: The owner wants a faster close plan for HVAC contractors.
+CRM NOTE: Position this around shorter quote turnaround and tighter follow-up discipline.
+OUTREACH ANGLE: Offer a quick teardown of their current lead response workflow and show where deals stall.
+BEST CONTACT: Operations manager or sales owner
+TASK 1: Review current stalled proposals and identify the top 3 blockers
+TASK 2: Draft a short HVAC-specific outreach sequence
+TASK 3: Build a same-day follow-up checklist for inbound leads`);
+
+  assert.match(plan.summary, /faster close plan/i);
+  assert.match(plan.crmNote, /shorter quote turnaround/i);
+  assert.match(plan.outreachAngle, /lead response workflow/i);
+  assert.match(plan.bestContact, /Operations manager/i);
+  assert.equal(plan.taskTitles.length, 3);
+  assert.match(plan.taskTitles[1], /hvac-specific outreach sequence/i);
 });
 
 test('createTaskFromContactPlan creates a concrete follow-up task', () => {

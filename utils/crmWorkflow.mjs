@@ -186,6 +186,43 @@ const normalizeTaskFocus = (value = '', type = 'follow-up') => {
 
 const normalizeTimeValue = (value = '') => ensureString(value).replace(/^\[|\]$/g, '');
 
+const STAGE_POSITION = {
+  Churned: -1,
+  Lead: 0,
+  Contact: 1,
+  Opportunity: 2,
+  Proposal: 3,
+  Customer: 4
+};
+
+const normalizeStageHistory = (history = []) => {
+  if (!Array.isArray(history)) return [];
+
+  return history
+    .map((entry) => {
+      if (!entry) return null;
+
+      const stage = normalizeStage(typeof entry === 'string' ? entry : entry.stage);
+      const rawDate = typeof entry === 'string' ? '' : (entry.date || entry.changedAt || entry.at || '');
+      const parsedDate = rawDate ? new Date(rawDate) : null;
+
+      return {
+        stage,
+        date: parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString() : ''
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => new Date(left.date || 0) - new Date(right.date || 0))
+    .reduce((entries, entry) => {
+      const previous = entries[entries.length - 1];
+      if (previous && previous.stage === entry.stage && previous.date === entry.date) {
+        return entries;
+      }
+      entries.push(entry);
+      return entries;
+    }, []);
+};
+
 export const createEmptyContact = (seed = {}) => normalizeContactRecord({
   name: '',
   email: '',
@@ -212,6 +249,7 @@ export const createEmptyContact = (seed = {}) => normalizeContactRecord({
   timelineSummary: '',
   painPoints: '',
   notes: '',
+  stageHistory: [],
   _isNew: true,
   ...seed
 });
@@ -253,6 +291,7 @@ export const normalizeContactRecord = (contact = {}, index = 0) => {
     timelineSummary: ensureString(contact.timelineSummary || contact.relationshipSummary),
     painPoints: ensureString(contact.painPoints),
     notes: ensureString(contact.notes),
+    stageHistory: normalizeStageHistory(contact.stageHistory),
     lastAiReviewedAt: ensureString(contact.lastAiReviewedAt),
     _isNew: Boolean(contact._isNew)
   };
@@ -416,6 +455,27 @@ const taskMatchesContact = (task = {}, contact = {}) => {
   return ensureString(task.contact).toLowerCase() === ensureString(contact.name).toLowerCase();
 };
 
+export const buildUpcomingMeetingQueue = (tasks = [], contacts = [], referenceDate = new Date()) => {
+  const normalizedContacts = normalizeContacts(contacts);
+  const todayKey = formatDateKey(referenceDate);
+
+  return sortTasksForPlanner(
+    normalizeTasks(tasks).filter((task) => task.status !== 'completed' && ['meeting', 'call'].includes(task.type)),
+    todayKey,
+    referenceDate
+  )
+    .filter((task) => {
+      const dateKey = getTaskCalendarDate(task);
+      return !dateKey || dateKey >= todayKey;
+    })
+    .map((task) => ({
+      task,
+      contact: normalizedContacts.find((contact) => taskMatchesContact(task, contact)) || null,
+      dateKey: getTaskCalendarDate(task),
+      isToday: getTaskCalendarDate(task) === todayKey
+    }));
+};
+
 export const getContactAttentionSummary = (contact = {}, tasks = [], threads = {}, referenceDate = new Date()) => {
   const normalizedContact = normalizeContactRecord(contact);
   const relatedTasks = normalizeTasks(tasks).filter((task) => taskMatchesContact(task, normalizedContact));
@@ -469,6 +529,89 @@ export const buildCrmOverview = (contacts = [], tasks = [], threads = {}, refere
     hotContactsCount: normalizedContacts.filter((contact) => (contact.priorityScore || 0) >= 75 || contact.leadTemperature === 'Hot').length,
     openPipelineCount: normalizedContacts.filter((contact) => ['Opportunity', 'Proposal'].includes(contact.stage)).length,
     attentionContacts: attentionContacts.slice(0, 5)
+  };
+};
+
+export const buildSalesPerformanceSnapshot = (contacts = [], threads = {}, tasks = [], referenceDate = new Date()) => {
+  const normalizedContacts = normalizeContacts(contacts);
+  const normalizedTasks = normalizeTasks(tasks);
+  const windowStartKey = formatDateKey(new Date(referenceDate.getTime() - (30 * DAY_MS)));
+
+  const allMessages = Object.entries(threads || {}).flatMap(([contactEmail, thread]) => (thread?.messages || []).map((message) => ({
+    ...message,
+    contactEmail: normalizeEmail(message?.contactEmail || contactEmail || '')
+  })));
+
+  const recentMessages = allMessages.filter((message) => {
+    const dateKey = formatDateKey(message?.date);
+    return !dateKey || dateKey >= windowStartKey;
+  });
+  const outboundMessages = recentMessages.filter((message) => message.direction === 'outbound');
+  const inboundMessages = recentMessages.filter((message) => message.direction === 'inbound');
+  const outboundContacts = new Set(outboundMessages.map((message) => normalizeEmail(message.contactEmail || '')).filter(Boolean));
+  const inboundContacts = new Set(inboundMessages.map((message) => normalizeEmail(message.contactEmail || '')).filter(Boolean));
+  const repliedContacts = Array.from(outboundContacts).filter((email) => inboundContacts.has(email));
+
+  let replyTouchCount = 0;
+  let replyTouchSamples = 0;
+  Array.from(outboundContacts).forEach((email) => {
+    const contactMessages = recentMessages
+      .filter((message) => normalizeEmail(message.contactEmail || '') === email)
+      .slice()
+      .sort((left, right) => new Date(left?.date || 0) - new Date(right?.date || 0));
+
+    let outboundBeforeReply = 0;
+    for (const message of contactMessages) {
+      if (message.direction === 'outbound') {
+        outboundBeforeReply += 1;
+      }
+      if (message.direction === 'inbound') {
+        if (outboundBeforeReply > 0) {
+          replyTouchCount += outboundBeforeReply;
+          replyTouchSamples += 1;
+        }
+        break;
+      }
+    }
+  });
+
+  const stageTransitions = normalizedContacts.flatMap((contact) => {
+    const history = Array.isArray(contact.stageHistory) ? contact.stageHistory : [];
+    return history.slice(1).map((entry, index) => ({
+      contact,
+      fromStage: history[index]?.stage || contact.stage,
+      toStage: entry.stage,
+      date: entry.date,
+      dateKey: formatDateKey(entry.date)
+    }));
+  }).filter((entry) => !entry.dateKey || entry.dateKey >= windowStartKey);
+
+  const progressedCount = stageTransitions.filter((entry) => (STAGE_POSITION[entry.toStage] ?? 0) > (STAGE_POSITION[entry.fromStage] ?? 0)).length;
+  const wonCount = stageTransitions.filter((entry) => entry.toStage === 'Customer').length;
+  const lostCount = stageTransitions.filter((entry) => entry.toStage === 'Churned').length;
+  const proposalContacts = normalizedContacts.filter((contact) => contact.stage === 'Proposal');
+  const stalledProposalCount = proposalContacts.filter((contact) => {
+    const attention = getContactAttentionSummary(contact, normalizedTasks, threads, referenceDate);
+    return attention.isStale || attention.followUpDue || !contact.nextStep || attention.openTasksCount === 0;
+  }).length;
+  const completedMeetingCount = normalizedTasks.filter((task) => task.status === 'completed' && ['meeting', 'call'].includes(task.type)).length;
+
+  return {
+    outboundCount: outboundMessages.length,
+    inboundCount: inboundMessages.length,
+    contactedAccounts: outboundContacts.size,
+    repliedAccounts: repliedContacts.length,
+    responseRate: outboundContacts.size > 0 ? Math.round((repliedContacts.length / outboundContacts.size) * 100) : 0,
+    averageTouchesBeforeReply: replyTouchSamples > 0 ? Number((replyTouchCount / replyTouchSamples).toFixed(1)) : 0,
+    proposalCount: proposalContacts.length,
+    customerCount: normalizedContacts.filter((contact) => contact.stage === 'Customer').length,
+    churnedCount: normalizedContacts.filter((contact) => contact.stage === 'Churned').length,
+    progressedCount,
+    wonCount,
+    lostCount,
+    stalledProposalCount,
+    completedMeetingCount,
+    stageTransitionCount: stageTransitions.length
   };
 };
 
@@ -658,6 +801,21 @@ export const parseAiContactPlan = (text = '') => {
     channel,
     role,
     painPoints
+  };
+};
+
+export const parseAiIdeaOrganizer = (text = '') => {
+  const source = String(text || '');
+  const matchLine = (pattern) => source.match(pattern)?.[1]?.trim() || '';
+
+  return {
+    summary: matchLine(/^SUMMARY\s*[:=-]\s*(.+)$/im),
+    crmNote: matchLine(/^CRM NOTE\s*[:=-]\s*(.+)$/im),
+    outreachAngle: matchLine(/^OUTREACH ANGLE\s*[:=-]\s*(.+)$/im),
+    bestContact: matchLine(/^BEST CONTACT\s*[:=-]\s*(.+)$/im),
+    taskTitles: [1, 2, 3, 4]
+      .map((index) => matchLine(new RegExp(`^TASK ${index}\\s*[:=-]\\s*(.+)$`, 'im')))
+      .filter(Boolean)
   };
 };
 

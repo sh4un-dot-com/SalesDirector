@@ -45,8 +45,10 @@ import {
   normalizeContacts,
   normalizeTaskRecord,
   normalizeTasks,
+  buildUpcomingMeetingQueue,
   buildPipelineOverview,
   buildCrmOverview,
+  buildSalesPerformanceSnapshot,
   getContactAttentionSummary,
   buildTaskSummary,
   buildCalendarMonth,
@@ -62,6 +64,7 @@ import {
   materializeTaskTemplate,
   createMeetingPrepPack,
   parseAiContactPlan,
+  parseAiIdeaOrganizer,
   createTaskFromContactPlan,
   applyAiFocusDayPlan,
   buildHeuristicTimelineSummary
@@ -388,6 +391,9 @@ export default function App() {
   const [contactToDelete, setContactToDelete] = useState(null);
   const [contactSearchQuery, setContactSearchQuery] = useState('');
   const [crmWorkspaceInsight, setCrmWorkspaceInsight] = useState('');
+  const [dashboardPartnerInsight, setDashboardPartnerInsight] = useState('');
+  const [salesPatternInsight, setSalesPatternInsight] = useState('');
+  const [ideaCaptureInput, setIdeaCaptureInput] = useState('');
   const [draggedPipelineContactEmail, setDraggedPipelineContactEmail] = useState('');
   const [timelineSummaryRefreshingEmail, setTimelineSummaryRefreshingEmail] = useState('');
 
@@ -1029,6 +1035,31 @@ export default function App() {
       return (left.name || '').localeCompare(right.name || '');
     })
     .slice(0, 4), [normalizedContacts, selectedCalendarDate]);
+  const upcomingMeetingQueue = useMemo(() => buildUpcomingMeetingQueue(normalizedTasks, normalizedContacts), [normalizedTasks, normalizedContacts]);
+
+  const atRiskPipelineContacts = useMemo(() => normalizedContacts
+    .filter((contact) => ['Opportunity', 'Proposal'].includes(contact.stage))
+    .map((contact) => ({
+      contact,
+      attention: contactAttentionMap.get(contact.email || contact.id)
+    }))
+    .filter(({ contact, attention }) => (
+      !contact.nextStep ||
+      (contact.nextFollowUpAt || '') <= selectedCalendarDate ||
+      Boolean(attention?.isStale) ||
+      (attention?.openTasksCount || 0) === 0
+    ))
+    .sort((left, right) => {
+      const valueDelta = (right.contact.estimatedValue || 0) - (left.contact.estimatedValue || 0);
+      if (valueDelta !== 0) return valueDelta;
+
+      const priorityDelta = (right.contact.priorityScore || 0) - (left.contact.priorityScore || 0);
+      if (priorityDelta !== 0) return priorityDelta;
+
+      return (left.contact.name || '').localeCompare(right.contact.name || '');
+    })
+    .slice(0, 4), [normalizedContacts, contactAttentionMap, selectedCalendarDate]);
+  const salesPerformanceSnapshot = useMemo(() => buildSalesPerformanceSnapshot(normalizedContacts, threads, normalizedTasks), [normalizedContacts, threads, normalizedTasks]);
 
   const filteredTasks = useMemo(() => {
     const term = taskSearchQuery.trim().toLowerCase();
@@ -1402,23 +1433,32 @@ export default function App() {
 
   const saveContactRecord = async (contactInput, options = {}) => {
     const normalizedContact = normalizeContactRecord({ ...contactInput, _isNew: false });
-    if (!normalizedContact.email || !isValidEmail(normalizedContact.email) || !user) {
-      return normalizedContact;
+    const existingContact = normalizedContacts.find((contact) => normalizeEmail(contact.email) === normalizedContact.email);
+    const baseStageHistory = Array.isArray(contactInput?.stageHistory) && contactInput.stageHistory.length > 0
+      ? contactInput.stageHistory
+      : (existingContact?.stageHistory || []);
+    const stageHistory = (!baseStageHistory.length || baseStageHistory[baseStageHistory.length - 1]?.stage !== normalizedContact.stage)
+      ? [...baseStageHistory, { stage: normalizedContact.stage, date: new Date().toISOString() }]
+      : baseStageHistory;
+    const nextContact = normalizeContactRecord({ ...normalizedContact, stageHistory });
+
+    if (!nextContact.email || !isValidEmail(nextContact.email) || !user) {
+      return nextContact;
     }
 
     if (IS_LOCAL_DEV_MODE || !db) {
-      upsertContactLocally(normalizedContact);
+      upsertContactLocally(nextContact);
     } else {
-      const { _isNew, ...persistableContact } = normalizedContact;
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', normalizedContact.email);
+      const { _isNew, ...persistableContact } = nextContact;
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', nextContact.email);
       await setDoc(docRef, persistableContact, { merge: true });
     }
 
-    updateSelectedContactSnapshot(normalizedContact);
+    updateSelectedContactSnapshot(nextContact);
     if (options.notificationMessage) {
       showNotification(options.notificationMessage, options.notificationType || 'success');
     }
-    return normalizedContact;
+    return nextContact;
   };
 
   const persistThreadMessages = async (contactEmail, messages = []) => {
@@ -1600,6 +1640,65 @@ No emojis.`;
     setSelectedCalendarDate(getTaskCalendarDate(task) || selectedCalendarDate);
     setActiveTab('tasks');
     showNotification(`Task created for ${normalizedContact.name}.`);
+  };
+
+  const inferTaskTypeFromTitle = (title = '') => {
+    const normalizedTitle = String(title || '').toLowerCase();
+    if (/(call|phone)/i.test(normalizedTitle)) return 'call';
+    if (/(meeting|demo)/i.test(normalizedTitle)) return 'meeting';
+    if (/(proposal|quote|pricing)/i.test(normalizedTitle)) return 'proposal';
+    if (/(review|research|audit|analy)/i.test(normalizedTitle)) return 'research';
+    if (/(admin|update|clean|document)/i.test(normalizedTitle)) return 'admin';
+    return 'follow-up';
+  };
+
+  const parseProposalFollowUpDraft = (text = '') => {
+    const source = String(text || '');
+    const subject = source.match(/^SUBJECT\s*[:=-]\s*(.+)$/im)?.[1]?.trim() || '';
+    const followUpDate = formatDateKey(source.match(/^FOLLOW-UP DATE\s*[:=-]\s*(.+)$/im)?.[1] || '');
+    const bodyMatch = source.match(/BODY\s*[:=-]\s*([\s\S]+)/im);
+    const body = bodyMatch
+      ? bodyMatch[1].trim()
+      : source
+        .replace(/^SUBJECT\s*[:=-].*$/im, '')
+        .replace(/^FOLLOW-UP DATE\s*[:=-].*$/im, '')
+        .replace(/^BODY\s*[:=-]\s*/im, '')
+        .trim();
+
+    return { subject, followUpDate, body };
+  };
+
+  const findContactForTask = (taskInput) => {
+    const normalizedTask = normalizeTaskRecord(taskInput);
+    return normalizedContacts.find((contact) => normalizeEmail(contact.email) === normalizeEmail(normalizedTask.contactEmail || ''))
+      || normalizedContacts.find((contact) => (contact.name || '').toLowerCase() === (normalizedTask.contact || '').toLowerCase())
+      || null;
+  };
+
+  const findBestContactMatchFromText = (...candidateTexts) => {
+    const haystack = candidateTexts
+      .map((value) => String(value || '').toLowerCase())
+      .filter(Boolean)
+      .join(' ');
+
+    if (!haystack.trim()) return null;
+
+    let bestMatch = null;
+    let bestScore = 0;
+
+    normalizedContacts.forEach((contact) => {
+      const candidates = [contact.name, contact.company, contact.email]
+        .map((value) => String(value || '').toLowerCase())
+        .filter(Boolean);
+      const score = candidates.reduce((total, value) => total + (haystack.includes(value) ? value.length : 0), 0);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = contact;
+      }
+    });
+
+    return bestScore > 0 ? bestMatch : null;
   };
 
   const applyTaskTemplate = (templateId) => {
@@ -2687,6 +2786,494 @@ Be concise, practical, and specific. No emojis.`;
         return;
       }
 
+      if (actionType === 'dailyRevenueBrief') {
+        const todayKey = new Date().toDateString();
+        const outboundTodayCount = Object.values(threads).flatMap((thread) => thread?.messages || [])
+          .filter((message) => message.direction === 'outbound')
+          .filter((message) => {
+            const sentAt = new Date(message.date);
+            return !Number.isNaN(sentAt.getTime()) && sentAt.toDateString() === todayKey;
+          }).length;
+        const topTaskLines = sortTasksForPlanner(normalizedTasks, selectedCalendarDate)
+          .filter((task) => task.status !== 'completed')
+          .slice(0, 5)
+          .map((task) => `${task.title} | ${task.contact || 'Internal'} | Priority ${task.priority || 50} | Due ${task.dueDate || 'Unscheduled'}`)
+          .join('\n') || 'No active tasks.';
+        const urgentInboxLines = urgentInboxCandidates
+          .slice(0, 4)
+          .map((email) => `${email.fromName || email.fromEmail} at ${email.company || 'Unknown'} | Score ${email.aiScore ?? 'n/a'} | ${email.subject}`)
+          .join('\n') || 'No urgent inbox leads.';
+        const riskLines = atRiskPipelineContacts
+          .slice(0, 4)
+          .map(({ contact, attention }) => `${contact.name} at ${contact.company || 'Unknown'} | Stage ${contact.stage} | Value ${contact.estimatedValue || 0} | Next Step ${contact.nextStep || 'Missing'} | Open Tasks ${attention?.openTasksCount || 0}`)
+          .join('\n') || 'No at-risk pipeline accounts.';
+
+        prompt = `Act as my embedded small-business revenue operating partner. Review this live business snapshot and return:
+1. TODAY'S FOCUS: One short paragraph.
+2. PIPELINE RISK: The biggest risks to closing revenue this week.
+3. OUTREACH WINDOW: Where immediate follow-up will matter most.
+4. OWNER WATCHOUT: One habit or blind spot that will hurt execution.
+5. PRIORITY MOVES: Exactly 3 numbered actions for today.
+
+Snapshot:
+Pipeline Value: ${crmOverview.pipelineValue}
+Weighted Forecast: ${pipelineOverview.weightedForecast}
+Follow-Ups Due: ${crmOverview.followUpsDueCount}
+Hot Contacts: ${crmOverview.hotContactsCount}
+Active Tasks: ${normalizedTasks.filter((task) => task.status !== 'completed').length}
+Needs Response Inbox: ${inboxEmails.filter(email => email.needsResponse && !email.isArchived).length}
+Sent Today: ${outboundTodayCount}
+
+Top Tasks:
+${topTaskLines}
+
+Urgent Inbox:
+${urgentInboxLines}
+
+At-Risk Deals:
+${riskLines}
+
+Be concise, commercial, and practical. No emojis.`;
+
+        const result = await callGeminiAPI(prompt);
+        setDashboardPartnerInsight(`[AI Revenue Brief]\n\n${result}`);
+        showNotification('AI revenue brief generated.');
+        setLoading(false);
+        return;
+      }
+
+      if (actionType === 'organizeIdea') {
+        const rawIdea = ideaCaptureInput.trim();
+        if (!rawIdea) {
+          showNotification('Capture a note, idea, objection, or customer signal first.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const crmContext = normalizedContacts
+          .slice(0, 8)
+          .map((contact) => `${contact.name} | ${contact.company || 'Unknown'} | ${contact.stage}`)
+          .join('\n');
+
+        prompt = `Act as an embedded small-business sales operator. Turn this raw note into immediate execution.
+Return exactly these labels, one per line:
+SUMMARY: ...
+CRM NOTE: ...
+OUTREACH ANGLE: ...
+BEST CONTACT: ...
+TASK 1: ...
+TASK 2: ...
+TASK 3: ...
+
+Raw note:
+${rawIdea}
+
+Known CRM accounts:
+${crmContext || 'No CRM accounts yet.'}
+
+Make the tasks specific, practical, and sales-oriented. No emojis.`;
+
+        const result = await callGeminiAPI(prompt);
+        const plan = parseAiIdeaOrganizer(result);
+        if (!plan.summary && !plan.crmNote && !plan.outreachAngle && plan.taskTitles.length === 0) {
+          throw new Error('Failed to convert the idea into a usable plan.');
+        }
+
+        let matchedContact = findBestContactMatchFromText(rawIdea, plan.bestContact, plan.crmNote, plan.outreachAngle);
+        if (matchedContact && plan.crmNote) {
+          const timestampLabel = new Date().toLocaleString();
+          const noteEntry = `[AI Idea ${timestampLabel}] ${plan.crmNote}`;
+          const nextNotes = String(matchedContact.notes || '').includes(plan.crmNote)
+            ? matchedContact.notes
+            : [matchedContact.notes, noteEntry].filter(Boolean).join('\n\n');
+
+          matchedContact = await saveContactRecord({
+            ...matchedContact,
+            notes: nextNotes,
+            lastAiReviewedAt: new Date().toISOString()
+          });
+        }
+
+        const ideaTasks = plan.taskTitles.slice(0, 3).map((taskTitle, index) => createEmptyTask({
+          id: `idea-task-${Date.now()}-${index}`,
+          title: taskTitle,
+          type: inferTaskTypeFromTitle(taskTitle),
+          status: 'pending',
+          priority: matchedContact?.priorityScore || 68,
+          scheduledDate: selectedCalendarDate,
+          dueDate: matchedContact?.nextFollowUpAt || selectedCalendarDate,
+          contact: matchedContact?.name || 'Internal Workflow',
+          contactEmail: matchedContact?.email || '',
+          company: matchedContact?.company || 'Growth Ops',
+          owner: matchedContact?.owner || config.senderName || '',
+          rationale: plan.summary || plan.crmNote || '',
+          notes: plan.crmNote || '',
+          source: 'ai-idea-organizer'
+        }));
+
+        if (ideaTasks.length > 0) {
+          appendTaskBatchLocally(ideaTasks);
+        }
+
+        if (plan.outreachAngle || matchedContact) {
+          setComposerState((prev) => ({
+            ...prev,
+            to: matchedContact?.email || prev.to,
+            recipientName: matchedContact?.name || prev.recipientName,
+            companyName: matchedContact?.company || prev.companyName,
+            jobTitle: matchedContact?.jobTitle || prev.jobTitle,
+            aiContext: `[AI Idea Organizer]\n\n${plan.outreachAngle || plan.crmNote || plan.summary}`
+          }));
+        }
+
+        setDashboardPartnerInsight(`[AI Idea Organizer]\n\n${result}`);
+        if (matchedContact) {
+          setCrmWorkspaceInsight(`[AI Idea Linked To ${matchedContact.name}]\n\n${result}`);
+        }
+        if (ideaTasks.length > 0) {
+          setTaskPlannerInsight(`[AI Idea Organizer]\n\n${result}`);
+        }
+        setIdeaCaptureInput('');
+        showNotification(`Idea organized into ${ideaTasks.length} task${ideaTasks.length === 1 ? '' : 's'}${matchedContact ? ` and linked to ${matchedContact.name}` : ''}.`);
+        setLoading(false);
+        return;
+      }
+
+      if (actionType === 'rescuePipeline') {
+        const rescueCandidates = atRiskPipelineContacts.slice(0, 3).map((item) => item.contact);
+        if (rescueCandidates.length === 0) {
+          showNotification('There are no obvious at-risk opportunity or proposal deals to rescue right now.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const existingTaskSignatures = new Set(normalizedTasks
+          .filter((task) => task.status !== 'completed')
+          .map((task) => `${normalizeEmail(task.contactEmail || '')}:${(task.title || '').toLowerCase()}`));
+        const rescueTasks = [];
+        const rescueNotes = [];
+        let completedPlans = 0;
+
+        for (const candidate of rescueCandidates) {
+          try {
+            const relatedTasks = normalizedTasks.filter((task) => normalizeEmail(task.contactEmail || '') === candidate.email);
+            const threadHistory = threads[candidate.email]?.messages || [];
+            const threadSummary = threadHistory.slice(-4).map((message) => `${message.direction || 'activity'} | ${message.subject || 'No subject'} | ${new Date(message.date).toLocaleDateString()}`).join('\n') || 'No recent interactions.';
+
+            prompt = `Act as a sharp small-business deal rescue operator. This deal is active but at risk.
+Return the answer using these exact labels, one per line:
+SUMMARY: ...
+PRIORITY: ...
+VALUE: ...
+NEXT STEP: ...
+FOLLOW-UP DATE: ...
+TASK TYPE: ...
+TASK TITLE: ...
+OPENER: ...
+CHANNEL: ...
+ROLE: ...
+PAIN POINTS: ...
+
+Contact:
+Name: ${candidate.name}
+Company: ${candidate.company || 'Unknown'}
+Title: ${candidate.jobTitle || 'Unknown'}
+Stage: ${candidate.stage}
+Current Priority: ${candidate.priorityScore || 50}
+Current Value: ${candidate.estimatedValue || 0}
+Current Next Step: ${candidate.nextStep || 'Not set'}
+Open Tasks: ${relatedTasks.length}
+Thread Summary:
+${threadSummary}
+
+Focus on a realistic move that helps the owner close revenue faster. No emojis.`;
+
+            const result = await callGeminiAPI(prompt, { abortPrevious: false });
+            const plan = parseAiContactPlan(result);
+            const updatedContact = await saveContactRecord({
+              ...candidate,
+              aiSummary: plan.summary || candidate.aiSummary,
+              nextStep: plan.nextStep || candidate.nextStep,
+              nextFollowUpAt: plan.followUpDate || candidate.nextFollowUpAt,
+              priorityScore: plan.priority || candidate.priorityScore,
+              estimatedValue: plan.estimatedValue ?? candidate.estimatedValue,
+              preferredChannel: plan.channel || candidate.preferredChannel,
+              buyingRole: plan.role || candidate.buyingRole,
+              painPoints: plan.painPoints || candidate.painPoints,
+              lastAiReviewedAt: new Date().toISOString()
+            });
+
+            void refreshContactTimelineSummary(updatedContact, { preferHeuristic: true });
+
+            const nextTask = createTaskFromContactPlan(updatedContact, plan);
+            const taskSignature = `${normalizeEmail(nextTask.contactEmail || '')}:${(nextTask.title || '').toLowerCase()}`;
+            if (!existingTaskSignatures.has(taskSignature)) {
+              existingTaskSignatures.add(taskSignature);
+              rescueTasks.push(nextTask);
+            }
+
+            rescueNotes.push(`${candidate.name} at ${candidate.company || 'Unknown'}: ${plan.nextStep || updatedContact.nextStep || 'Define a next step.'}`);
+            completedPlans += 1;
+          } catch (error) {
+            rescueNotes.push(`${candidate.name} at ${candidate.company || 'Unknown'}: rescue plan failed to generate.`);
+          }
+        }
+
+        if (completedPlans === 0) {
+          throw new Error('Failed to generate rescue plans for the current at-risk deals.');
+        }
+
+        if (rescueTasks.length > 0) {
+          appendTaskBatchLocally(rescueTasks);
+        }
+
+        const rescueInsight = `[AI Rescue Queue]\n\n${rescueNotes.map((line, index) => `${index + 1}. ${line}`).join('\n')}`;
+        setDashboardPartnerInsight(rescueInsight);
+        setCrmWorkspaceInsight(rescueInsight);
+        showNotification(`Generated rescue plans for ${completedPlans} at-risk deal${completedPlans === 1 ? '' : 's'}${rescueTasks.length ? ` and added ${rescueTasks.length} task${rescueTasks.length === 1 ? '' : 's'}` : ''}.`);
+        setLoading(false);
+        return;
+      }
+
+      if (actionType === 'callPrep') {
+        const inputTask = options?.task ? normalizeTaskRecord(options.task) : null;
+        const explicitContact = options?.contact ? normalizeContactRecord(options.contact) : null;
+        const matchedContact = explicitContact
+          || (inputTask ? findContactForTask(inputTask) : null)
+          || selectedContact
+          || upcomingMeetingQueue[0]?.contact
+          || null;
+
+        if (!matchedContact || !matchedContact.email) {
+          showNotification('Pick a meeting or contact first so AI can build a prep brief.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const queueItem = inputTask
+          ? { task: inputTask, contact: matchedContact }
+          : upcomingMeetingQueue.find((item) => normalizeEmail(item.contact?.email || '') === matchedContact.email)
+            || null;
+        const prepTask = queueItem?.task || null;
+        const prepDate = prepTask ? getTaskCalendarDate(prepTask) : (matchedContact.nextFollowUpAt || selectedCalendarDate);
+        const prepTime = prepTask?.time || 'No time set';
+        const relatedTasks = normalizedTasks
+          .filter((task) => normalizeEmail(task.contactEmail || '') === matchedContact.email)
+          .slice(0, 6);
+        const threadMessages = threads[matchedContact.email]?.messages || [];
+        const timelineSummary = threadMessages
+          .slice(-6)
+          .map((message) => `${message.type === 'call' ? 'Call' : message.direction === 'outbound' ? 'Outbound' : 'Inbound'} | ${message.subject || 'No subject'} | ${formatDateKey(message.date) || 'Unknown date'}`)
+          .join('\n') || 'No recent interactions.';
+
+        prompt = `Act as an elite sales call strategist for a small business owner. Build a practical prep brief for the next live conversation.
+Return:
+1. CALL GOAL: One sentence.
+2. WHAT THEY CARE ABOUT: 2-3 bullets.
+3. RISKS / OBJECTIONS: 2-3 bullets.
+4. FIVE QUESTIONS TO ASK: 5 short numbered questions.
+5. COMMERCIAL ANGLE: One short paragraph.
+6. BEST NEXT CLOSE: The exact closing move to use.
+
+Contact:
+Name: ${matchedContact.name}
+Company: ${matchedContact.company || 'Unknown'}
+Title: ${matchedContact.jobTitle || 'Unknown'}
+Stage: ${matchedContact.stage}
+Value: ${matchedContact.estimatedValue || 0}
+Priority: ${matchedContact.priorityScore || 50}
+Pain Points: ${matchedContact.painPoints || 'Not captured'}
+Current Next Step: ${matchedContact.nextStep || 'Not defined'}
+Conversation Date: ${formatFriendlyDate(prepDate)}
+Conversation Time: ${prepTime}
+Task: ${prepTask?.title || 'Upcoming call or meeting'}
+
+Relationship Summary:
+${matchedContact.timelineSummary || matchedContact.aiSummary || 'No stored summary.'}
+
+Recent Timeline:
+${timelineSummary}
+
+Open Work:
+${relatedTasks.map((task) => `${task.title} | ${task.status} | ${task.dueDate || task.scheduledDate || 'Unscheduled'}`).join('\n') || 'No open tasks.'}
+
+Be concise and commercial. No emojis.`;
+
+        const result = await callGeminiAPI(prompt);
+        if (prepDate) {
+          setSelectedCalendarDate(prepDate);
+          setActiveCalendarMonth(formatMonthKey(prepDate));
+        }
+        setTaskPlannerInsight(`[AI Call Prep: ${matchedContact.name}]\n\n${result}`);
+        setDashboardPartnerInsight(`[AI Call Prep: ${matchedContact.name}]\n\n${result}`);
+        setActiveTab('tasks');
+        showNotification(`AI call prep ready for ${matchedContact.name}.`);
+        setLoading(false);
+        return;
+      }
+
+      if (actionType === 'proposalFollowUp') {
+        const proposalContact = normalizeContactRecord(options?.contact || selectedContact || {});
+        if (!proposalContact.email) {
+          showNotification('Choose a proposal-stage contact first.', 'error');
+          setLoading(false);
+          return;
+        }
+        if (proposalContact.stage !== 'Proposal') {
+          showNotification('Proposal follow-up is designed for proposal-stage contacts.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const threadMessages = threads[proposalContact.email]?.messages || [];
+        const threadSummary = threadMessages
+          .slice(-6)
+          .map((message) => `${message.type === 'call' ? 'Call' : message.direction === 'outbound' ? 'Outbound' : 'Inbound'} | ${message.subject || 'No subject'} | ${formatDateKey(message.date) || 'Unknown date'}`)
+          .join('\n') || 'No recent interactions.';
+
+        prompt = `Act as an elite small-business sales closer. Draft a concise proposal follow-up email that moves this deal toward a decision.
+Return exactly in this format:
+SUBJECT: ...
+FOLLOW-UP DATE: ...
+BODY:
+...
+
+Contact:
+Name: ${proposalContact.name}
+Company: ${proposalContact.company || 'Unknown'}
+Title: ${proposalContact.jobTitle || 'Unknown'}
+Stage: ${proposalContact.stage}
+Value: ${proposalContact.estimatedValue || 0}
+Priority: ${proposalContact.priorityScore || 50}
+Pain Points: ${proposalContact.painPoints || 'Not captured'}
+Current Next Step: ${proposalContact.nextStep || 'Not defined'}
+
+Relationship Summary:
+${proposalContact.timelineSummary || proposalContact.aiSummary || 'No stored summary.'}
+
+Recent Timeline:
+${threadSummary}
+
+The email should be short, commercial, and lightly urgent without sounding desperate. Ask for a concrete checkpoint or decision step. No emojis.`;
+
+        const result = await callGeminiAPI(prompt);
+        const draft = parseProposalFollowUpDraft(result);
+        if (!draft.body) {
+          throw new Error('Failed to parse the proposal follow-up draft.');
+        }
+
+        const followUpDate = draft.followUpDate || proposalContact.nextFollowUpAt || formatDateKey(new Date(Date.now() + (2 * 24 * 60 * 60 * 1000)));
+        let nextBody = draft.body;
+        if (config.signature && !nextBody.includes(config.signature.substring(0, 10))) {
+          nextBody = `${nextBody}\n\n${config.signature}`;
+        }
+
+        setComposerState({
+          ...createComposerResetState({ defaultTone: config.defaultTone, defaultLength: config.defaultLength }),
+          to: proposalContact.email,
+          hubspotId: proposalContact.hubspotId || null,
+          recipientName: proposalContact.name,
+          companyName: proposalContact.company,
+          jobTitle: proposalContact.jobTitle || '',
+          threadHistory: buildHistoryStringFromMessages(threadMessages),
+          aiContext: `[AI Proposal Follow-Up: ${proposalContact.name}]\n\n${result}`,
+          subject: draft.subject || `Quick follow-up on the proposal for ${proposalContact.company || proposalContact.name}`,
+          body: nextBody
+        });
+        setSelectedInboxEmail(null);
+        setActiveTab('outreach');
+        setSelectedCalendarDate(followUpDate);
+        setActiveCalendarMonth(formatMonthKey(followUpDate));
+
+        const hasActiveProposalTask = normalizedTasks.some((task) => (
+          task.status !== 'completed'
+          && normalizeEmail(task.contactEmail || '') === proposalContact.email
+          && (/proposal|pricing|quote/i.test(task.title || '') || task.type === 'proposal')
+        ));
+        if (!hasActiveProposalTask) {
+          appendTaskLocally(createEmptyTask({
+            id: `proposal-follow-up-${Date.now()}`,
+            title: `Follow up proposal with ${proposalContact.name}`,
+            type: 'proposal',
+            status: 'pending',
+            priority: Math.max(proposalContact.priorityScore || 75, 82),
+            dueDate: followUpDate,
+            scheduledDate: followUpDate,
+            contact: proposalContact.name,
+            contactEmail: proposalContact.email,
+            company: proposalContact.company,
+            owner: proposalContact.owner,
+            rationale: proposalContact.timelineSummary || proposalContact.aiSummary || proposalContact.nextStep || '',
+            notes: 'AI-generated proposal follow-up draft is loaded in Outreach.',
+            source: 'ai-proposal-follow-up'
+          }));
+        }
+
+        const savedContact = await saveContactRecord({
+          ...proposalContact,
+          nextFollowUpAt: followUpDate,
+          nextStep: 'Follow up on proposal and ask for a decision checkpoint.',
+          lastAiReviewedAt: new Date().toISOString()
+        });
+        setCrmWorkspaceInsight(`[AI Proposal Follow-Up: ${proposalContact.name}]\n\n${result}`);
+        if (selectedContact && normalizeEmail(selectedContact.email) === savedContact.email) {
+          openDossier(savedContact);
+        }
+        showNotification(`Proposal follow-up draft loaded for ${proposalContact.name}.`);
+        setLoading(false);
+        return;
+      }
+
+      if (actionType === 'salesPatternTracker') {
+        if (salesPerformanceSnapshot.outboundCount === 0 && salesPerformanceSnapshot.stageTransitionCount === 0) {
+          showNotification('Work a few deals or outreach threads first so AI has enough pattern data.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const riskLines = atRiskPipelineContacts
+          .map(({ contact, attention }) => `${contact.name} | ${contact.stage} | Value ${contact.estimatedValue || 0} | Open Tasks ${attention?.openTasksCount || 0} | Next Step ${contact.nextStep || 'Missing'}`)
+          .join('\n') || 'No current at-risk deals.';
+
+        prompt = `Act as a small-business revenue analyst. Review this 30-day sales pattern snapshot and tell the owner what is actually helping deals move versus what is causing losses.
+Return:
+1. WHAT IS WORKING
+2. WHAT IS FAILING
+3. WIN SIGNALS
+4. LOSS SIGNALS
+5. ONE PROCESS FIX
+6. ONE MANAGER HABIT TO ENFORCE
+
+Snapshot:
+Outbound Messages: ${salesPerformanceSnapshot.outboundCount}
+Inbound Replies: ${salesPerformanceSnapshot.inboundCount}
+Contacted Accounts: ${salesPerformanceSnapshot.contactedAccounts}
+Replied Accounts: ${salesPerformanceSnapshot.repliedAccounts}
+Response Rate: ${salesPerformanceSnapshot.responseRate}%
+Average Touches Before Reply: ${salesPerformanceSnapshot.averageTouchesBeforeReply}
+Proposal Accounts: ${salesPerformanceSnapshot.proposalCount}
+Customers Won: ${salesPerformanceSnapshot.customerCount}
+Churned / Lost: ${salesPerformanceSnapshot.churnedCount}
+Stage Progressions Logged: ${salesPerformanceSnapshot.progressedCount}
+Wins Logged: ${salesPerformanceSnapshot.wonCount}
+Losses Logged: ${salesPerformanceSnapshot.lostCount}
+Stalled Proposals: ${salesPerformanceSnapshot.stalledProposalCount}
+Completed Meetings: ${salesPerformanceSnapshot.completedMeetingCount}
+
+Current Risk Queue:
+${riskLines}
+
+Be concise, practical, and specific. No emojis.`;
+
+        const result = await callGeminiAPI(prompt);
+        setSalesPatternInsight(`[AI Win/Loss Tracker]\n\n${result}`);
+        setDashboardPartnerInsight(`[AI Win/Loss Tracker]\n\n${result}`);
+        setActiveTab('dashboard');
+        showNotification('AI win/loss tracker generated.');
+        setLoading(false);
+        return;
+      }
+
       if (actionType === 'write') {
         const contextParts = [];
         if (config.companyUrl) contextParts.push(`Our Company Profile: ${config.companyUrl}`);
@@ -3364,6 +3951,176 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           ))}
         </div>
 
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-gradient-to-br from-zinc-50 via-white to-amber-50 dark:from-zinc-950 dark:via-zinc-900 dark:to-zinc-950 p-6 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-black dark:text-white flex items-center">
+                <Wand2 className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-500" />
+                AI Operating Partner
+              </h3>
+              <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400 max-w-3xl">
+                Use AI as the working chief of staff for the business: get a commercial brief, rescue at-risk deals, and turn raw ideas into CRM notes, tasks, and outreach angles.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => handleAIAction('dailyRevenueBrief')}
+                disabled={loading}
+                className="flex items-center bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+              >
+                <Sparkles className="w-4 h-4 mr-2" />
+                Revenue Brief
+              </button>
+              <button
+                onClick={() => handleAIAction('rescuePipeline')}
+                disabled={loading || atRiskPipelineContacts.length === 0}
+                className="flex items-center bg-amber-400 text-black px-4 py-2 rounded-lg hover:bg-amber-300 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+              >
+                <ShieldAlert className="w-4 h-4 mr-2" />
+                Rescue At-Risk Deals
+              </button>
+              <button
+                onClick={() => handleAIAction('salesPatternTracker')}
+                disabled={loading || (salesPerformanceSnapshot.outboundCount === 0 && salesPerformanceSnapshot.stageTransitionCount === 0)}
+                className="flex items-center bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-4 py-2 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+              >
+                <TrendingUp className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" />
+                Win/Loss Tracker
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-6 grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-6">
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/70 p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-bold text-black dark:text-white">Partner Brief</h4>
+                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Commercial guidance across CRM, inbox, tasks, and outreach.</p>
+                </div>
+                <span className="text-[10px] px-2 py-1 rounded-full font-bold border bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300">
+                  {atRiskPipelineContacts.length} at risk
+                </span>
+              </div>
+
+              <div className="mt-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-4 min-h-[10rem]">
+                {dashboardPartnerInsight ? (
+                  <p className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">{dashboardPartnerInsight}</p>
+                ) : (
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                    Run the revenue brief for a fast daily operating view, or rescue the current opportunity and proposal accounts that are most likely to slip.
+                  </p>
+                )}
+              </div>
+
+              <div className="mt-4">
+                <h5 className="text-xs font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-3">Closing Queue</h5>
+                <div className="space-y-3">
+                  {atRiskPipelineContacts.slice(0, 3).map(({ contact, attention }) => (
+                    <div key={contact.email || contact.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-black dark:text-white">{contact.name}</p>
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400">{contact.company || 'Unknown company'} · {contact.stage}</p>
+                        </div>
+                        <span className="text-[10px] px-2 py-1 rounded-full font-bold border bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-300">
+                          {formatCurrencyCompact(contact.estimatedValue)}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300 line-clamp-2">
+                        {contact.nextStep || contact.timelineSummary || 'No next step defined.'}
+                      </p>
+                      <div className="mt-3 flex items-center justify-between gap-2 text-[11px]">
+                        <span className="text-zinc-500 dark:text-zinc-400">Open tasks: {attention?.openTasksCount || 0}</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleAIAction('aiContactPlan', { contact })}
+                            disabled={loading}
+                            className="font-bold text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white transition disabled:opacity-50"
+                          >
+                            AI Plan
+                          </button>
+                          <button
+                            onClick={() => openDossier(contact)}
+                            className="font-bold text-black dark:text-white hover:text-rose-900 dark:hover:text-rose-400 transition"
+                          >
+                            Open
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {atRiskPipelineContacts.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">
+                      No obvious at-risk opportunity or proposal deals right now.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/70 p-5">
+              <h4 className="text-sm font-bold text-black dark:text-white">Idea Inbox</h4>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                Paste a founder note, objection, customer request, or campaign idea. AI will turn it into tasks, attach it to the right contact when possible, and load an outreach angle for later drafting.
+              </p>
+              <textarea
+                value={ideaCaptureInput}
+                onChange={(event) => setIdeaCaptureInput(event.target.value)}
+                rows="8"
+                placeholder="Example: HVAC prospects keep asking about quote turnaround. We should tighten follow-up and build a simple speed-to-quote pitch for operators."
+                className="mt-4 w-full border border-zinc-300 dark:border-zinc-700 rounded-xl p-3 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"
+              />
+              <button
+                onClick={() => handleAIAction('organizeIdea')}
+                disabled={loading || !ideaCaptureInput.trim()}
+                className="mt-4 w-full flex items-center justify-center bg-rose-900 text-white py-2.5 rounded-lg text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50"
+              >
+                <Layers className="w-4 h-4 mr-2" /> Turn Into Plan
+              </button>
+              <div className="mt-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-3 text-xs text-zinc-600 dark:text-zinc-300 leading-relaxed">
+                Quick outcome: creates up to 3 tasks for {selectedCalendarDateLabel}, updates CRM notes when a known contact matches, and loads the best outreach angle into the AI outreach context.
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/70 p-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <h4 className="text-sm font-bold text-black dark:text-white">Win/Loss Pattern Tracker</h4>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">AI reads outreach volume, replies, stage movement, and stalled proposals to surface what is actually moving revenue.</p>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+                <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 px-3 py-2">
+                  <p className="text-zinc-500 dark:text-zinc-400">Response Rate</p>
+                  <p className="mt-1 font-bold text-black dark:text-white">{salesPerformanceSnapshot.responseRate}%</p>
+                </div>
+                <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 px-3 py-2">
+                  <p className="text-zinc-500 dark:text-zinc-400">Wins</p>
+                  <p className="mt-1 font-bold text-emerald-600 dark:text-emerald-400">{salesPerformanceSnapshot.wonCount}</p>
+                </div>
+                <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 px-3 py-2">
+                  <p className="text-zinc-500 dark:text-zinc-400">Losses</p>
+                  <p className="mt-1 font-bold text-rose-900 dark:text-rose-400">{salesPerformanceSnapshot.lostCount}</p>
+                </div>
+                <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 px-3 py-2">
+                  <p className="text-zinc-500 dark:text-zinc-400">Stalled Proposals</p>
+                  <p className="mt-1 font-bold text-amber-600 dark:text-amber-400">{salesPerformanceSnapshot.stalledProposalCount}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-4 min-h-[8rem]">
+              {salesPatternInsight ? (
+                <p className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">{salesPatternInsight}</p>
+              ) : (
+                <p className="text-sm text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                  Run the tracker to see whether your current sales process is winning through better follow-up, enough touches before reply, and clean progression from opportunity to proposal to closed business.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-8">
           <div className="md:col-span-2 bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm flex flex-col transition-colors">
             <div className="flex justify-between items-center mb-4">
@@ -3747,6 +4504,64 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
         {/* Right: AI Schedule Timeline & Calendar */}
         <div className="hidden lg:flex w-1/3 flex-col gap-6 transition-colors min-h-0">
+
+          <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm p-5 flex-shrink-0">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <h3 className="font-bold text-black dark:text-white">Upcoming Calls & Meetings</h3>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Prepare the next live conversation with AI before it happens.</p>
+              </div>
+              <button
+                onClick={() => handleAIAction('callPrep', { task: upcomingMeetingQueue[0]?.task, contact: upcomingMeetingQueue[0]?.contact })}
+                disabled={loading || upcomingMeetingQueue.length === 0}
+                className="text-xs bg-black dark:bg-white text-white dark:text-black px-3 py-2 rounded-lg font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50"
+              >
+                Prep Next
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {upcomingMeetingQueue.slice(0, 3).map((item) => (
+                <div key={item.task.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-bold text-black dark:text-white">{item.contact?.name || item.task.contact || 'Meeting task'}</p>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">{item.contact?.company || item.task.company || 'Unknown company'} · {item.task.type}</p>
+                    </div>
+                    <span className="text-[10px] px-2 py-1 rounded-full font-bold border bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300">
+                      {formatFriendlyDate(item.dateKey, 'Unscheduled')}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300 line-clamp-2">{item.task.title}</p>
+                  <div className="mt-3 flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-zinc-500 dark:text-zinc-400">{item.task.time || 'No time set'}{item.isToday ? ' · Today' : ''}</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleAIAction('callPrep', { task: item.task, contact: item.contact })}
+                        disabled={loading}
+                        className="font-bold text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white transition disabled:opacity-50"
+                      >
+                        AI Call Prep
+                      </button>
+                      {item.contact && (
+                        <button
+                          onClick={() => createMeetingPrepPackForContact(item.contact, { scheduledDate: item.dateKey || selectedCalendarDate })}
+                          className="font-bold text-black dark:text-white hover:text-amber-600 dark:hover:text-amber-400 transition"
+                        >
+                          Prep Pack
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {upcomingMeetingQueue.length === 0 && (
+                <div className="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">
+                  No upcoming meeting or call tasks yet. Create one, then use AI call prep to walk in with a sharper plan.
+                </div>
+              )}
+            </div>
+          </div>
           
           {/* Mini Calendar */}
           <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm p-5 flex-shrink-0">
@@ -4343,6 +5158,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     <button onClick={(e) => { e.stopPropagation(); handleAIAction('aiContactPlan', { contact }); }} disabled={loading} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-400 bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Create AI contact plan">
                       <Sparkles className="w-4 h-4" />
                     </button>
+                    {contact.stage === 'Proposal' && (
+                      <button onClick={(e) => { e.stopPropagation(); handleAIAction('proposalFollowUp', { contact }); }} disabled={loading} className="p-1.5 text-zinc-500 hover:text-black dark:text-zinc-400 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Draft proposal follow-up">
+                        <Send className="w-4 h-4" />
+                      </button>
+                    )}
                     <button onClick={(e) => { e.stopPropagation(); openDossier(contact); }} className="text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white font-bold text-sm flex items-center ml-2 transition-colors">
                       View <ChevronRight className="w-4 h-4 ml-0.5" />
                     </button>
@@ -6074,6 +6894,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <div className="bg-zinc-50 dark:bg-zinc-950/50 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800">
                    <h3 className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-4 flex items-center"><Sparkles className="w-3 h-3 mr-1 text-rose-900 dark:text-rose-500" /> AI Intelligence</h3>
                    <div className="space-y-2">
+                     <button
+                       onClick={() => handleAIAction('callPrep', { contact: selectedContact })}
+                       disabled={loading}
+                       className="w-full flex items-center justify-center bg-black dark:bg-white text-white dark:text-black py-2 rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50"
+                     >
+                       <PhoneCall className="w-4 h-4 mr-2" /> Call Prep Brief
+                     </button>
                      <button 
                        onClick={() => handleAIAction('researchContact', { contact: selectedContact })}
                        disabled={loading}
@@ -6095,6 +6922,15 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      >
                        <Sparkles className="w-4 h-4 mr-2" /> Build AI Action Plan
                      </button>
+                     {selectedContact.stage === 'Proposal' && (
+                       <button
+                         onClick={() => handleAIAction('proposalFollowUp', { contact: selectedContact })}
+                         disabled={loading}
+                         className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition disabled:opacity-50"
+                       >
+                         <Send className="w-4 h-4 mr-2" /> Proposal Follow-Up Draft
+                       </button>
+                     )}
                    </div>
                 </div>
               </div>
