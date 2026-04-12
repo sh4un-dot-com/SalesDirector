@@ -38,12 +38,14 @@ import {
   CONTACT_STAGE_OPTIONS,
   CONTACT_SOURCE_OPTIONS,
   CONTACT_TEMPERATURE_OPTIONS,
+  TASK_TEMPLATE_DEFINITIONS,
   createEmptyContact,
   createEmptyTask,
   normalizeContactRecord,
   normalizeContacts,
   normalizeTaskRecord,
   normalizeTasks,
+  buildPipelineOverview,
   buildCrmOverview,
   getContactAttentionSummary,
   buildTaskSummary,
@@ -57,9 +59,12 @@ import {
   TASK_TYPE_OPTIONS,
   TASK_STATUS_OPTIONS,
   TASK_FOCUS_OPTIONS,
+  materializeTaskTemplate,
+  createMeetingPrepPack,
   parseAiContactPlan,
   createTaskFromContactPlan,
-  applyAiFocusDayPlan
+  applyAiFocusDayPlan,
+  buildHeuristicTimelineSummary
 } from './utils/crmWorkflow.mjs';
 
 // Firebase Initialization
@@ -383,6 +388,8 @@ export default function App() {
   const [contactToDelete, setContactToDelete] = useState(null);
   const [contactSearchQuery, setContactSearchQuery] = useState('');
   const [crmWorkspaceInsight, setCrmWorkspaceInsight] = useState('');
+  const [draggedPipelineContactEmail, setDraggedPipelineContactEmail] = useState('');
+  const [timelineSummaryRefreshingEmail, setTimelineSummaryRefreshingEmail] = useState('');
 
   // Task Modals
   const [editingTask, setEditingTask] = useState(null);
@@ -984,6 +991,7 @@ export default function App() {
   );
   const normalizedContacts = useMemo(() => normalizeContacts(contacts), [contacts]);
   const normalizedTasks = useMemo(() => normalizeTasks(tasks), [tasks]);
+  const pipelineOverview = useMemo(() => buildPipelineOverview(normalizedContacts), [normalizedContacts]);
   const crmOverview = useMemo(() => buildCrmOverview(normalizedContacts, normalizedTasks, threads), [normalizedContacts, normalizedTasks, threads]);
   const contactAttentionMap = useMemo(() => {
     const nextMap = new Map();
@@ -1000,6 +1008,27 @@ export default function App() {
     const monthDate = new Date(`${activeCalendarMonth}-01T00:00:00`);
     return monthDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   }, [activeCalendarMonth]);
+
+  const plannerPrepCandidates = useMemo(() => normalizedContacts
+    .filter((contact) => {
+      if (!contact.email) return false;
+      const dueOnSelectedDay = (contact.nextFollowUpAt || '') === selectedCalendarDate;
+      return dueOnSelectedDay || ['Opportunity', 'Proposal', 'Customer'].includes(contact.stage);
+    })
+    .sort((left, right) => {
+      const leftDueToday = (left.nextFollowUpAt || '') === selectedCalendarDate ? 1 : 0;
+      const rightDueToday = (right.nextFollowUpAt || '') === selectedCalendarDate ? 1 : 0;
+      if (rightDueToday !== leftDueToday) return rightDueToday - leftDueToday;
+
+      const priorityDelta = (right.priorityScore || 0) - (left.priorityScore || 0);
+      if (priorityDelta !== 0) return priorityDelta;
+
+      const valueDelta = (right.estimatedValue || 0) - (left.estimatedValue || 0);
+      if (valueDelta !== 0) return valueDelta;
+
+      return (left.name || '').localeCompare(right.name || '');
+    })
+    .slice(0, 4), [normalizedContacts, selectedCalendarDate]);
 
   const filteredTasks = useMemo(() => {
     const term = taskSearchQuery.trim().toLowerCase();
@@ -1301,6 +1330,67 @@ export default function App() {
     showNotification(`Loaded Step ${step.stepNumber} into composer.`);
   };
 
+  const buildHistoryStringFromMessages = (messages = []) => {
+    return [...(Array.isArray(messages) ? messages : [])]
+      .sort((left, right) => new Date(left?.date || 0) - new Date(right?.date || 0))
+      .map((message) => {
+        const actor = message?.type === 'call'
+          ? 'Call note'
+          : message?.direction === 'outbound'
+            ? 'You'
+            : 'Prospect';
+        return `[${new Date(message?.date || Date.now()).toLocaleDateString()}] ${actor} wrote:\nSubject: ${message?.subject || 'No Subject'}\n${message?.body || ''}`;
+      })
+      .join('\n\n');
+  };
+
+  const buildThreadMessageFromInboxEmail = (email) => ({
+    date: email?.dateRaw || new Date().toISOString(),
+    subject: email?.subject || 'No Subject',
+    body: email?.body || '',
+    direction: 'inbound',
+    type: 'email',
+    sourceInboxId: email?.id || '',
+    source: email?.source || 'manual'
+  });
+
+  const mergeThreadMessages = (currentMessages = [], additionalMessages = []) => {
+    const byFingerprint = new Map();
+
+    [...currentMessages, ...additionalMessages].forEach((message) => {
+      if (!message) return;
+      const fingerprint = message.sourceInboxId
+        ? `inbox:${message.sourceInboxId}`
+        : `${message.direction || ''}|${message.type || 'email'}|${message.date || ''}|${message.subject || ''}|${message.body || ''}`;
+
+      if (!byFingerprint.has(fingerprint)) {
+        byFingerprint.set(fingerprint, { ...message });
+      }
+    });
+
+    return Array.from(byFingerprint.values()).sort((left, right) => new Date(left?.date || 0) - new Date(right?.date || 0));
+  };
+
+  const updateSelectedContactSnapshot = (contactInput, messagesOverride) => {
+    const normalizedContact = normalizeContactRecord(contactInput);
+    setSelectedContact((prev) => {
+      if (!prev || normalizeEmail(prev.email) !== normalizedContact.email) {
+        return prev;
+      }
+
+      const nextMessages = Array.isArray(messagesOverride)
+        ? messagesOverride
+        : (threads[normalizedContact.email]?.messages || prev.messages || []);
+
+      return {
+        ...prev,
+        ...normalizedContact,
+        messages: nextMessages,
+        historyString: buildHistoryStringFromMessages(nextMessages)
+      };
+    });
+  };
+
   const upsertContactLocally = (contactInput) => {
     const nextContact = normalizeContactRecord(contactInput);
     setContacts((prev) => normalizeContacts([
@@ -1310,10 +1400,154 @@ export default function App() {
     return nextContact;
   };
 
+  const saveContactRecord = async (contactInput, options = {}) => {
+    const normalizedContact = normalizeContactRecord({ ...contactInput, _isNew: false });
+    if (!normalizedContact.email || !isValidEmail(normalizedContact.email) || !user) {
+      return normalizedContact;
+    }
+
+    if (IS_LOCAL_DEV_MODE || !db) {
+      upsertContactLocally(normalizedContact);
+    } else {
+      const { _isNew, ...persistableContact } = normalizedContact;
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', normalizedContact.email);
+      await setDoc(docRef, persistableContact, { merge: true });
+    }
+
+    updateSelectedContactSnapshot(normalizedContact);
+    if (options.notificationMessage) {
+      showNotification(options.notificationMessage, options.notificationType || 'success');
+    }
+    return normalizedContact;
+  };
+
+  const persistThreadMessages = async (contactEmail, messages = []) => {
+    if (!contactEmail || !user) return [];
+
+    const normalizedEmail = normalizeEmail(contactEmail);
+    const nextMessages = mergeThreadMessages([], messages);
+    setThreads((prev) => ({
+      ...prev,
+      [normalizedEmail]: {
+        contactEmail: normalizedEmail,
+        messages: nextMessages
+      }
+    }));
+
+    if (!IS_LOCAL_DEV_MODE && db) {
+      const threadRef = doc(db, 'artifacts', appId, 'users', user.uid, 'threads', normalizedEmail);
+      await setDoc(threadRef, {
+        contactEmail: normalizedEmail,
+        messages: nextMessages
+      }, { merge: true });
+    }
+
+    updateSelectedContactSnapshot({ email: normalizedEmail }, nextMessages);
+    return nextMessages;
+  };
+
+  const ensureContactFromActivity = async (activity = {}) => {
+    const email = normalizeEmail(activity.email || activity.contactEmail || '');
+    if (!email || !isValidEmail(email)) return null;
+
+    const existingContact = normalizedContacts.find((contact) => normalizeEmail(contact.email) === email) || {};
+    const nextContact = normalizeContactRecord({
+      ...existingContact,
+      id: email,
+      email,
+      name: activity.name || existingContact.name || activity.fromName || 'Unknown',
+      company: activity.company || existingContact.company || formatCompanyFromEmail(email),
+      jobTitle: activity.jobTitle || existingContact.jobTitle || '',
+      source: existingContact.source || activity.source || 'Manual',
+      stage: existingContact.stage || activity.stage || 'Contact',
+      owner: existingContact.owner || config.senderName || '',
+      lastContactedAt: activity.lastContactedAt || existingContact.lastContactedAt,
+      nextFollowUpAt: activity.nextFollowUpAt ?? existingContact.nextFollowUpAt,
+      nextStep: activity.nextStep ?? existingContact.nextStep,
+      priorityScore: Math.max(Number(activity.priorityScore || 0), Number(existingContact.priorityScore || 0), 50),
+      aiSummary: activity.aiSummary ?? existingContact.aiSummary,
+      timelineSummary: activity.timelineSummary ?? existingContact.timelineSummary
+    });
+
+    return saveContactRecord(nextContact);
+  };
+
+  const refreshContactTimelineSummary = async (contactInput, options = {}) => {
+    const normalizedContact = normalizeContactRecord(contactInput);
+    if (!normalizedContact.email || !isValidEmail(normalizedContact.email)) return null;
+
+    const timelineMessages = mergeThreadMessages(
+      threads[normalizedContact.email]?.messages || [],
+      options.messages || []
+    );
+
+    if (timelineMessages.length === 0 && !normalizedContact.nextStep) {
+      return null;
+    }
+
+    setTimelineSummaryRefreshingEmail(normalizedContact.email);
+    try {
+      const canUseAi = !options.preferHeuristic && (Boolean(getApiBaseUrl()) || Boolean((config.geminiKey || '').trim()));
+      let timelineSummary = buildHeuristicTimelineSummary(normalizedContact, timelineMessages);
+
+      if (canUseAi) {
+        const timelineLines = timelineMessages.slice(-8).map((message) => {
+          const kind = message.type === 'call' ? 'Call' : message.direction === 'outbound' ? 'Outbound Email' : 'Inbound Email';
+          return `[${new Date(message.date || Date.now()).toLocaleString()}] ${kind}\nSubject: ${message.subject || 'No Subject'}\n${String(message.body || '').slice(0, 500)}`;
+        }).join('\n\n');
+
+        const prompt = `Act as an elite small-business revenue operator. Summarize this relationship timeline so the owner can act fast.
+Return exactly three lines with these labels:
+SUMMARY: ...
+MOMENTUM: ...
+NEXT ACTION: ...
+
+Contact: ${normalizedContact.name} at ${normalizedContact.company || 'Unknown'}
+Stage: ${normalizedContact.stage}
+Next Step: ${normalizedContact.nextStep || 'Not defined'}
+Follow-Up Date: ${normalizedContact.nextFollowUpAt || 'Not set'}
+
+Timeline:
+${timelineLines}
+
+No emojis.`;
+
+        const result = await callGeminiAPI(prompt, { abortPrevious: false });
+        if (String(result || '').trim()) {
+          timelineSummary = String(result || '').trim();
+        }
+      }
+
+      const savedContact = await saveContactRecord({
+        ...normalizedContact,
+        timelineSummary,
+        lastAiReviewedAt: new Date().toISOString()
+      });
+
+      updateSelectedContactSnapshot(savedContact, timelineMessages);
+      return savedContact;
+    } catch (error) {
+      console.error('Failed to refresh contact timeline summary:', error);
+      if (options.notifyOnError) {
+        showNotification(error.message || 'Failed to refresh timeline summary.', 'error');
+      }
+      return null;
+    } finally {
+      setTimelineSummaryRefreshingEmail((prev) => (prev === normalizedContact.email ? '' : prev));
+    }
+  };
+
   const appendTaskLocally = (taskInput) => {
     const nextTask = normalizeTaskRecord(taskInput);
     setTasks((prev) => sortTasksForPlanner([nextTask, ...prev], selectedCalendarDate));
     return nextTask;
+  };
+
+  const appendTaskBatchLocally = (taskInputs = []) => {
+    const nextTasks = taskInputs.map((task) => normalizeTaskRecord(task));
+    if (nextTasks.length === 0) return [];
+    setTasks((prev) => sortTasksForPlanner([...nextTasks, ...prev], selectedCalendarDate));
+    return nextTasks;
   };
 
   const updateTaskLocally = (taskId, updater) => {
@@ -1366,6 +1600,77 @@ export default function App() {
     setSelectedCalendarDate(getTaskCalendarDate(task) || selectedCalendarDate);
     setActiveTab('tasks');
     showNotification(`Task created for ${normalizedContact.name}.`);
+  };
+
+  const applyTaskTemplate = (templateId) => {
+    const existingSignature = new Set(normalizedTasks
+      .filter((task) => task.status !== 'completed' && task.templateId)
+      .map((task) => `${task.templateId}:${task.scheduledDate || ''}`));
+    const signature = `${templateId}:${selectedCalendarDate}`;
+    if (existingSignature.has(signature)) {
+      showNotification('This template is already active for the selected day.', 'error');
+      return;
+    }
+
+    const templateTasks = materializeTaskTemplate(templateId, {
+      scheduledDate: selectedCalendarDate,
+      owner: config.senderName || ''
+    });
+
+    if (templateTasks.length === 0) {
+      showNotification('Template could not be created.', 'error');
+      return;
+    }
+
+    appendTaskBatchLocally(templateTasks);
+    showNotification(`Added ${templateTasks.length} tasks from the template.`);
+  };
+
+  const createMeetingPrepPackForContact = (contact, options = {}) => {
+    const normalizedContact = normalizeContactRecord(contact);
+    const prepDate = options.scheduledDate || normalizedContact.nextFollowUpAt || selectedCalendarDate;
+    const existingPack = normalizedTasks.some((task) => (
+      task.status !== 'completed' &&
+      task.templateId === 'meeting-prep-pack' &&
+      normalizeEmail(task.contactEmail || '') === normalizedContact.email &&
+      (task.scheduledDate || '') === prepDate
+    ));
+
+    if (existingPack) {
+      showNotification(`A meeting prep pack already exists for ${normalizedContact.name} on ${formatFriendlyDate(prepDate)}.`, 'error');
+      return false;
+    }
+
+    const prepTasks = createMeetingPrepPack(normalizedContact, { scheduledDate: prepDate });
+    appendTaskBatchLocally(prepTasks);
+    setSelectedCalendarDate(prepDate);
+    setActiveTab('tasks');
+    showNotification(`Meeting prep pack created for ${normalizedContact.name}.`);
+    return true;
+  };
+
+  const moveContactToStage = async (contact, nextStage) => {
+    const normalizedContact = normalizeContactRecord(contact);
+    if (!nextStage || normalizedContact.stage === nextStage) return;
+
+    const stageDefaults = {
+      Lead: { priorityScore: Math.max(normalizedContact.priorityScore || 45, 45), leadTemperature: 'Cold' },
+      Contact: { priorityScore: Math.max(normalizedContact.priorityScore || 55, 55), leadTemperature: normalizedContact.leadTemperature === 'Hot' ? 'Warm' : normalizedContact.leadTemperature || 'Warm' },
+      Opportunity: { priorityScore: Math.max(normalizedContact.priorityScore || 70, 70), leadTemperature: 'Hot' },
+      Proposal: { priorityScore: Math.max(normalizedContact.priorityScore || 85, 85), leadTemperature: 'Hot' },
+      Customer: { priorityScore: Math.max(normalizedContact.priorityScore || 80, 80), leadTemperature: 'Warm' },
+      Churned: { priorityScore: normalizedContact.priorityScore || 30, leadTemperature: normalizedContact.leadTemperature || 'Cold' }
+    };
+
+    const updatedContact = await saveContactRecord({
+      ...normalizedContact,
+      stage: nextStage,
+      ...stageDefaults[nextStage]
+    });
+    setDraggedPipelineContactEmail('');
+    if (updatedContact) {
+      showNotification(`${updatedContact.name} moved to ${nextStage}.`);
+    }
   };
 
   const markTaskInProgress = (taskId) => {
@@ -1686,7 +1991,7 @@ export default function App() {
   const markInboxEmailHandled = async (email, options = {}) => {
     if (!email) return null;
 
-    const { archiveOriginal = false, updateSelection = true } = options;
+    const { archiveOriginal = false, updateSelection = true, refreshTimeline = true } = options;
     let resultingFolder = email.folder;
 
     if (shouldSyncImapFlags(email)) {
@@ -1715,6 +2020,37 @@ export default function App() {
     if (updateSelection) {
       setSelectedInboxEmail(updatedEmail);
     }
+
+    if (updatedEmail.fromEmail && isValidEmail(updatedEmail.fromEmail)) {
+      const nextMessages = mergeThreadMessages(
+        threads[normalizeEmail(updatedEmail.fromEmail)]?.messages || [],
+        [buildThreadMessageFromInboxEmail(updatedEmail)]
+      );
+
+      try {
+        await persistThreadMessages(updatedEmail.fromEmail, nextMessages);
+        const savedContact = await ensureContactFromActivity({
+          email: updatedEmail.fromEmail,
+          name: updatedEmail.fromName,
+          company: updatedEmail.company,
+          source: 'Inbox',
+          stage: 'Contact',
+          priorityScore: updatedEmail.aiScore || undefined,
+          aiSummary: updatedEmail.aiSummary || undefined,
+          lastContactedAt: formatDateKey(updatedEmail.dateRaw || updatedEmail.date)
+        });
+
+        if (refreshTimeline) {
+          void refreshContactTimelineSummary(savedContact || updatedEmail, {
+            messages: nextMessages,
+            preferHeuristic: !updateSelection
+          });
+        }
+      } catch (error) {
+        console.error('Failed to sync handled inbox email into CRM timeline:', error);
+      }
+    }
+
     return updatedEmail;
   };
 
@@ -2001,7 +2337,7 @@ export default function App() {
   ]);
 
   // --- Call Logging ---
-  const logCallActivity = (contact, noteText = '') => {
+  const logCallActivity = async (contact, noteText = '') => {
     const callLog = {
       date: new Date().toISOString(),
       subject: `Phone call with ${contact.name}`,
@@ -2011,35 +2347,44 @@ export default function App() {
     };
     const contactEmail = normalizeEmail(contact.email);
     const existingThread = threads[contactEmail]?.messages || [];
+    const nextMessages = mergeThreadMessages(existingThread, [callLog]);
 
-    if (IS_LOCAL_DEV_MODE || !db) {
-      setThreads(prev => ({
-        ...prev,
-        [contactEmail]: {
-          contactEmail,
-          messages: [...existingThread, callLog]
-        }
-      }));
-    } else {
-      const threadRef = doc(db, 'artifacts', appId, 'users', user.uid, 'threads', contactEmail);
-      setDoc(threadRef, {
-        contactEmail,
-        messages: [...existingThread, callLog]
-      }, { merge: true }).catch(err => console.error('Failed to log call:', err));
+    try {
+      await persistThreadMessages(contactEmail, nextMessages);
+      const savedContact = await ensureContactFromActivity({
+        email: contactEmail,
+        name: contact.name,
+        company: contact.company,
+        stage: contact.stage || 'Contact',
+        source: contact.source || 'Manual',
+        lastContactedAt: formatDateKey(callLog.date)
+      });
+      void refreshContactTimelineSummary(savedContact || contact, { messages: nextMessages, preferHeuristic: false });
+      showNotification(`Call with ${contact.name} logged to timeline.`);
+    } catch (error) {
+      console.error('Failed to log call:', error);
+      showNotification('Failed to log call.', 'error');
     }
-    showNotification(`Call with ${contact.name} logged to timeline.`);
   };
 
   // --- Thread Message Delete ---
-  const deleteThreadMessage = (contactEmail, messageIndex) => {
+  const deleteThreadMessage = async (contactEmail, messageIndex) => {
     const email = normalizeEmail(contactEmail);
-    setThreads(prev => {
-      const thread = prev[email];
-      if (!thread) return prev;
-      const updatedMessages = thread.messages.filter((_, idx) => idx !== messageIndex);
-      return { ...prev, [email]: { ...thread, messages: updatedMessages } };
-    });
-    showNotification('Message removed from thread.');
+    const thread = threads[email];
+    if (!thread) return;
+
+    const updatedMessages = thread.messages.filter((_, idx) => idx !== messageIndex);
+    try {
+      await persistThreadMessages(email, updatedMessages);
+      const existingContact = normalizedContacts.find((contact) => normalizeEmail(contact.email) === email);
+      if (existingContact) {
+        void refreshContactTimelineSummary(existingContact, { messages: updatedMessages, preferHeuristic: true });
+      }
+      showNotification('Message removed from thread.');
+    } catch (error) {
+      console.error('Failed to delete timeline message:', error);
+      showNotification('Failed to remove message from thread.', 'error');
+    }
   };
 
   // --- CRM Logic ---
@@ -2073,15 +2418,7 @@ export default function App() {
 
     setLoading(true);
     try {
-      const contactData = normalizeContactRecord({ ...editingContact, email: normalizedEmail, id: normalizedEmail, _isNew: false });
-      delete contactData._isNew; 
-
-      if (IS_LOCAL_DEV_MODE || !db) {
-        upsertContactLocally(contactData);
-      } else {
-        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', normalizedEmail);
-        await setDoc(docRef, contactData, { merge: true });
-      }
+      await saveContactRecord({ ...editingContact, email: normalizedEmail, id: normalizedEmail, _isNew: false });
 
       showNotification(`Contact ${editingContact._isNew ? 'added' : 'updated'} successfully!`);
       setIsContactModalOpen(false);
@@ -2117,10 +2454,8 @@ export default function App() {
   const openDossier = (contact) => {
     const normalizedContact = normalizeContactRecord(contact);
     const contactThreads = threads[normalizeEmail(normalizedContact.email)]?.messages || [];
-    const historyString = contactThreads.length > 0 
-      ? contactThreads.map(m => `[${new Date(m.date).toLocaleDateString()}] ${m.direction === 'outbound' ? 'You' : 'Prospect'} wrote:\nSubject: ${m.subject || 'No Subject'}\n${m.body}`).join('\n\n')
-      : '';
-      
+    const historyString = buildHistoryStringFromMessages(contactThreads);
+
     setSelectedContact({ ...normalizedContact, historyString, messages: contactThreads });
   };
 
@@ -2646,7 +2981,7 @@ No emojis.`;
 
         const result = await callGeminiAPI(prompt);
         const plan = parseAiContactPlan(result);
-        const updatedContact = normalizeContactRecord({
+        const updatedContact = await saveContactRecord({
           ...normalizedContact,
           aiSummary: plan.summary || normalizedContact.aiSummary,
           nextStep: plan.nextStep || normalizedContact.nextStep,
@@ -2658,13 +2993,7 @@ No emojis.`;
           painPoints: plan.painPoints || normalizedContact.painPoints,
           lastAiReviewedAt: new Date().toISOString()
         });
-
-        if (IS_LOCAL_DEV_MODE || !db) {
-          upsertContactLocally(updatedContact);
-        } else {
-          const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', updatedContact.email);
-          await setDoc(docRef, { ...updatedContact, _isNew: undefined }, { merge: true });
-        }
+        void refreshContactTimelineSummary(updatedContact, { preferHeuristic: true });
 
         const nextTask = createTaskFromContactPlan(updatedContact, plan);
         if (!normalizedTasks.some((task) => normalizeEmail(task.contactEmail || '') === updatedContact.email && (task.title || '').toLowerCase() === nextTask.title.toLowerCase() && task.status !== 'completed')) {
@@ -2879,6 +3208,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
     try {
       const notificationParts = ['Email sent and thread saved.'];
       const partialIssues = [];
+      const inboxThreadMessages = selectedInboxMatchesRecipient && selectedInboxEmail
+        ? [buildThreadMessageFromInboxEmail(selectedInboxEmail)]
+        : [];
       const newMessage = {
         date: new Date().toISOString(),
         subject: composerState.subject,
@@ -2887,22 +3219,20 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       };
 
       const existingThread = threads[recipientEmail]?.messages || [];
+      const nextThreadMessages = mergeThreadMessages(existingThread, [...inboxThreadMessages, newMessage]);
+      await persistThreadMessages(recipientEmail, nextThreadMessages);
 
-      if (IS_LOCAL_DEV_MODE || !db) {
-        setThreads(prev => ({
-          ...prev,
-          [recipientEmail]: {
-            contactEmail: recipientEmail,
-            messages: [...existingThread, newMessage]
-          }
-        }));
-      } else {
-        const threadRef = doc(db, 'artifacts', appId, 'users', user.uid, 'threads', recipientEmail);
-        await setDoc(threadRef, {
-          contactEmail: recipientEmail,
-          messages: [...existingThread, newMessage]
-        }, { merge: true });
-      }
+      const savedContact = await ensureContactFromActivity({
+        email: recipientEmail,
+        name: composerState.recipientName || selectedInboxEmail?.fromName || 'Unknown',
+        company: composerState.companyName || selectedInboxEmail?.company || formatCompanyFromEmail(recipientEmail),
+        jobTitle: composerState.jobTitle || '',
+        source: selectedInboxEmail ? 'Inbox' : 'Manual',
+        stage: 'Contact',
+        lastContactedAt: formatDateKey(newMessage.date),
+        priorityScore: selectedInboxEmail?.aiScore || undefined,
+        aiSummary: selectedInboxEmail?.aiSummary || undefined
+      });
 
       if ((config.hubspotToken || getApiBaseUrl()) && composerState.hubspotId) {
         try {
@@ -2952,13 +3282,16 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         }
       }
       
-      const historyString = [...existingThread, newMessage]
-        .map(m => `[${new Date(m.date).toLocaleDateString()}] ${m.direction === 'outbound' ? 'You' : 'Prospect'} wrote:\nSubject: ${m.subject}\n${m.body}`)
-        .join('\n\n');
+      const historyString = buildHistoryStringFromMessages(nextThreadMessages);
         
       setComposerState(prev => ({ 
         ...prev, body: '', subject: '', threadHistory: historyString, sequenceSteps: []
       }));
+      void refreshContactTimelineSummary(savedContact || {
+        email: recipientEmail,
+        name: composerState.recipientName,
+        company: composerState.companyName
+      }, { messages: nextThreadMessages, preferHeuristic: false });
       try { window.localStorage.removeItem('salesdirector.draft.v1'); } catch { /* ignore */ }
 
       showNotification(
@@ -3158,6 +3491,97 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
           <p className="text-zinc-500 dark:text-zinc-400">Completed</p>
           <p className="mt-2 text-xl font-bold text-emerald-600 dark:text-emerald-400">{taskSummary.completedCount}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-4 mb-6">
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-black dark:text-white">Recurring Task Templates</h3>
+              <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400 max-w-2xl">
+                Load repeatable operating rhythms straight into {selectedCalendarDateLabel} so the day starts with proven workflow blocks instead of manual setup.
+              </p>
+            </div>
+            <span className="text-[11px] font-bold uppercase tracking-wide px-3 py-1 rounded-full border bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300">
+              Planner Day: {selectedCalendarDateLabel}
+            </span>
+          </div>
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+            {TASK_TEMPLATE_DEFINITIONS.map((template) => {
+              const isActiveForDay = normalizedTasks.some((task) => (
+                task.status !== 'completed' &&
+                task.templateId === template.id &&
+                (task.scheduledDate || '') === selectedCalendarDate
+              ));
+
+              return (
+                <div key={template.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-bold text-black dark:text-white">{template.label}</h4>
+                    <span className="text-[10px] px-2 py-1 rounded-full font-bold border bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-300">
+                      {template.recurrenceLabel}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">{template.description}</p>
+                  <div className="mt-3 flex items-center justify-between gap-3">
+                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{template.tasks.length} task{template.tasks.length === 1 ? '' : 's'}</span>
+                    <button
+                      onClick={() => applyTaskTemplate(template.id)}
+                      disabled={isActiveForDay}
+                      className={`px-3 py-2 rounded-lg text-xs font-bold transition ${isActiveForDay ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 cursor-not-allowed' : 'bg-black dark:bg-white text-white dark:text-black hover:bg-zinc-800 dark:hover:bg-zinc-200'}`}
+                    >
+                      {isActiveForDay ? 'Already Added' : 'Apply Template'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-gradient-to-br from-amber-50 via-white to-zinc-50 dark:from-zinc-950 dark:via-zinc-900 dark:to-zinc-950 p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-black dark:text-white">Meeting Prep Queue</h3>
+              <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                Build prep packs for the accounts most likely to need live-call preparation, agenda work, and next-step planning.
+              </p>
+            </div>
+            <Briefcase className="w-4 h-4 text-amber-500 dark:text-amber-400 shrink-0 mt-0.5" />
+          </div>
+          <div className="mt-4 space-y-3">
+            {plannerPrepCandidates.map((contact) => (
+              <div key={contact.email || contact.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/70 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-black dark:text-white">{contact.name}</p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">{contact.company || 'Unknown company'} · {contact.stage}</p>
+                  </div>
+                  <span className="text-[10px] px-2 py-1 rounded-full font-bold border bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300">
+                    {formatCurrencyCompact(contact.estimatedValue)}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300 line-clamp-2">
+                  {contact.timelineSummary || contact.nextStep || contact.aiSummary || 'No prep context stored yet.'}
+                </p>
+                <div className="mt-3 flex items-center justify-between gap-3 text-[11px]">
+                  <span className="text-zinc-500 dark:text-zinc-400">Follow-up: {formatFriendlyDate(contact.nextFollowUpAt)}</span>
+                  <button
+                    onClick={() => createMeetingPrepPackForContact(contact)}
+                    className="px-3 py-2 rounded-lg bg-amber-400 text-black hover:bg-amber-300 transition font-bold"
+                  >
+                    Create Prep Pack
+                  </button>
+                </div>
+              </div>
+            ))}
+            {plannerPrepCandidates.length === 0 && (
+              <div className="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">
+                No strong prep candidates yet. Promote an opportunity in the pipeline or add a follow-up date to surface one here.
+              </div>
+            )}
+          </div>
         </div>
       </div>
       
@@ -3707,6 +4131,102 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
           <p className="text-zinc-500 dark:text-zinc-400">Stale Contacts</p>
           <p className="mt-2 text-xl font-bold text-zinc-700 dark:text-zinc-300">{crmOverview.staleContactsCount}</p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-black dark:text-white">Pipeline Board</h3>
+            <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400 max-w-2xl">
+              Drag accounts across stages to keep the forecast honest. Each column rolls up live value and stage-weighted revenue automatically.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-xs lg:min-w-[22rem]">
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-3">
+              <p className="text-zinc-500 dark:text-zinc-400">Board Total</p>
+              <p className="mt-2 text-lg font-bold text-black dark:text-white">{formatCurrencyCompact(pipelineOverview.totalValue)}</p>
+            </div>
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-3">
+              <p className="text-zinc-500 dark:text-zinc-400">Weighted Forecast</p>
+              <p className="mt-2 text-lg font-bold text-amber-600 dark:text-amber-400">{formatCurrencyCompact(pipelineOverview.weightedForecast)}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
+          {pipelineOverview.stages.map((stageGroup) => (
+            <div
+              key={stageGroup.stage}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                const draggedContact = normalizedContacts.find((contact) => normalizeEmail(contact.email) === draggedPipelineContactEmail);
+                if (draggedContact) {
+                  void moveContactToStage(draggedContact, stageGroup.stage);
+                }
+              }}
+              className={`rounded-xl border p-3 flex flex-col min-h-[18rem] ${draggedPipelineContactEmail ? 'border-amber-300 dark:border-amber-700 bg-amber-50/40 dark:bg-amber-900/10' : 'border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40'}`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-bold text-black dark:text-white">{stageGroup.stage}</h4>
+                  <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">{stageGroup.itemCount} account{stageGroup.itemCount === 1 ? '' : 's'}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs font-bold text-black dark:text-white">{formatCurrencyCompact(stageGroup.totalValue)}</p>
+                  <p className="text-[10px] text-zinc-500 dark:text-zinc-400">Weighted {formatCurrencyCompact(stageGroup.weightedValue)}</p>
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-3 overflow-y-auto max-h-[26rem] pr-1">
+                {stageGroup.contacts.map((contact) => {
+                  const attention = contactAttentionMap.get(contact.email || contact.id);
+                  const isDragging = draggedPipelineContactEmail === normalizeEmail(contact.email || '');
+
+                  return (
+                    <div
+                      key={contact.email || contact.id}
+                      draggable={Boolean(contact.email)}
+                      onDragStart={() => setDraggedPipelineContactEmail(normalizeEmail(contact.email || ''))}
+                      onDragEnd={() => setDraggedPipelineContactEmail('')}
+                      className={`rounded-xl border p-3 shadow-sm cursor-grab active:cursor-grabbing transition ${isDragging ? 'opacity-50 border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/20' : 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900'}`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-black dark:text-white">{contact.name}</p>
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400">{contact.company || 'Unknown company'}</p>
+                        </div>
+                        <span className="text-[10px] px-2 py-1 rounded-full font-bold border bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300">
+                          {formatCurrencyCompact(contact.estimatedValue)}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300 line-clamp-3">
+                        {contact.timelineSummary || contact.nextStep || contact.aiSummary || 'No active relationship pulse recorded yet.'}
+                      </p>
+                      <div className="mt-3 flex items-center justify-between gap-2 text-[11px]">
+                        <span className="text-zinc-500 dark:text-zinc-400">P{contact.priorityScore || 50} · {attention?.openTasksCount || 0} open</span>
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openDossier(contact);
+                          }}
+                          className="font-bold text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white transition"
+                        >
+                          Open
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {stageGroup.contacts.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">
+                    Drop accounts here to move them into {stageGroup.stage.toLowerCase()}.
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -5531,6 +6051,16 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      >
                        <CheckSquare className="w-4 h-4 mr-2" /> Add Task
                      </button>
+                     <button
+                       onClick={() => {
+                         if (createMeetingPrepPackForContact(selectedContact)) {
+                           setSelectedContact(null);
+                         }
+                       }}
+                       className="w-full flex items-center justify-center bg-amber-400 text-black py-2 rounded-lg text-sm font-bold hover:bg-amber-300 transition"
+                     >
+                       <Briefcase className="w-4 h-4 mr-2" /> Meeting Prep Pack
+                     </button>
                     <button 
                       onClick={() => logCallActivity(selectedContact)}
                         className="w-full flex items-center justify-center bg-black dark:bg-white text-white dark:text-black py-2 rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition"
@@ -5574,6 +6104,32 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                  <h3 className="text-lg font-bold text-black dark:text-white mb-4 flex items-center">
                     <Activity className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" /> Interaction Timeline
                  </h3>
+
+                 <div className="mb-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 p-4">
+                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                     <div>
+                       <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">Relationship Pulse</h4>
+                       <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">
+                         {selectedContact.timelineSummary || 'No relationship summary yet. Log activity or refresh the pulse after the next touch.'}
+                       </p>
+                       <p className="mt-3 text-[11px] text-zinc-500 dark:text-zinc-400">
+                         Last AI refresh: {selectedContact.lastAiReviewedAt ? new Date(selectedContact.lastAiReviewedAt).toLocaleString() : 'Not refreshed yet'}
+                       </p>
+                     </div>
+                     <button
+                       onClick={() => void refreshContactTimelineSummary(selectedContact, { notifyOnError: true })}
+                       disabled={timelineSummaryRefreshingEmail === normalizeEmail(selectedContact.email || '')}
+                       className="inline-flex items-center justify-center px-3 py-2 rounded-lg bg-black dark:bg-white text-white dark:text-black text-xs font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50"
+                     >
+                       {timelineSummaryRefreshingEmail === normalizeEmail(selectedContact.email || '') ? (
+                         <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                       ) : (
+                         <RotateCcw className="w-4 h-4 mr-2" />
+                       )}
+                       Refresh Pulse
+                     </button>
+                   </div>
+                 </div>
                  
                  {(!selectedContact.messages || selectedContact.messages.length === 0) ? (
                     <div className="p-8 text-center text-zinc-500 border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl">

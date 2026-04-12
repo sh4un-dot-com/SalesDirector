@@ -4,10 +4,53 @@ export const CONTACT_STAGE_OPTIONS = ['Lead', 'Contact', 'Opportunity', 'Proposa
 export const CONTACT_SOURCE_OPTIONS = ['Manual', 'HubSpot', 'Inbox', 'Referral', 'Website', 'Import'];
 export const CONTACT_CHANNEL_OPTIONS = ['email', 'call', 'linkedin', 'meeting'];
 export const CONTACT_TEMPERATURE_OPTIONS = ['Cold', 'Warm', 'Hot'];
+export const PIPELINE_STAGE_WEIGHTS = {
+  Lead: 0.1,
+  Contact: 0.2,
+  Opportunity: 0.5,
+  Proposal: 0.75,
+  Customer: 1,
+  Churned: 0
+};
 
 export const TASK_TYPE_OPTIONS = ['follow-up', 'call', 'meeting', 'proposal', 'research', 'admin'];
 export const TASK_STATUS_OPTIONS = ['pending', 'in-progress', 'waiting', 'completed'];
 export const TASK_FOCUS_OPTIONS = ['sales', 'deep-work', 'meeting', 'admin'];
+export const TASK_TEMPLATE_DEFINITIONS = [
+  {
+    id: 'morning-pipeline-sweep',
+    label: 'Morning Pipeline Sweep',
+    description: 'Protect revenue early by reviewing hot leads, inbox urgency, and same-day follow-ups.',
+    recurrenceLabel: 'Weekday',
+    tasks: [
+      { title: 'Review hot opportunities and blockers', type: 'research', priority: 82, focus: 'sales', durationMinutes: 20 },
+      { title: 'Reply to urgent leads from inbox and CRM', type: 'follow-up', priority: 88, focus: 'sales', durationMinutes: 35 },
+      { title: 'Schedule next actions for every live deal', type: 'admin', priority: 72, focus: 'admin', durationMinutes: 20 }
+    ]
+  },
+  {
+    id: 'weekly-pipeline-review',
+    label: 'Weekly Pipeline Review',
+    description: 'Re-forecast proposals, stale deals, and next actions before the week drifts.',
+    recurrenceLabel: 'Weekly',
+    tasks: [
+      { title: 'Audit proposal-stage deals and close risks', type: 'proposal', priority: 86, focus: 'deep-work', durationMinutes: 40 },
+      { title: 'Update deal values, stages, and owners in CRM', type: 'admin', priority: 70, focus: 'admin', durationMinutes: 30 },
+      { title: 'Book follow-up touches for stalled opportunities', type: 'follow-up', priority: 78, focus: 'sales', durationMinutes: 30 }
+    ]
+  },
+  {
+    id: 'friday-follow-up-reset',
+    label: 'Friday Follow-Up Reset',
+    description: 'Clean the board before the weekend so nothing important disappears on Monday.',
+    recurrenceLabel: 'Weekly',
+    tasks: [
+      { title: 'Clear overdue follow-ups and move the rest to next week', type: 'follow-up', priority: 76, focus: 'sales', durationMinutes: 30 },
+      { title: 'Send proposal nudges to open commercial threads', type: 'proposal', priority: 81, focus: 'sales', durationMinutes: 25 },
+      { title: 'Summarize wins, misses, and next-week priorities', type: 'admin', priority: 64, focus: 'admin', durationMinutes: 20 }
+    ]
+  }
+];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -166,6 +209,7 @@ export const createEmptyContact = (seed = {}) => normalizeContactRecord({
   nextFollowUpAt: '',
   nextStep: '',
   aiSummary: '',
+  timelineSummary: '',
   painPoints: '',
   notes: '',
   _isNew: true,
@@ -206,6 +250,7 @@ export const normalizeContactRecord = (contact = {}, index = 0) => {
     nextFollowUpAt,
     nextStep: ensureString(contact.nextStep || contact.nextAction),
     aiSummary: ensureString(contact.aiSummary),
+    timelineSummary: ensureString(contact.timelineSummary || contact.relationshipSummary),
     painPoints: ensureString(contact.painPoints),
     notes: ensureString(contact.notes),
     lastAiReviewedAt: ensureString(contact.lastAiReviewedAt),
@@ -250,6 +295,8 @@ export const createEmptyTask = (seed = {}) => normalizeTaskRecord({
   rationale: '',
   source: 'manual',
   sourceInboxId: '',
+  templateId: '',
+  recurrenceLabel: '',
   _isNew: true,
   ...seed
 });
@@ -280,7 +327,32 @@ export const normalizeTaskRecord = (task = {}, index = 0) => {
     notes: ensureString(task.notes),
     source: ensureString(task.source),
     sourceInboxId: ensureString(task.sourceInboxId),
+    templateId: ensureString(task.templateId),
+    recurrenceLabel: ensureString(task.recurrenceLabel),
     _isNew: Boolean(task._isNew)
+  };
+};
+
+export const buildPipelineOverview = (contacts = []) => {
+  const normalizedContacts = normalizeContacts(contacts);
+  const stages = CONTACT_STAGE_OPTIONS.map((stage) => {
+    const items = normalizedContacts.filter((contact) => contact.stage === stage);
+    const totalValue = items.reduce((sum, contact) => sum + (contact.estimatedValue || 0), 0);
+    const weightedValue = Math.round(totalValue * (PIPELINE_STAGE_WEIGHTS[stage] ?? 0));
+
+    return {
+      stage,
+      itemCount: items.length,
+      totalValue,
+      weightedValue,
+      contacts: items
+    };
+  });
+
+  return {
+    totalValue: stages.reduce((sum, stage) => sum + stage.totalValue, 0),
+    weightedForecast: stages.reduce((sum, stage) => sum + stage.weightedValue, 0),
+    stages
   };
 };
 
@@ -413,6 +485,89 @@ export const buildTaskSummary = (tasks = [], selectedDateKey = '', referenceDate
   };
 };
 
+export const materializeTaskTemplate = (templateId, options = {}) => {
+  const template = TASK_TEMPLATE_DEFINITIONS.find((item) => item.id === templateId);
+  if (!template) return [];
+
+  const {
+    scheduledDate = formatDateKey(new Date()),
+    owner = '',
+    company = 'Internal',
+    seed = Date.now()
+  } = options;
+
+  return template.tasks.map((task, index) => normalizeTaskRecord({
+    id: `template-${template.id}-${seed}-${index}`,
+    title: task.title,
+    type: task.type,
+    status: 'pending',
+    priority: task.priority,
+    scheduledDate,
+    dueDate: scheduledDate,
+    durationMinutes: task.durationMinutes || 30,
+    contact: 'Internal Workflow',
+    company,
+    owner,
+    focus: task.focus || 'sales',
+    rationale: task.description || template.description,
+    source: 'task-template',
+    templateId: template.id,
+    recurrenceLabel: template.recurrenceLabel
+  }));
+};
+
+export const createMeetingPrepPack = (contact = {}, options = {}) => {
+  const normalizedContact = normalizeContactRecord(contact);
+  const scheduledDate = options.scheduledDate || normalizedContact.nextFollowUpAt || formatDateKey(new Date());
+  const seed = options.seed || Date.now();
+  const shared = {
+    status: 'pending',
+    contact: normalizedContact.name,
+    contactEmail: normalizedContact.email,
+    company: normalizedContact.company,
+    owner: normalizedContact.owner,
+    scheduledDate,
+    dueDate: scheduledDate,
+    source: 'meeting-prep-pack',
+    templateId: 'meeting-prep-pack',
+    recurrenceLabel: 'Per meeting'
+  };
+
+  return [
+    normalizeTaskRecord({
+      id: `meeting-pack-${seed}-0`,
+      ...shared,
+      title: `Review ${normalizedContact.name}'s timeline and open opportunities`,
+      type: 'research',
+      priority: Math.max(normalizedContact.priorityScore || 70, 72),
+      durationMinutes: 20,
+      focus: 'deep-work',
+      rationale: normalizedContact.timelineSummary || normalizedContact.aiSummary || 'Rebuild context before the meeting.'
+    }),
+    normalizeTaskRecord({
+      id: `meeting-pack-${seed}-1`,
+      ...shared,
+      title: `Prepare agenda and outcomes for ${normalizedContact.name}`,
+      type: 'meeting',
+      priority: Math.max(normalizedContact.priorityScore || 70, 78),
+      durationMinutes: 20,
+      focus: 'meeting',
+      rationale: normalizedContact.nextStep || 'Define a clear outcome for the conversation.',
+      notes: normalizedContact.painPoints ? `Pain points to address: ${normalizedContact.painPoints}` : ''
+    }),
+    normalizeTaskRecord({
+      id: `meeting-pack-${seed}-2`,
+      ...shared,
+      title: `Draft follow-up and next-step options for ${normalizedContact.company || normalizedContact.name}`,
+      type: 'follow-up',
+      priority: Math.max(normalizedContact.priorityScore || 70, 74),
+      durationMinutes: 15,
+      focus: 'sales',
+      rationale: 'Leave the meeting with a pre-decided follow-up path.'
+    })
+  ];
+};
+
 export const getTasksForDate = (tasks = [], selectedDateKey = '') => sortTasksForPlanner(
   normalizeTasks(tasks).filter((task) => getTaskCalendarDate(task) === selectedDateKey),
   selectedDateKey
@@ -504,6 +659,24 @@ export const parseAiContactPlan = (text = '') => {
     role,
     painPoints
   };
+};
+
+export const buildHeuristicTimelineSummary = (contact = {}, messages = [], options = {}) => {
+  const normalizedContact = normalizeContactRecord(contact);
+  const recentMessages = Array.isArray(messages) ? messages.slice().sort((left, right) => new Date(right.date || 0) - new Date(left.date || 0)) : [];
+  const latest = recentMessages[0];
+  const outboundCount = recentMessages.filter((message) => message.direction === 'outbound').length;
+  const inboundCount = recentMessages.filter((message) => message.direction === 'inbound').length;
+  const callCount = recentMessages.filter((message) => message.type === 'call').length;
+  const needsFollowUp = Boolean(normalizedContact.nextFollowUpAt || normalizedContact.nextStep);
+  const latestSummary = latest
+    ? `${latest.direction === 'outbound' ? 'Last touch was outbound' : latest.type === 'call' ? 'Last touch was a call' : 'Last touch was inbound'} on ${formatDateKey(latest.date) || 'recently'}${latest.subject ? ` about "${latest.subject}"` : ''}.`
+    : 'No interaction timeline exists yet.';
+
+  return `Momentum: ${inboundCount > outboundCount ? 'Prospect-engaged' : outboundCount > inboundCount ? 'Seller-driven' : 'Balanced'}.
+Activity: ${outboundCount} outbound, ${inboundCount} inbound, ${callCount} calls logged.
+Summary: ${latestSummary}
+Next move: ${normalizedContact.nextStep || (needsFollowUp ? `Follow up by ${normalizedContact.nextFollowUpAt}.` : 'Define a clear next step and owner.')}`;
 };
 
 export const createTaskFromContactPlan = (contact = {}, plan = {}) => {

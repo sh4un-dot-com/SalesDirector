@@ -4,13 +4,17 @@ import {
   normalizeContactRecord,
   normalizeContacts,
   normalizeTaskRecord,
+  buildPipelineOverview,
   buildCrmOverview,
   buildTaskSummary,
   buildCalendarMonth,
+  materializeTaskTemplate,
+  createMeetingPrepPack,
   parseAiContactPlan,
   createTaskFromContactPlan,
   applyAiFocusDayPlan,
-  getTasksForDate
+  getTasksForDate,
+  buildHeuristicTimelineSummary
 } from '../utils/crmWorkflow.mjs';
 
 test('normalizeContactRecord fills CRM defaults and normalizes pipeline fields', () => {
@@ -89,6 +93,18 @@ test('buildCrmOverview surfaces due follow-ups, stale contacts, and pipeline val
   assert.equal(overview.attentionContacts[0].contact.email, 'hot@example.com');
 });
 
+test('buildPipelineOverview groups contacts by stage and calculates weighted forecast', () => {
+  const pipeline = buildPipelineOverview([
+    { name: 'Lead', email: 'lead@example.com', stage: 'Lead', estimatedValue: 10000 },
+    { name: 'Proposal', email: 'proposal@example.com', stage: 'Proposal', estimatedValue: 20000 },
+    { name: 'Customer', email: 'customer@example.com', stage: 'Customer', estimatedValue: 5000 }
+  ]);
+
+  assert.equal(pipeline.totalValue, 35000);
+  assert.equal(pipeline.weightedForecast, 21000);
+  assert.equal(pipeline.stages.find((stage) => stage.stage === 'Proposal').itemCount, 1);
+});
+
 test('buildTaskSummary and getTasksForDate use scheduled work dates', () => {
   const tasks = [
     { id: 1, title: 'Plan proposal', scheduledDate: '2026-04-11', status: 'pending' },
@@ -117,6 +133,27 @@ test('buildCalendarMonth marks selected dates and task counts', () => {
   assert.equal(selectedDay.isSelected, true);
   assert.equal(selectedDay.taskCount, 1);
   assert.equal(selectedDay.urgentCount, 1);
+});
+
+test('materializeTaskTemplate expands recurring workflow tasks for the selected day', () => {
+  const tasks = materializeTaskTemplate('weekly-pipeline-review', { scheduledDate: '2026-04-11', seed: 99 });
+
+  assert.equal(tasks.length, 3);
+  assert.equal(tasks[0].scheduledDate, '2026-04-11');
+  assert.equal(tasks[0].templateId, 'weekly-pipeline-review');
+  assert.equal(tasks[0].recurrenceLabel, 'Weekly');
+});
+
+test('createMeetingPrepPack creates a contact-specific prep bundle', () => {
+  const pack = createMeetingPrepPack(
+    { name: 'Jane Doe', email: 'jane@example.com', company: 'Acme', nextFollowUpAt: '2026-04-16', priorityScore: 82 },
+    { seed: 123 }
+  );
+
+  assert.equal(pack.length, 3);
+  assert.equal(pack[0].contactEmail, 'jane@example.com');
+  assert.equal(pack[0].scheduledDate, '2026-04-16');
+  assert.equal(pack[1].type, 'meeting');
 });
 
 test('parseAiContactPlan extracts structured next-step fields', () => {
@@ -166,4 +203,19 @@ test('applyAiFocusDayPlan schedules tasks on the selected date', () => {
   assert.equal(updated[0].time, '09:00 AM');
   assert.equal(updated[0].durationMinutes, 45);
   assert.match(updated[0].rationale, /hottest follow-up/i);
+});
+
+test('buildHeuristicTimelineSummary reflects momentum and next move from timeline activity', () => {
+  const summary = buildHeuristicTimelineSummary(
+    { name: 'Jane Doe', email: 'jane@example.com', nextStep: 'Send recap proposal.' },
+    [
+      { date: '2026-04-10T10:00:00.000Z', direction: 'outbound', subject: 'Proposal recap' },
+      { date: '2026-04-09T10:00:00.000Z', direction: 'inbound', subject: 'Pricing question' },
+      { date: '2026-04-08T10:00:00.000Z', type: 'call', direction: 'outbound', subject: 'Discovery call' }
+    ]
+  );
+
+  assert.match(summary, /Momentum:/);
+  assert.match(summary, /Proposal recap/);
+  assert.match(summary, /Send recap proposal/);
 });
