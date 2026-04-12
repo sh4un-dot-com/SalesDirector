@@ -4253,7 +4253,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-4 mb-6">
+      <div className="grid grid-cols-1 2xl:grid-cols-[1.2fr_0.8fr] gap-4 mb-6">
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-sm">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
@@ -4344,9 +4344,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
       </div>
       
-      <div className="flex flex-1 gap-8 min-h-0">
+      <div className="flex flex-col xl:flex-row flex-1 gap-4 min-h-0">
         {/* Left: Task List */}
-        <div className="w-full lg:w-2/3 flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors">
+        <div className="w-full xl:flex-1 flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors min-h-[300px]">
           <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 space-y-3">
             <form onSubmit={addTask} className="w-full flex relative">
               <input 
@@ -4505,7 +4505,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
 
         {/* Right: AI Schedule Timeline & Calendar */}
-        <div className="hidden lg:flex w-1/3 flex-col gap-6 transition-colors min-h-0">
+        <div className="hidden xl:flex w-[340px] flex-shrink-0 flex-col gap-4 transition-colors min-h-0">
 
           <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm p-5 flex-shrink-0">
             <div className="flex items-start justify-between gap-3 mb-4">
@@ -4590,7 +4590,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <button
                     key={day.key}
                     onClick={() => setSelectedCalendarDate(day.dateKey)}
-                    className={`h-10 w-10 mx-auto flex flex-col items-center justify-center rounded-xl text-xs font-bold transition-colors cursor-pointer border ${day.isSelected ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white shadow-md' : day.isToday ? 'bg-rose-900 text-white border-rose-900 shadow-md' : 'text-zinc-700 dark:text-zinc-300 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
+                    className={`h-9 w-9 mx-auto flex flex-col items-center justify-center rounded-xl text-xs font-bold transition-colors cursor-pointer border ${day.isSelected ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white shadow-md' : day.isToday ? 'bg-rose-900 text-white border-rose-900 shadow-md' : 'text-zinc-700 dark:text-zinc-300 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
                   >
                     <span>{day.dayNumber}</span>
                     {day.taskCount > 0 && <span className={`mt-0.5 h-1.5 w-1.5 rounded-full ${day.urgentCount > 0 ? 'bg-amber-300' : day.completedCount === day.taskCount ? 'bg-emerald-300' : 'bg-zinc-400'}`}></span>}
