@@ -264,9 +264,11 @@ const PERSISTED_CONFIG_KEYS = [
   'smtpPort',
   'smtpSecure',
   'smtpUser',
+  'smtpPass',
   'imapHost',
   'imapPort',
   'imapUser',
+  'imapPass',
   'imapFolder',
   'imapArchiveFolder',
   'imapLookbackDays',
@@ -3200,7 +3202,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 ))}
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-4">
-                Security note: API keys and tokens are intentionally not persisted in local storage.
+                Security note: API keys and tokens are intentionally not persisted in local storage. Email passwords are persisted for convenience.
               </p>
 
               <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
@@ -3481,7 +3483,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                       placeholder="••••••••"
                     />
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Not persisted in local storage.</p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Persisted in local storage for faster reconnects.</p>
                   </div>
                 </div>
 

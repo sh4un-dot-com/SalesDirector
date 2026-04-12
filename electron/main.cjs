@@ -215,15 +215,26 @@ const registerLocalDbIpcHandlers = () => {
       await client.connect();
       mailboxLock = await client.getMailboxLock(folder);
 
+      const toUidList = (result) => {
+        const list = Array.isArray(result)
+          ? result
+          : (Array.isArray(result?.all) ? result.all : []);
+        return list
+          .map((uid) => Number(uid))
+          .filter((uid) => Number.isInteger(uid) && uid > 0);
+      };
+
       const sinceDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
       const searchQuery = unreadOnly
-        ? ['UNSEEN', ['SINCE', sinceDate]]
-        : ['SINCE', sinceDate];
+        ? { seen: false, since: sinceDate }
+        : { since: sinceDate };
 
-      const rawSearchResult = await client.search(searchQuery);
-      const matchedUids = Array.isArray(rawSearchResult)
-        ? rawSearchResult
-        : (Array.isArray(rawSearchResult?.all) ? rawSearchResult.all : []);
+      let matchedUids = toUidList(await client.search(searchQuery, { uid: true }));
+      if (matchedUids.length === 0) {
+        const fallbackQuery = unreadOnly ? { seen: false } : { all: true };
+        matchedUids = toUidList(await client.search(fallbackQuery, { uid: true }));
+      }
+
       const selectedUids = matchedUids
         .map((uid) => Number(uid))
         .filter((uid) => Number.isInteger(uid) && uid > 0)
@@ -232,12 +243,16 @@ const registerLocalDbIpcHandlers = () => {
 
       const emails = [];
       for (const uid of selectedUids) {
-        const fetched = await client.fetchOne(uid, {
-          uid: true,
-          flags: true,
-          internalDate: true,
-          source: true
-        });
+        const fetched = await client.fetchOne(
+          uid,
+          {
+            uid: true,
+            flags: true,
+            internalDate: true,
+            source: true
+          },
+          { uid: true }
+        );
 
         if (!fetched?.source) continue;
 
