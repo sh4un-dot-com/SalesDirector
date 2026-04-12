@@ -330,7 +330,14 @@ const decryptLocalPayload = async (encryptedPayload, passphrase) => {
 
 const PERSISTED_CONFIG_KEYS = [
   'apiBaseUrl',
+  'proxySecret',
   'companyUrl',
+  'hubspotToken',
+  'geminiKey',
+  'openaiKey',
+  'anthropicKey',
+  'xaiKey',
+  'metaKey',
   'senderName',
   'replyTo',
   'autoBcc',
@@ -3107,6 +3114,7 @@ Be concise and commercial. No emojis.`;
         }
         setTaskPlannerInsight(`[AI Call Prep: ${matchedContact.name}]\n\n${result}`);
         setDashboardPartnerInsight(`[AI Call Prep: ${matchedContact.name}]\n\n${result}`);
+        setSelectedContact(null);
         setActiveTab('tasks');
         showNotification(`AI call prep ready for ${matchedContact.name}.`);
         setLoading(false);
@@ -3182,6 +3190,7 @@ The email should be short, commercial, and lightly urgent without sounding despe
           body: nextBody
         });
         setSelectedInboxEmail(null);
+        setSelectedContact(null);
         setActiveTab('outreach');
         setSelectedCalendarDate(followUpDate);
         setActiveCalendarMonth(formatMonthKey(followUpDate));
@@ -3529,7 +3538,9 @@ Keep it concise and actionable. CRITICAL: NO EMOJIS.`;
         
         const result = await callGeminiAPI(prompt);
         setComposerState(prev => ({ ...prev, aiContext: `[AI Research: ${contact.name}]\n\n${result}` }));
-        showNotification(`AI research completed for ${contact.name}.`);
+        setSelectedContact(null);
+        setActiveTab('outreach');
+        showNotification(`AI research loaded into Outreach for ${contact.name}.`);
 
       } else if (actionType === 'aiContactPlan') {
         const contact = options?.contact;
@@ -3645,7 +3656,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
         const result = await callGeminiAPI(prompt);
         setComposerState(prev => ({ ...prev, aiContext: `[Follow-Up Strategy: ${contact.name}]\n\n${result}` }));
-        showNotification(`Follow-up strategy generated for ${contact.name}.`);
+        setSelectedContact(null);
+        setActiveTab('outreach');
+        showNotification(`Follow-up strategy loaded into Outreach for ${contact.name}.`);
       }
 
     } catch (err) {
@@ -4602,24 +4615,24 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
           {/* Daily Schedule */}
           <div className="flex-1 flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden min-h-0">
-            <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-between items-center">
+            <div className="p-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-between items-center">
               <h3 className="font-bold text-black dark:text-white flex items-center text-sm">
                  <Clock className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" /> {selectedCalendarDateLabel}
               </h3>
               <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400">{selectedDayTasks.length} task{selectedDayTasks.length === 1 ? '' : 's'}</span>
             </div>
-            <div className="flex-1 overflow-y-auto p-6">
-              <div className="relative border-l-2 border-zinc-200 dark:border-zinc-800 ml-3 space-y-8">
+            <div className="flex-1 overflow-y-auto p-3">
+              <div className="relative border-l-2 border-zinc-200 dark:border-zinc-800 ml-2 space-y-5">
                 {selectedDayTasks.filter(t => t.status !== 'completed')
                   .sort((a, b) => (a.time || '').localeCompare(b.time || ''))
                   .map((task, idx) => (
-                  <div key={idx} className="relative pl-6">
-                    <div className="absolute -left-[9px] top-1 w-4 h-4 rounded-full bg-rose-900 dark:bg-rose-600 border-4 border-white dark:border-zinc-900"></div>
+                  <div key={idx} className="relative pl-5">
+                    <div className="absolute -left-[7px] top-1 w-3.5 h-3.5 rounded-full bg-rose-900 dark:bg-rose-600 border-[3px] border-white dark:border-zinc-900"></div>
                     <h4 className="text-xs font-bold text-rose-900 dark:text-rose-500 mb-1">{task.time || 'No time set'}{task.durationMinutes ? ` · ${task.durationMinutes}m` : ''}</h4>
-                    <div className="bg-zinc-50 dark:bg-zinc-950/50 p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 shadow-sm">
-                      <p className="text-sm font-bold text-black dark:text-white">{task.title}</p>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{task.contact}</p>
-                      {task.rationale && <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-2 leading-relaxed">{task.rationale}</p>}
+                    <div className="bg-zinc-50 dark:bg-zinc-950/50 p-2.5 rounded-lg border border-zinc-200 dark:border-zinc-800 shadow-sm">
+                      <p className="text-sm font-bold text-black dark:text-white leading-snug">{task.title}</p>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{task.contact}</p>
+                      {task.rationale && <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-1.5 leading-relaxed">{task.rationale}</p>}
                     </div>
                   </div>
                 ))}
@@ -6494,7 +6507,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
         {/* Global Notifications Notification */}
         {notification && (
-          <div className="absolute bottom-6 right-6 z-50 animate-fade-in-up">
+          <div className="fixed bottom-6 right-6 z-[100] animate-fade-in-up">
             <div className={`flex items-center px-4 py-3 rounded-lg shadow-lg border ${
               notification.type === 'error' 
                 ? 'bg-white dark:bg-zinc-900 border-rose-900 text-rose-900 dark:text-rose-500 font-bold'
