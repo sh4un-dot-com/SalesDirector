@@ -58,13 +58,17 @@ npm run build:web
 - [ ] Support team has current troubleshooting guide: [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
 - [ ] User-facing docs are current: [USER_MANUAL.md](USER_MANUAL.md), [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md), [SETUP.md](SETUP.md).
 
-## 7. macOS Artifact and Signing (If Shipping Desktop)
+## 7. Desktop Artifacts and Signing (If Shipping Desktop)
 
-- [ ] Unsigned artifact workflow passes: [.github/workflows/build-macos-dmg.yml](.github/workflows/build-macos-dmg.yml).
+- [ ] Unified desktop artifact workflow passes: [.github/workflows/desktop-build.yml](.github/workflows/desktop-build.yml).
+- [ ] Linux AppImage launches on a current Fedora or Arch test machine.
+- [ ] Linux Flatpak bundle installs and launches on a Flatpak-enabled Fedora or Arch test machine.
+- [ ] Linux RPM package installs and launches on a current Fedora test machine.
+- [ ] Linux Pacman package installs and launches on a current Arch test machine.
 - [ ] Signed workflow secrets are configured in GitHub.
 - [ ] Signed artifact workflow passes: [.github/workflows/release-macos-signed.yml](.github/workflows/release-macos-signed.yml).
 - [ ] Codesign verification and Gatekeeper checks pass in workflow logs.
-- [ ] Generated DMG is downloadable and install-tested.
+- [ ] Generated desktop artifacts are downloadable and install-tested.
 
 ## 8. Release Execution
 

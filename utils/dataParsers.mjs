@@ -93,6 +93,8 @@ export const toContactFromRow = (headers, rowValues) => {
 };
 
 export const applyTaskPrioritization = (lines, tasks) => {
+  if (!Array.isArray(tasks)) return [];
+  if (!Array.isArray(lines)) return [...tasks];
   const updatedTasks = [...tasks];
 
   lines.forEach((line) => {

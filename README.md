@@ -50,6 +50,21 @@ For full setup including proxy mode, environment configuration, and packaging, s
 ### Build locally
 
 ```powershell
+# Linux AppImage + Flatpak + RPM + Pacman bundles
+npm run dist:linux
+
+# Linux AppImage only
+npm run dist:appimage
+
+# Linux Flatpak bundle only
+npm run dist:flatpak
+
+# Linux RPM package only
+npm run dist:rpm
+
+# Linux Pacman package only
+npm run dist:pacman
+
 # Windows installer (.exe)
 npm run dist:win
 
@@ -59,16 +74,20 @@ npm run dist:mac
 
 Installers are written to the `release/` directory.
 
+On Ubuntu or Debian build hosts, install `flatpak flatpak-builder rpm libarchive-tools xz-utils` and add the Flathub remote before running `npm run dist:linux`.
+
 ### GitHub Releases (CI)
 
-Push a version tag to trigger automatic builds for both platforms:
+Push a version tag to trigger automatic builds for all desktop platforms:
 
 ```powershell
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The unified [desktop-build.yml](.github/workflows/desktop-build.yml) workflow builds Windows + macOS installers and publishes them as a GitHub Release with auto-generated release notes.
+The unified [desktop-build.yml](.github/workflows/desktop-build.yml) workflow builds Linux AppImage, Flatpak, RPM, and Pacman artifacts alongside Windows installers and macOS DMGs, then publishes them as a GitHub Release with auto-generated release notes.
+
+The Linux AppImage remains the easiest direct download. The RPM artifact is the native installer path for Fedora, the Pacman artifact is the native installer path for Arch, and the Flatpak artifact is useful for Fedora and Arch systems already standardized on Flatpak.
 
 For signed/notarized macOS DMGs, use [release-macos-signed.yml](.github/workflows/release-macos-signed.yml) (manual dispatch).
 
@@ -83,6 +102,11 @@ For signed/notarized macOS DMGs, use [release-macos-signed.yml](.github/workflow
 | `npm run build:web` | Production web build |
 | `npm run preview` | Preview production build locally |
 | `npm run start:desktop` | Build + launch Electron |
+| `npm run dist:linux` | Build Linux AppImage, Flatpak, RPM, and Pacman artifacts |
+| `npm run dist:appimage` | Build Linux AppImage |
+| `npm run dist:flatpak` | Build Linux Flatpak bundle |
+| `npm run dist:rpm` | Build Linux RPM package |
+| `npm run dist:pacman` | Build Linux Pacman package |
 | `npm run dist:win` | Build Windows NSIS installer |
 | `npm run dist:mac` | Build macOS DMG |
 | `npm run dist:mac:ci` | Build unsigned macOS DMG (CI) |

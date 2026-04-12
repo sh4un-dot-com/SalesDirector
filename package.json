@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "description": "SalesDirector desktop app",
   "author": "Akita Engineering <support@akitaengineering.com> (https://www.akitaengineering.com)",
+  "homepage": "https://github.com/sh4un-dot-com/SalesDirector",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sh4un-dot-com/SalesDirector.git"
+  },
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
@@ -11,6 +16,12 @@
     "test": "node --test",
     "dev:desktop": "concurrently -k \"vite --host 127.0.0.1 --port 5173\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "start:desktop": "npm run build:web && electron .",
+    "dist:linux": "npm run build:web && electron-builder --linux AppImage flatpak rpm pacman --publish never",
+    "dist:linux:ci": "npm run build:web && electron-builder --linux AppImage flatpak rpm pacman --publish never",
+    "dist:appimage": "npm run build:web && electron-builder --linux AppImage --publish never",
+    "dist:flatpak": "npm run build:web && electron-builder --linux flatpak --publish never",
+    "dist:rpm": "npm run build:web && electron-builder --linux rpm --publish never",
+    "dist:pacman": "npm run build:web && electron-builder --linux pacman --publish never",
     "dist:mac": "npm run build:web && electron-builder --mac dmg --publish never",
     "dist:mac:ci": "npm run build:web && electron-builder --mac dmg --publish never",
     "dist:mac:signed": "npm run build:web && electron-builder --mac dmg --publish never",
@@ -42,6 +53,27 @@
     },
     "dmg": {
       "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        "AppImage",
+        "flatpak",
+        "rpm",
+        "pacman"
+      ],
+      "category": "Office",
+      "packageCategory": "Office",
+      "synopsis": "AI-assisted CRM, outreach, and sales workflow desktop app",
+      "maintainer": "Akita Engineering <support@akitaengineering.com>",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "executableName": "salesdirector"
+    },
+    "flatpak": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "runtimeVersion": "23.08",
+      "baseVersion": "23.08",
+      "useWaylandFlags": true
     },
     "win": {
       "icon": "build/icon.png",

@@ -164,6 +164,7 @@ const getInboxTimestamp = (email = {}) => {
 };
 
 export const sortInboxEmailsByPriority = (emails = []) => {
+  if (!Array.isArray(emails)) return [];
   return [...emails].sort((left, right) => {
     const scoreDelta = (getInboxScore(right) ?? -1) - (getInboxScore(left) ?? -1);
     if (scoreDelta !== 0) return scoreDelta;

@@ -3888,6 +3888,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
     } catch (err) {
       showNotification("Error saving thread to database.", "error");
     } finally {
+      setArchiveSelectedInboxAfterSend(false);
       setLoading(false);
     }
   };

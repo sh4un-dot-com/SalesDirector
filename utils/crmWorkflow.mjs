@@ -298,6 +298,7 @@ export const normalizeContactRecord = (contact = {}, index = 0) => {
 };
 
 export const normalizeContacts = (contacts = []) => {
+  if (!Array.isArray(contacts)) return [];
   const byKey = new Map();
 
   contacts.forEach((contact, index) => {
@@ -445,7 +446,10 @@ export const sortTasksForPlanner = (tasks = [], selectedDateKey = '', referenceD
   return (left.title || '').localeCompare(right.title || '');
 });
 
-export const normalizeTasks = (tasks = []) => tasks.map((task, index) => normalizeTaskRecord(task, index));
+export const normalizeTasks = (tasks = []) => {
+  if (!Array.isArray(tasks)) return [];
+  return tasks.map((task, index) => normalizeTaskRecord(task, index));
+};
 
 const taskMatchesContact = (task = {}, contact = {}) => {
   if (!task || !contact) return false;
@@ -862,6 +866,7 @@ export const createTaskFromContactPlan = (contact = {}, plan = {}) => {
 };
 
 export const applyAiFocusDayPlan = (lines = [], tasks = [], selectedDateKey = '') => {
+  if (!Array.isArray(lines)) return normalizeTasks(tasks);
   const nextTasks = normalizeTasks(tasks).map((task) => ({ ...task }));
 
   lines.forEach((line) => {

@@ -22,6 +22,17 @@ jobs:
       fail-fast: false
       matrix:
         platform:
+          - name: Linux AppImage + Flatpak + Native Packages
+            os: ubuntu-latest
+            build_command: npm run dist:linux:ci
+            artifact_name: desktop-linux
+            artifact_path: |
+              release/*.AppImage
+              release/*.flatpak
+              release/*.rpm
+              release/*.pacman
+            disable_signing: ''
+            linux_setup: sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder rpm libarchive-tools xz-utils && sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           - name: macOS DMG
             os: macos-latest
             build_command: npm run dist:mac:ci
@@ -30,6 +41,7 @@ jobs:
               release/*.dmg
               release/*.blockmap
             disable_signing: 'false'
+            linux_setup: ''
           - name: Windows Installer
             os: windows-latest
             build_command: npm run dist:win
@@ -38,6 +50,7 @@ jobs:
               release/*.exe
               release/*.blockmap
             disable_signing: ''
+            linux_setup: ''
 
     steps:
       - name: Checkout
@@ -51,6 +64,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: ${{ matrix.platform.linux_setup }}
 
       - name: Run tests
         run: npm test
@@ -102,6 +119,10 @@ jobs:
         with:
           generate_release_notes: true
           files: |
+            release-artifacts/*.AppImage
+            release-artifacts/*.flatpak
+            release-artifacts/*.rpm
+            release-artifacts/*.pacman
             release-artifacts/*.dmg
             release-artifacts/*.exe
             release-artifacts/*.blockmap
