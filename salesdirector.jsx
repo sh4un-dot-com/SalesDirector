@@ -34,6 +34,33 @@ import {
   selectUrgentInboxEmails,
   selectLowPriorityInboxEmails
 } from './utils/inboxWorkflow.mjs';
+import {
+  CONTACT_STAGE_OPTIONS,
+  CONTACT_SOURCE_OPTIONS,
+  CONTACT_TEMPERATURE_OPTIONS,
+  createEmptyContact,
+  createEmptyTask,
+  normalizeContactRecord,
+  normalizeContacts,
+  normalizeTaskRecord,
+  normalizeTasks,
+  buildCrmOverview,
+  getContactAttentionSummary,
+  buildTaskSummary,
+  buildCalendarMonth,
+  sortTasksForPlanner,
+  getTasksForDate,
+  getTaskBucket,
+  getTaskCalendarDate,
+  formatDateKey,
+  formatMonthKey,
+  TASK_TYPE_OPTIONS,
+  TASK_STATUS_OPTIONS,
+  TASK_FOCUS_OPTIONS,
+  parseAiContactPlan,
+  createTaskFromContactPlan,
+  applyAiFocusDayPlan
+} from './utils/crmWorkflow.mjs';
 
 // Firebase Initialization
 const parseRuntimeJson = (value, fallback = {}) => {
@@ -189,6 +216,33 @@ const mergeInboxEmails = (current = [], incoming = []) => {
   });
 };
 
+const formatCurrencyCompact = (value) => {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return '$0';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: amount >= 1000 ? 0 : 2,
+    notation: amount >= 1000 ? 'compact' : 'standard'
+  }).format(amount);
+};
+
+const formatFriendlyDate = (value, fallback = 'Not scheduled') => {
+  const dateKey = formatDateKey(value);
+  if (!dateKey) return fallback;
+  const date = new Date(`${dateKey}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+const shiftMonthKey = (monthKey, delta) => {
+  const safeKey = typeof monthKey === 'string' && /^\d{4}-\d{2}$/.test(monthKey)
+    ? `${monthKey}-01`
+    : `${formatMonthKey(new Date())}-01`;
+  const date = new Date(`${safeKey}T00:00:00`);
+  return formatMonthKey(new Date(date.getFullYear(), date.getMonth() + delta, 1));
+};
+
 const bytesToBase64 = (bytes) => {
   let binary = '';
   const chunkSize = 0x8000;
@@ -327,10 +381,17 @@ export default function App() {
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
   const [editingContact, setEditingContact] = useState(null);
   const [contactToDelete, setContactToDelete] = useState(null);
+  const [contactSearchQuery, setContactSearchQuery] = useState('');
+  const [crmWorkspaceInsight, setCrmWorkspaceInsight] = useState('');
 
   // Task Modals
   const [editingTask, setEditingTask] = useState(null);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [taskSearchQuery, setTaskSearchQuery] = useState('');
+  const [taskStatusFilter, setTaskStatusFilter] = useState('active');
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => formatDateKey(new Date()));
+  const [activeCalendarMonth, setActiveCalendarMonth] = useState(() => formatMonthKey(new Date()));
+  const [taskPlannerInsight, setTaskPlannerInsight] = useState('');
 
   // Inbox Filters
   const [inboxFilter, setInboxFilter] = useState('all');
@@ -496,7 +557,7 @@ export default function App() {
         id: contactDoc.id,
         ...contactDoc.data()
       }));
-      setContacts(nextContacts);
+      setContacts(normalizeContacts(nextContacts));
     });
 
     const unsubscribeThreads = onSnapshot(threadsRef, (snapshot) => {
@@ -538,6 +599,14 @@ export default function App() {
       setSelectedInboxEmail(updatedEmail);
     }
   }, [inboxEmails, selectedInboxEmail]);
+
+  useEffect(() => {
+    if (!selectedCalendarDate) return;
+    const selectedMonthKey = selectedCalendarDate.slice(0, 7);
+    if (selectedMonthKey && selectedMonthKey !== activeCalendarMonth) {
+      setActiveCalendarMonth(selectedMonthKey);
+    }
+  }, [selectedCalendarDate, activeCalendarMonth]);
 
   useEffect(() => {
     if (urgentInboxQueueIds.length === 0) return;
@@ -641,13 +710,13 @@ export default function App() {
 
   const applyLocalDataset = (dataset = {}) => {
     if (Array.isArray(dataset.contacts)) {
-      setContacts(dataset.contacts);
+      setContacts(normalizeContacts(dataset.contacts));
     }
     if (dataset.threads && typeof dataset.threads === 'object') {
       setThreads(dataset.threads);
     }
     if (Array.isArray(dataset.tasks)) {
-      setTasks(dataset.tasks);
+      setTasks(normalizeTasks(dataset.tasks));
     }
     if (Array.isArray(dataset.inboxEmails)) {
       setInboxEmails(mergeInboxEmails([], dataset.inboxEmails));
@@ -913,21 +982,72 @@ export default function App() {
     () => actionableInboxEmails.filter((email) => email.aiScore == null || !String(email.aiSummary || '').trim()).length,
     [actionableInboxEmails]
   );
+  const normalizedContacts = useMemo(() => normalizeContacts(contacts), [contacts]);
+  const normalizedTasks = useMemo(() => normalizeTasks(tasks), [tasks]);
+  const crmOverview = useMemo(() => buildCrmOverview(normalizedContacts, normalizedTasks, threads), [normalizedContacts, normalizedTasks, threads]);
+  const contactAttentionMap = useMemo(() => {
+    const nextMap = new Map();
+    normalizedContacts.forEach((contact) => {
+      nextMap.set(contact.email || contact.id, getContactAttentionSummary(contact, normalizedTasks, threads));
+    });
+    return nextMap;
+  }, [normalizedContacts, normalizedTasks, threads]);
+  const taskSummary = useMemo(() => buildTaskSummary(normalizedTasks, selectedCalendarDate), [normalizedTasks, selectedCalendarDate]);
+  const calendarDays = useMemo(() => buildCalendarMonth(normalizedTasks, activeCalendarMonth, selectedCalendarDate), [normalizedTasks, activeCalendarMonth, selectedCalendarDate]);
+  const selectedDayTasks = useMemo(() => getTasksForDate(normalizedTasks, selectedCalendarDate), [normalizedTasks, selectedCalendarDate]);
+  const selectedCalendarDateLabel = useMemo(() => formatFriendlyDate(selectedCalendarDate, 'No day selected'), [selectedCalendarDate]);
+  const activeCalendarMonthLabel = useMemo(() => {
+    const monthDate = new Date(`${activeCalendarMonth}-01T00:00:00`);
+    return monthDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  }, [activeCalendarMonth]);
+
+  const filteredTasks = useMemo(() => {
+    const term = taskSearchQuery.trim().toLowerCase();
+    return sortTasksForPlanner(normalizedTasks, selectedCalendarDate).filter((task) => {
+      const bucket = getTaskBucket(task, selectedCalendarDate);
+
+      if (taskStatusFilter === 'active' && task.status === 'completed') return false;
+      if (taskStatusFilter === 'focus-day' && bucket !== 'selected') return false;
+      if (taskStatusFilter === 'overdue' && bucket !== 'overdue') return false;
+      if (taskStatusFilter === 'unscheduled' && bucket !== 'unscheduled') return false;
+      if (taskStatusFilter === 'completed' && task.status !== 'completed') return false;
+      if (taskStatusFilter === 'waiting' && task.status !== 'waiting') return false;
+
+      if (!term) return true;
+      return [task.title, task.contact, task.company, task.notes, task.rationale, task.owner]
+        .some((value) => String(value || '').toLowerCase().includes(term));
+    });
+  }, [normalizedTasks, selectedCalendarDate, taskSearchQuery, taskStatusFilter]);
 
   const filteredContacts = useMemo(() => {
-    if (contactStageFilter === 'all') return contacts;
-    return contacts.filter(c => (c.stage || 'Lead') === contactStageFilter);
-  }, [contacts, contactStageFilter]);
+    const term = contactSearchQuery.trim().toLowerCase();
+    return normalizedContacts.filter((contact) => {
+      if (contactStageFilter !== 'all' && (contact.stage || 'Lead') !== contactStageFilter) {
+        return false;
+      }
+
+      if (!term) return true;
+      return [
+        contact.name,
+        contact.email,
+        contact.company,
+        contact.owner,
+        contact.nextStep,
+        contact.industry,
+        contact.city
+      ].some((value) => String(value || '').toLowerCase().includes(term));
+    });
+  }, [normalizedContacts, contactStageFilter, contactSearchQuery]);
 
   const globalSearchResults = useMemo(() => {
     if (!globalSearch.trim()) return null;
     const term = globalSearch.toLowerCase();
-    return contacts.filter(c =>
+    return normalizedContacts.filter(c =>
       (c.name || '').toLowerCase().includes(term) ||
       (c.email || '').toLowerCase().includes(term) ||
       (c.company || '').toLowerCase().includes(term)
     ).slice(0, 8);
-  }, [contacts, globalSearch]);
+  }, [normalizedContacts, globalSearch]);
 
   const getConfigFieldError = (name, value, nextConfig) => {
     const trimmed = String(value || '').trim();
@@ -1181,28 +1301,124 @@ export default function App() {
     showNotification(`Loaded Step ${step.stepNumber} into composer.`);
   };
 
+  const upsertContactLocally = (contactInput) => {
+    const nextContact = normalizeContactRecord(contactInput);
+    setContacts((prev) => normalizeContacts([
+      ...prev.filter((contact) => normalizeEmail(contact.email) !== nextContact.email),
+      nextContact
+    ]));
+    return nextContact;
+  };
+
+  const appendTaskLocally = (taskInput) => {
+    const nextTask = normalizeTaskRecord(taskInput);
+    setTasks((prev) => sortTasksForPlanner([nextTask, ...prev], selectedCalendarDate));
+    return nextTask;
+  };
+
+  const updateTaskLocally = (taskId, updater) => {
+    setTasks((prev) => sortTasksForPlanner(
+      prev.map((task) => {
+        if (task.id !== taskId) return normalizeTaskRecord(task);
+        const nextTask = typeof updater === 'function' ? updater(normalizeTaskRecord(task)) : { ...normalizeTaskRecord(task), ...updater };
+        return normalizeTaskRecord(nextTask);
+      }),
+      selectedCalendarDate
+    ));
+  };
+
+  const loadContactIntoOutreach = (contact) => {
+    const normalizedContact = normalizeContactRecord(contact);
+    const attention = contactAttentionMap.get(normalizedContact.email || normalizedContact.id);
+    const historyString = attention?.contact?.historyString || selectedContact?.historyString || '';
+
+    setComposerState(prev => ({
+      ...createComposerResetState({ defaultTone: config.defaultTone, defaultLength: config.defaultLength }),
+      to: normalizedContact.email,
+      hubspotId: normalizedContact.hubspotId || null,
+      recipientName: normalizedContact.name,
+      companyName: normalizedContact.company,
+      jobTitle: normalizedContact.jobTitle || '',
+      threadHistory: historyString,
+      aiContext: normalizedContact.aiSummary || prev.aiContext || ''
+    }));
+    setSelectedInboxEmail(null);
+    setActiveTab('outreach');
+  };
+
+  const createTaskForContact = (contact) => {
+    const normalizedContact = normalizeContactRecord(contact);
+    const task = appendTaskLocally(createEmptyTask({
+      id: `task-${Date.now()}`,
+      title: normalizedContact.nextStep || `Follow up with ${normalizedContact.name}`,
+      type: 'follow-up',
+      dueDate: normalizedContact.nextFollowUpAt || selectedCalendarDate,
+      scheduledDate: normalizedContact.nextFollowUpAt || selectedCalendarDate,
+      priority: normalizedContact.priorityScore || 65,
+      contact: normalizedContact.name,
+      contactEmail: normalizedContact.email,
+      company: normalizedContact.company,
+      owner: normalizedContact.owner,
+      rationale: normalizedContact.aiSummary || normalizedContact.notes || '',
+      notes: normalizedContact.nextStep ? `Next step: ${normalizedContact.nextStep}` : ''
+    }));
+    setNewTaskInput('');
+    setSelectedCalendarDate(getTaskCalendarDate(task) || selectedCalendarDate);
+    setActiveTab('tasks');
+    showNotification(`Task created for ${normalizedContact.name}.`);
+  };
+
+  const markTaskInProgress = (taskId) => {
+    updateTaskLocally(taskId, (task) => ({
+      ...task,
+      status: task.status === 'completed' ? 'completed' : 'in-progress'
+    }));
+    showNotification('Task moved into progress.');
+  };
+
+  const scheduleTaskForSelectedDay = (taskId) => {
+    updateTaskLocally(taskId, (task) => ({
+      ...task,
+      scheduledDate: selectedCalendarDate,
+      dueDate: task.dueDate || selectedCalendarDate,
+      status: task.status === 'completed' ? 'completed' : 'pending'
+    }));
+    showNotification(`Task scheduled for ${selectedCalendarDateLabel}.`);
+  };
+
+  const clearPlannerScheduleForTask = (taskId) => {
+    updateTaskLocally(taskId, (task) => ({
+      ...task,
+      scheduledDate: '',
+      time: ''
+    }));
+    showNotification('Task removed from the planner day.');
+  };
+
   // --- Task Management Logic ---
   const addTask = (e) => {
     e.preventDefault();
     if (!newTaskInput.trim()) return;
-    const newTask = {
-      id: Date.now(),
-      contact: 'General Task',
-      company: 'Internal',
-      type: newTaskInput,
+    appendTaskLocally(createEmptyTask({
+      id: `task-${Date.now()}`,
+      title: newTaskInput,
+      type: 'admin',
       status: 'pending',
-      priority: null,
-      time: '',
-      rationale: '',
-      dueDate: ''
-    };
-    setTasks(prev => [newTask, ...prev]);
+      priority: 45,
+      scheduledDate: selectedCalendarDate,
+      dueDate: selectedCalendarDate,
+      contact: 'General Task',
+      company: 'Internal'
+    }));
     setNewTaskInput('');
     showNotification("Task added.");
   };
 
   const toggleTaskStatus = (taskId) => {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: t.status === 'pending' ? 'completed' : 'pending' } : t));
+    updateTaskLocally(taskId, (task) => ({
+      ...task,
+      status: task.status === 'completed' ? 'pending' : 'completed'
+    }));
   };
   
   const deleteTask = (taskId) => {
@@ -1211,18 +1427,21 @@ export default function App() {
   };
 
   const openEditTask = (task) => {
-    setEditingTask({ ...task, dueDate: task.dueDate || '', priority: task.priority || '' });
+    setEditingTask({ ...normalizeTaskRecord(task), dueDate: task.dueDate || '', scheduledDate: task.scheduledDate || '', priority: task.priority || '' });
     setIsTaskModalOpen(true);
   };
 
   const handleTaskFormChange = (e) => {
     const { name, value } = e.target;
-    setEditingTask(prev => ({ ...prev, [name]: name === 'priority' ? (value ? Number(value) : null) : value }));
+    setEditingTask(prev => ({
+      ...prev,
+      [name]: name === 'priority' || name === 'durationMinutes' ? (value ? Number(value) : null) : value
+    }));
   };
 
   const saveTask = () => {
     if (!editingTask) return;
-    setTasks(prev => prev.map(t => t.id === editingTask.id ? { ...editingTask } : t));
+    setTasks(prev => sortTasksForPlanner(prev.map((task) => task.id === editingTask.id ? normalizeTaskRecord(editingTask) : normalizeTaskRecord(task)), selectedCalendarDate));
     setIsTaskModalOpen(false);
     setEditingTask(null);
     showNotification('Task updated.');
@@ -1826,13 +2045,13 @@ export default function App() {
   // --- CRM Logic ---
 
   const openAddContact = () => {
-    setEditingContact({ name: '', email: '', company: '', jobTitle: '', phone: '', stage: 'Lead', linkedin: '', notes: '', _isNew: true });
+    setEditingContact(createEmptyContact());
     setIsContactModalOpen(true);
   };
 
   const openEditContact = (contact, e) => {
     e.stopPropagation();
-    setEditingContact({ ...contact, _isNew: false });
+    setEditingContact({ ...normalizeContactRecord(contact), _isNew: false });
     setIsContactModalOpen(true);
   };
 
@@ -1854,20 +2073,11 @@ export default function App() {
 
     setLoading(true);
     try {
-      const contactData = { ...editingContact, email: normalizedEmail };
+      const contactData = normalizeContactRecord({ ...editingContact, email: normalizedEmail, id: normalizedEmail, _isNew: false });
       delete contactData._isNew; 
 
       if (IS_LOCAL_DEV_MODE || !db) {
-        setContacts(prev => {
-          const existingIndex = prev.findIndex(c => normalizeEmail(c.email) === normalizedEmail);
-          const nextContact = { ...contactData, id: normalizedEmail };
-          if (existingIndex === -1) {
-            return [...prev, nextContact];
-          }
-          const next = [...prev];
-          next[existingIndex] = { ...next[existingIndex], ...nextContact };
-          return next;
-        });
+        upsertContactLocally(contactData);
       } else {
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', normalizedEmail);
         await setDoc(docRef, contactData, { merge: true });
@@ -1905,12 +2115,13 @@ export default function App() {
   };
 
   const openDossier = (contact) => {
-    const contactThreads = threads[normalizeEmail(contact.email)]?.messages || [];
+    const normalizedContact = normalizeContactRecord(contact);
+    const contactThreads = threads[normalizeEmail(normalizedContact.email)]?.messages || [];
     const historyString = contactThreads.length > 0 
       ? contactThreads.map(m => `[${new Date(m.date).toLocaleDateString()}] ${m.direction === 'outbound' ? 'You' : 'Prospect'} wrote:\nSubject: ${m.subject || 'No Subject'}\n${m.body}`).join('\n\n')
       : '';
       
-    setSelectedContact({ ...contact, historyString, messages: contactThreads });
+    setSelectedContact({ ...normalizedContact, historyString, messages: contactThreads });
   };
 
   // --- AI Integration Logic ---
@@ -2002,11 +2213,11 @@ export default function App() {
 
     try {
       if (actionType === 'generateTasks') {
-        if (contacts.length === 0) {
+        if (normalizedContacts.length === 0) {
           showNotification("Sync contacts first to generate tasks.", "error");
           setLoading(false); return;
         }
-        const sampleContacts = contacts.slice(0, 8).map(c => `${c.name} at ${c.company}`).join(', ');
+        const sampleContacts = normalizedContacts.slice(0, 8).map(c => `${c.name} at ${c.company}`).join(', ');
         prompt = `Review these contacts: ${sampleContacts}. Generate a smart, prioritized daily to-do list of exactly 3 sales tasks based on these prospects. 
         Format EACH line EXACTLY as follows with no extra characters, bullets, or labels:
         Contact Name || Company Name || Task Description
@@ -2017,9 +2228,23 @@ export default function App() {
         if (lines.length > 0) {
           const newTasks = lines.map((l, i) => {
             const parts = l.split('||').map(p => p.trim());
-            return { id: Date.now() + i, contact: parts[0] || 'Unknown', company: parts[1] || 'Unknown', type: parts[2] || 'Follow up', status: 'pending', priority: null, time: '', rationale: '' };
+            const matchedContact = normalizedContacts.find((contact) => (contact.name || '').toLowerCase() === (parts[0] || '').toLowerCase());
+            return createEmptyTask({
+              id: `task-${Date.now()}-${i}`,
+              title: parts[2] || 'Follow up',
+              type: 'follow-up',
+              status: 'pending',
+              priority: matchedContact?.priorityScore || 60,
+              scheduledDate: selectedCalendarDate,
+              dueDate: matchedContact?.nextFollowUpAt || selectedCalendarDate,
+              contact: parts[0] || 'Unknown',
+              contactEmail: matchedContact?.email || '',
+              company: parts[1] || 'Unknown',
+              owner: matchedContact?.owner || '',
+              rationale: matchedContact?.aiSummary || ''
+            });
           });
-          setTasks(prev => [...newTasks, ...prev]);
+          setTasks(prev => sortTasksForPlanner([...newTasks, ...prev], selectedCalendarDate));
           showNotification("Smart Action Plan generated!");
         } else {
           throw new Error("Failed to parse task format.");
@@ -2028,7 +2253,7 @@ export default function App() {
       }
 
       if (actionType === 'prioritizeTasks') {
-        const pendingTasks = tasks.filter(t => t.status === 'pending');
+        const pendingTasks = normalizedTasks.filter(t => t.status === 'pending');
         if (pendingTasks.length === 0) {
           showNotification("No pending tasks to prioritize.", "error"); setLoading(false); return;
         }
@@ -2047,12 +2272,84 @@ export default function App() {
         const lines = result.split('\n').filter(l => l.includes('||'));
         
         if (lines.length > 0) {
-          setTasks(prev => applyTaskPrioritization(lines, prev));
+          setTasks(prev => sortTasksForPlanner(applyTaskPrioritization(lines, prev), selectedCalendarDate));
           showNotification("Tasks successfully prioritized and scheduled!");
         } else {
           showNotification("Failed to parse AI schedule.", "error");
         }
         setLoading(false); return;
+      }
+
+      if (actionType === 'planFocusDay') {
+        const selectedTasks = sortTasksForPlanner(normalizedTasks, selectedCalendarDate)
+          .filter((task) => task.status !== 'completed')
+          .slice(0, 8);
+
+        if (selectedTasks.length === 0) {
+          showNotification('Add a few active tasks before planning the day.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const taskLines = selectedTasks.map((task) => `ID: ${task.id} | Task: ${task.title} | Priority: ${task.priority || 50} | Contact: ${task.contact || 'General'} | Current Time: ${task.time || 'Unscheduled'}`).join('\n');
+        prompt = `Act as a world-class small-business operating chief. Build a focused workday plan for ${selectedCalendarDateLabel}.
+For each task below, choose the best start time, an estimated duration in minutes, and one short reason.
+Format EACH line EXACTLY like this:
+[ID] || [Start Time] || [Duration Minutes] || [Reason]
+
+Tasks:
+${taskLines}
+
+CRITICAL: No emojis. Return only formatted lines.`;
+
+        const result = await callGeminiAPI(prompt);
+        const lines = result.split('\n').filter((line) => line.includes('||'));
+        if (lines.length === 0) {
+          throw new Error('Failed to parse the AI focus-day schedule.');
+        }
+
+        setTasks((prev) => applyAiFocusDayPlan(lines, prev, selectedCalendarDate));
+        setTaskPlannerInsight(`[AI Focus Day Plan]\n\n${result}`);
+        showNotification(`Planner updated for ${selectedCalendarDateLabel}.`);
+        setLoading(false);
+        return;
+      }
+
+      if (actionType === 'crmWorkspace') {
+        const attentionContacts = crmOverview.attentionContacts.slice(0, 5);
+        if (attentionContacts.length === 0) {
+          showNotification('Add or sync contacts before asking AI to review the CRM.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const contactLines = attentionContacts.map((item, index) => {
+          const contact = item.contact;
+          return `${index + 1}. ${contact.name} at ${contact.company || 'Unknown company'} | Stage: ${contact.stage} | Priority: ${contact.priorityScore || 50} | Value: ${contact.estimatedValue || 0} | Next Step: ${contact.nextStep || 'Not set'} | Follow-up: ${contact.nextFollowUpAt || 'Not set'} | Open Tasks: ${item.openTasksCount}`;
+        }).join('\n');
+
+        prompt = `Act as an elite revenue operator for a small business. Review this CRM snapshot and return:
+1. The top revenue risks.
+2. The top 3 actions the owner should do next.
+3. One short operating recommendation to reduce follow-up slippage.
+
+CRM Snapshot:
+Pipeline Value: ${crmOverview.pipelineValue}
+Follow-ups Due: ${crmOverview.followUpsDueCount}
+Stale Contacts: ${crmOverview.staleContactsCount}
+Hot Contacts: ${crmOverview.hotContactsCount}
+Open Pipeline: ${crmOverview.openPipelineCount}
+
+Top Contacts:
+${contactLines}
+
+Be concise, practical, and specific. No emojis.`;
+
+        const result = await callGeminiAPI(prompt);
+        setCrmWorkspaceInsight(result);
+        showNotification('AI CRM workspace review generated.');
+        setLoading(false);
+        return;
       }
 
       if (actionType === 'write') {
@@ -2311,6 +2608,75 @@ Keep it concise and actionable. CRITICAL: NO EMOJIS.`;
         setComposerState(prev => ({ ...prev, aiContext: `[AI Research: ${contact.name}]\n\n${result}` }));
         showNotification(`AI research completed for ${contact.name}.`);
 
+      } else if (actionType === 'aiContactPlan') {
+        const contact = options?.contact;
+        if (!contact) { showNotification('No contact selected.', 'error'); setLoading(false); return; }
+        const normalizedContact = normalizeContactRecord(contact);
+        const relatedTasks = normalizedTasks.filter((task) => normalizeEmail(task.contactEmail || '') === normalizedContact.email);
+        const threadHistory = threads[normalizedContact.email]?.messages || [];
+        const threadSummary = threadHistory.slice(-4).map((message) => `${message.direction || 'activity'} | ${message.subject || 'No subject'} | ${new Date(message.date).toLocaleDateString()}`).join('\n') || 'No recent interactions.';
+
+        prompt = `Act as a sharp small-business revenue operator. Review this contact and create an actionable commercial plan.
+Return the answer using these exact labels, one per line:
+SUMMARY: ...
+PRIORITY: ...
+VALUE: ...
+NEXT STEP: ...
+FOLLOW-UP DATE: ...
+TASK TYPE: ...
+TASK TITLE: ...
+OPENER: ...
+CHANNEL: ...
+ROLE: ...
+PAIN POINTS: ...
+
+Contact:
+Name: ${normalizedContact.name}
+Company: ${normalizedContact.company || 'Unknown'}
+Title: ${normalizedContact.jobTitle || 'Unknown'}
+Stage: ${normalizedContact.stage}
+Current Priority: ${normalizedContact.priorityScore || 50}
+Current Value: ${normalizedContact.estimatedValue || 0}
+Current Next Step: ${normalizedContact.nextStep || 'Not set'}
+Open Tasks: ${relatedTasks.length}
+Thread Summary:
+${threadSummary}
+
+No emojis.`;
+
+        const result = await callGeminiAPI(prompt);
+        const plan = parseAiContactPlan(result);
+        const updatedContact = normalizeContactRecord({
+          ...normalizedContact,
+          aiSummary: plan.summary || normalizedContact.aiSummary,
+          nextStep: plan.nextStep || normalizedContact.nextStep,
+          nextFollowUpAt: plan.followUpDate || normalizedContact.nextFollowUpAt,
+          priorityScore: plan.priority || normalizedContact.priorityScore,
+          estimatedValue: plan.estimatedValue ?? normalizedContact.estimatedValue,
+          preferredChannel: plan.channel || normalizedContact.preferredChannel,
+          buyingRole: plan.role || normalizedContact.buyingRole,
+          painPoints: plan.painPoints || normalizedContact.painPoints,
+          lastAiReviewedAt: new Date().toISOString()
+        });
+
+        if (IS_LOCAL_DEV_MODE || !db) {
+          upsertContactLocally(updatedContact);
+        } else {
+          const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', updatedContact.email);
+          await setDoc(docRef, { ...updatedContact, _isNew: undefined }, { merge: true });
+        }
+
+        const nextTask = createTaskFromContactPlan(updatedContact, plan);
+        if (!normalizedTasks.some((task) => normalizeEmail(task.contactEmail || '') === updatedContact.email && (task.title || '').toLowerCase() === nextTask.title.toLowerCase() && task.status !== 'completed')) {
+          appendTaskLocally(nextTask);
+        }
+
+        setCrmWorkspaceInsight(`[AI Contact Plan: ${updatedContact.name}]\n\n${result}`);
+        if (selectedContact && normalizeEmail(selectedContact.email) === updatedContact.email) {
+          openDossier(updatedContact);
+        }
+        showNotification(`AI plan created for ${updatedContact.name}.`);
+
       } else if (actionType === 'preSendCheck') {
         if (!composerState.body) { showNotification("Write a draft first.", "error"); setLoading(false); return; }
         prompt = `Act as a senior sales email QA analyst. Review this email BEFORE it gets sent and provide a quick pre-send checklist:
@@ -2402,19 +2768,14 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           phone: c.properties.phone || '',
           stage: c.properties.lifecyclestage || 'Lead',
           status: c.properties.hs_lead_status || 'New',
+          source: 'HubSpot',
+          priorityScore: c.properties.lifecyclestage === 'opportunity' ? 80 : 55,
           linkedin: '',
           notes: ''
         })).filter(c => c.email);
 
         if (IS_LOCAL_DEV_MODE || !db) {
-          setContacts(prev => {
-            const byEmail = new Map(prev.map(c => [normalizeEmail(c.email), c]));
-            mappedContacts.forEach(c => {
-              const email = normalizeEmail(c.email);
-              byEmail.set(email, { ...(byEmail.get(email) || {}), ...c, id: email });
-            });
-            return Array.from(byEmail.values());
-          });
+          setContacts(prev => normalizeContacts([...prev, ...mappedContacts]));
         } else {
           for (const c of mappedContacts) {
             const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', c.email);
@@ -2470,14 +2831,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         }
 
         if (IS_LOCAL_DEV_MODE || !db) {
-          setContacts(prev => {
-            const byEmail = new Map(prev.map(c => [normalizeEmail(c.email), c]));
-            uniqueContacts.forEach(c => {
-              const email = normalizeEmail(c.email);
-              byEmail.set(email, { ...(byEmail.get(email) || {}), ...c, id: email });
-            });
-            return Array.from(byEmail.values());
-          });
+          setContacts(prev => normalizeContacts([...prev, ...uniqueContacts.map(contact => ({ ...contact, source: contact.source || 'Import' }))]));
         } else {
           for (const c of uniqueContacts) {
             const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'contacts', c.email);
@@ -2633,7 +2987,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
   const renderDashboard = () => {
     const todayKey = new Date().toDateString();
-    const pendingTasks = tasks.filter(t => t.status === 'pending');
+    const pendingTasks = normalizedTasks.filter(t => t.status === 'pending');
     const outboundMessages = Object.values(threads).flatMap(thread =>
       (thread?.messages || [])
         .filter(message => message.direction === 'outbound')
@@ -2645,12 +2999,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       return !Number.isNaN(sentAt.getTime()) && sentAt.toDateString() === todayKey;
     }).length;
 
-    const meetingsBookedCount = tasks.filter(task =>
+    const meetingsBookedCount = normalizedTasks.filter(task =>
       task.status === 'completed' && /meeting|call|demo/i.test(task.type || '')
     ).length;
 
     const dashboardStats = [
-      { label: 'Contacts', value: contacts.length, icon: Users },
+      { label: 'Contacts', value: normalizedContacts.length, icon: Users },
       { label: 'Pending Tasks', value: pendingTasks.length, icon: Activity },
       { label: 'Needs Response', value: inboxEmails.filter(email => email.needsResponse).length, icon: Mail },
       { label: 'Sent Today', value: outboundTodayCount, icon: Send },
@@ -2696,16 +3050,16 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <div key={task.id} className="flex items-center justify-between p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
                   <div className="flex flex-col">
                     <span className="text-sm font-bold text-black dark:text-white">{task.contact} <span className="text-zinc-500 dark:text-zinc-400 font-normal">({task.company})</span></span>
-                    <span className="text-xs text-rose-900 dark:text-rose-500 font-medium mt-1">{task.type}</span>
+                    <span className="text-xs text-rose-900 dark:text-rose-500 font-medium mt-1">{task.title || task.type}</span>
                   </div>
                   <button
                     onClick={() => {
-                      const matchedContact = contacts.find(c => c.name === task.contact) || {};
+                      const matchedContact = normalizedContacts.find(c => normalizeEmail(c.email) === normalizeEmail(task.contactEmail || '')) || normalizedContacts.find(c => c.name === task.contact) || {};
                       setComposerState(prev => ({
                         ...prev,
                         recipientName: task.contact,
                         companyName: task.company,
-                        to: matchedContact.email || ''
+                        to: matchedContact.email || task.contactEmail || ''
                       }));
                       setActiveTab('outreach');
                     }}
@@ -2751,9 +3105,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
   const renderTasks = () => (
     <div className="p-8 max-w-7xl mx-auto w-full h-full flex flex-col">
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">Smart Agenda & Tasks</h2>
-        <div className="flex space-x-3">
+      <div className="flex justify-between items-center mb-6 gap-4 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">Smart Agenda & Tasks</h2>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">Turn tasks into a real working day with focus windows, due dates, and AI-backed scheduling.</p>
+        </div>
+        <div className="flex space-x-3 flex-wrap">
           <button 
             onClick={() => handleAIAction('generateTasks')}
             disabled={loading}
@@ -2770,13 +3127,44 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             <CalendarDays className="w-4 h-4 mr-2" />
             AI Auto-Schedule
           </button>
+          <button 
+            onClick={() => handleAIAction('planFocusDay')}
+            disabled={loading || filteredTasks.filter((task) => task.status !== 'completed').length === 0}
+            className="flex items-center bg-amber-400 text-black px-4 py-2 rounded-lg hover:bg-amber-300 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+          >
+            <Clock className="w-4 h-4 mr-2" />
+            Plan Focus Day
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6 text-xs">
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Overdue</p>
+          <p className="mt-2 text-xl font-bold text-rose-900 dark:text-rose-400">{taskSummary.overdueCount}</p>
+        </div>
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Due Today</p>
+          <p className="mt-2 text-xl font-bold text-black dark:text-white">{taskSummary.dueTodayCount}</p>
+        </div>
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Focus Day</p>
+          <p className="mt-2 text-xl font-bold text-amber-600 dark:text-amber-400">{taskSummary.selectedDayCount}</p>
+        </div>
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Unscheduled</p>
+          <p className="mt-2 text-xl font-bold text-zinc-700 dark:text-zinc-300">{taskSummary.unscheduledCount}</p>
+        </div>
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Completed</p>
+          <p className="mt-2 text-xl font-bold text-emerald-600 dark:text-emerald-400">{taskSummary.completedCount}</p>
         </div>
       </div>
       
       <div className="flex flex-1 gap-8 min-h-0">
         {/* Left: Task List */}
         <div className="w-full lg:w-2/3 flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors">
-          <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex">
+          <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 space-y-3">
             <form onSubmit={addTask} className="w-full flex relative">
               <input 
                 type="text" 
@@ -2789,36 +3177,83 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <Plus className="w-4 h-4" />
               </button>
             </form>
+            <div className="flex gap-3 flex-wrap items-center">
+              <div className="relative flex-1 min-w-[220px]">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                <input
+                  type="text"
+                  value={taskSearchQuery}
+                  onChange={(e) => setTaskSearchQuery(e.target.value)}
+                  placeholder="Search tasks, contacts, notes..."
+                  className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-rose-900 text-black dark:text-white transition-colors"
+                />
+              </div>
+              <div className="flex rounded-lg border border-zinc-200 dark:border-zinc-700 overflow-hidden text-xs font-bold">
+                {[
+                  { id: 'active', label: 'Active' },
+                  { id: 'focus-day', label: 'Focus Day' },
+                  { id: 'overdue', label: 'Overdue' },
+                  { id: 'unscheduled', label: 'Unscheduled' },
+                  { id: 'waiting', label: 'Waiting' },
+                  { id: 'completed', label: 'Completed' }
+                ].map((filterOption) => (
+                  <button
+                    key={filterOption.id}
+                    onClick={() => setTaskStatusFilter(filterOption.id)}
+                    className={`px-3 py-2 transition-colors ${taskStatusFilter === filterOption.id ? 'bg-black dark:bg-white text-white dark:text-black' : 'bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'}`}
+                  >
+                    {filterOption.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
           
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
-            {tasks.map(task => (
-              <div key={task.id} className={`flex items-start p-4 rounded-lg border transition-colors ${task.status === 'completed' ? 'bg-zinc-50 dark:bg-zinc-950/30 border-transparent opacity-60' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 shadow-sm hover:border-zinc-300 dark:hover:border-zinc-700'}`}>
+            {filteredTasks.map(task => {
+              const taskBucket = getTaskBucket(task, selectedCalendarDate);
+              const isCompleted = task.status === 'completed';
+              return (
+              <div key={task.id} className={`flex items-start p-4 rounded-lg border transition-colors ${isCompleted ? 'bg-zinc-50 dark:bg-zinc-950/30 border-transparent opacity-60' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 shadow-sm hover:border-zinc-300 dark:hover:border-zinc-700'}`}>
                 <button 
                   onClick={() => toggleTaskStatus(task.id)}
-                  className={`mt-1 flex-shrink-0 w-5 h-5 rounded flex items-center justify-center border transition-colors ${task.status === 'completed' ? 'bg-rose-900 border-rose-900 text-white' : 'border-zinc-300 dark:border-zinc-600 hover:border-rose-900 dark:hover:border-rose-500 text-transparent'}`}
+                  className={`mt-1 flex-shrink-0 w-5 h-5 rounded flex items-center justify-center border transition-colors ${isCompleted ? 'bg-rose-900 border-rose-900 text-white' : 'border-zinc-300 dark:border-zinc-600 hover:border-rose-900 dark:hover:border-rose-500 text-transparent'}`}
                 >
                   <Check className="w-3 h-3" />
                 </button>
                 
                 <div className="ml-4 flex-1">
                   <div className="flex justify-between items-start">
-                    <h4 className={`text-sm font-bold ${task.status === 'completed' ? 'line-through text-zinc-500 dark:text-zinc-500' : 'text-black dark:text-white'}`}>
-                      {task.type}
-                    </h4>
+                    <div>
+                      <h4 className={`text-sm font-bold ${isCompleted ? 'line-through text-zinc-500 dark:text-zinc-500' : 'text-black dark:text-white'}`}>
+                        {task.title}
+                      </h4>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap text-[10px] font-bold uppercase tracking-wide">
+                        <span className="px-2 py-0.5 rounded-full border bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300">{task.type}</span>
+                        <span className={`px-2 py-0.5 rounded-full border ${taskBucket === 'overdue' ? 'bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-900 dark:text-rose-400' : taskBucket === 'selected' ? 'bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-400' : 'bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300'}`}>
+                          {taskBucket === 'selected' ? 'Focus Day' : taskBucket}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full border bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-900 dark:text-blue-400">{task.status}</span>
+                      </div>
+                    </div>
                     <div className="flex items-center space-x-2">
-                      {task.dueDate && task.status !== 'completed' && (
+                      {task.dueDate && !isCompleted && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-900 dark:text-blue-400">
                           Due: {new Date(task.dueDate).toLocaleDateString()}
                         </span>
                       )}
-                      {task.priority && task.status !== 'completed' && (
+                      {task.priority && !isCompleted && (
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
                           task.priority >= 80 ? 'bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-900 dark:text-rose-400' : 
                           task.priority >= 50 ? 'bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-400' : 
                           'bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-400'
                         }`}>
                           Priority: {task.priority}
+                        </span>
+                      )}
+                      {!isCompleted && task.time && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-emerald-100 border-emerald-200 text-emerald-900 dark:bg-emerald-900/30 dark:border-emerald-900 dark:text-emerald-400">
+                          {task.time} · {task.durationMinutes || 30}m
                         </span>
                       )}
                       <button onClick={() => openEditTask(task)} className="text-zinc-400 hover:text-black dark:hover:text-white transition" title="Edit Task">
@@ -2832,11 +3267,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   
                   <div className="mt-1 flex items-center text-xs">
                     <span className="text-zinc-600 dark:text-zinc-400 font-medium">For: <strong className="text-black dark:text-white">{task.contact}</strong> ({task.company})</span>
-                    {task.status !== 'completed' && (
+                    {!isCompleted && (
                        <button 
                          onClick={() => {
-                           const matchedContact = contacts.find(c => c.name === task.contact) || {};
-                           setComposerState(prev => ({ ...prev, recipientName: task.contact, companyName: task.company, to: matchedContact.email || '', sequenceSteps: [] }));
+                           const matchedContact = normalizedContacts.find(c => normalizeEmail(c.email) === normalizeEmail(task.contactEmail || '')) || normalizedContacts.find(c => c.name === task.contact) || {};
+                           setComposerState(prev => ({ ...prev, recipientName: task.contact, companyName: task.company, to: matchedContact.email || task.contactEmail || '', sequenceSteps: [] }));
                            setActiveTab('outreach');
                          }}
                          className="ml-3 text-rose-900 dark:text-rose-500 hover:underline font-bold flex items-center"
@@ -2846,16 +3281,41 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     )}
                   </div>
 
-                  {task.rationale && task.status !== 'completed' && (
+                  {!isCompleted && (
+                    <div className="mt-3 flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={() => markTaskInProgress(task.id)}
+                        className="text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-3 py-1.5 rounded font-medium hover:bg-zinc-200 dark:hover:bg-zinc-700 transition"
+                      >
+                        Start Work
+                      </button>
+                      <button
+                        onClick={() => scheduleTaskForSelectedDay(task.id)}
+                        className="text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-300 px-3 py-1.5 rounded font-medium hover:bg-amber-200 dark:hover:bg-amber-900/50 transition"
+                      >
+                        Move to {selectedCalendarDateLabel}
+                      </button>
+                      {task.scheduledDate && (
+                        <button
+                          onClick={() => clearPlannerScheduleForTask(task.id)}
+                          className="text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-3 py-1.5 rounded font-medium hover:bg-zinc-200 dark:hover:bg-zinc-700 transition"
+                        >
+                          Unschedule
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {(task.rationale || task.notes) && !isCompleted && (
                     <div className="mt-3 p-2 bg-zinc-50 dark:bg-zinc-950/50 rounded border border-zinc-100 dark:border-zinc-800 flex items-start">
                        <Sparkles className="w-3 h-3 text-rose-900 dark:text-rose-600 mr-2 mt-0.5 shrink-0" />
-                       <span className="text-xs text-zinc-700 dark:text-zinc-300 leading-relaxed">{task.rationale}</span>
+                       <span className="text-xs text-zinc-700 dark:text-zinc-300 leading-relaxed">{task.rationale || task.notes}</span>
                     </div>
                   )}
                 </div>
               </div>
-            ))}
-            {tasks.length === 0 && (
+            )})}
+            {filteredTasks.length === 0 && (
               <div className="p-8 text-center text-zinc-500 dark:text-zinc-400">No tasks currently. Generate some from the CRM or add manually.</div>
             )}
           </div>
@@ -2868,11 +3328,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm p-5 flex-shrink-0">
             <div className="flex justify-between items-center mb-4">
                <h3 className="font-bold text-black dark:text-white">
-                 {new Date().toLocaleString('default', { month: 'long' })} {new Date().getFullYear()}
+                 {activeCalendarMonthLabel}
                </h3>
                <div className="flex space-x-2">
-                 <button className="p-1 text-zinc-400 hover:text-black dark:hover:text-white transition"><ChevronRight className="w-4 h-4 rotate-180" /></button>
-                 <button className="p-1 text-zinc-400 hover:text-black dark:hover:text-white transition"><ChevronRight className="w-4 h-4" /></button>
+                 <button onClick={() => setActiveCalendarMonth(prev => shiftMonthKey(prev, -1))} className="p-1 text-zinc-400 hover:text-black dark:hover:text-white transition"><ChevronRight className="w-4 h-4 rotate-180" /></button>
+                 <button onClick={() => setActiveCalendarMonth(prev => shiftMonthKey(prev, 1))} className="p-1 text-zinc-400 hover:text-black dark:hover:text-white transition"><ChevronRight className="w-4 h-4" /></button>
                </div>
             </div>
             <div className="grid grid-cols-7 gap-1 text-center mb-2">
@@ -2881,16 +3341,19 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               ))}
             </div>
             <div className="grid grid-cols-7 gap-1">
-              {Array.from({ length: new Date(new Date().getFullYear(), new Date().getMonth(), 1).getDay() }).map((_, i) => (
-                <div key={`empty-${i}`} className="h-8"></div>
-              ))}
-              {Array.from({ length: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate() }).map((_, i) => {
-                const day = i + 1;
-                const isToday = day === new Date().getDate();
+              {calendarDays.map((day) => {
+                if (day.isPlaceholder) {
+                  return <div key={day.key} className="h-10"></div>;
+                }
                 return (
-                  <div key={day} className={`h-8 w-8 mx-auto flex items-center justify-center rounded-full text-xs font-bold transition-colors cursor-pointer ${isToday ? 'bg-rose-900 text-white shadow-md' : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}>
-                    {day}
-                  </div>
+                  <button
+                    key={day.key}
+                    onClick={() => setSelectedCalendarDate(day.dateKey)}
+                    className={`h-10 w-10 mx-auto flex flex-col items-center justify-center rounded-xl text-xs font-bold transition-colors cursor-pointer border ${day.isSelected ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white shadow-md' : day.isToday ? 'bg-rose-900 text-white border-rose-900 shadow-md' : 'text-zinc-700 dark:text-zinc-300 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
+                  >
+                    <span>{day.dayNumber}</span>
+                    {day.taskCount > 0 && <span className={`mt-0.5 h-1.5 w-1.5 rounded-full ${day.urgentCount > 0 ? 'bg-amber-300' : day.completedCount === day.taskCount ? 'bg-emerald-300' : 'bg-zinc-400'}`}></span>}
+                  </button>
                 );
               })}
             </div>
@@ -2900,29 +3363,37 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="flex-1 flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden min-h-0">
             <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-between items-center">
               <h3 className="font-bold text-black dark:text-white flex items-center text-sm">
-                 <Clock className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" /> Daily Schedule
+                 <Clock className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" /> {selectedCalendarDateLabel}
               </h3>
+              <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400">{selectedDayTasks.length} task{selectedDayTasks.length === 1 ? '' : 's'}</span>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
               <div className="relative border-l-2 border-zinc-200 dark:border-zinc-800 ml-3 space-y-8">
-                {tasks.filter(t => t.time && t.status !== 'completed')
-                  .sort((a, b) => a.time.localeCompare(b.time))
+                {selectedDayTasks.filter(t => t.status !== 'completed')
+                  .sort((a, b) => (a.time || '').localeCompare(b.time || ''))
                   .map((task, idx) => (
                   <div key={idx} className="relative pl-6">
                     <div className="absolute -left-[9px] top-1 w-4 h-4 rounded-full bg-rose-900 dark:bg-rose-600 border-4 border-white dark:border-zinc-900"></div>
-                    <h4 className="text-xs font-bold text-rose-900 dark:text-rose-500 mb-1">{task.time}</h4>
+                    <h4 className="text-xs font-bold text-rose-900 dark:text-rose-500 mb-1">{task.time || 'No time set'}{task.durationMinutes ? ` · ${task.durationMinutes}m` : ''}</h4>
                     <div className="bg-zinc-50 dark:bg-zinc-950/50 p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 shadow-sm">
-                      <p className="text-sm font-bold text-black dark:text-white">{task.type}</p>
+                      <p className="text-sm font-bold text-black dark:text-white">{task.title}</p>
                       <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{task.contact}</p>
+                      {task.rationale && <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-2 leading-relaxed">{task.rationale}</p>}
                     </div>
                   </div>
                 ))}
-                {tasks.filter(t => t.time && t.status !== 'completed').length === 0 && (
+                {selectedDayTasks.filter(t => t.status !== 'completed').length === 0 && (
                   <div className="pl-6 text-sm text-zinc-500 dark:text-zinc-400">
-                    Click "AI Auto-Schedule" to build your timeline.
+                    Pick a day and use "Plan Focus Day" to build a realistic work plan.
                   </div>
                 )}
               </div>
+              {taskPlannerInsight && (
+                <div className="mt-6 p-4 bg-zinc-50 dark:bg-zinc-950/50 rounded-xl border border-zinc-200 dark:border-zinc-800">
+                  <h4 className="text-xs font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-2">AI Planner Notes</h4>
+                  <p className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">{taskPlannerInsight}</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -3179,9 +3650,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
   const renderContacts = () => (
     <div className="p-8 space-y-6 max-w-7xl mx-auto w-full">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">CRM & Contacts</h2>
-        <div className="flex space-x-3">
+      <div className="flex justify-between items-center gap-4 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">CRM & Contacts</h2>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">Track deal value, next steps, ownership, and follow-up timing instead of keeping your CRM as a simple address book.</p>
+        </div>
+        <div className="flex space-x-3 flex-wrap">
           <button 
             onClick={openAddContact}
             className="flex items-center bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition font-bold text-sm shadow-sm"
@@ -3202,13 +3676,71 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Sync from HubSpot
           </button>
+          <button 
+            onClick={() => handleAIAction('crmWorkspace')}
+            disabled={loading || normalizedContacts.length === 0}
+            className="flex items-center bg-amber-400 text-black px-4 py-2 rounded-lg hover:bg-amber-300 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+          >
+            <Sparkles className="w-4 h-4 mr-2" />
+            AI CRM Review
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Pipeline Value</p>
+          <p className="mt-2 text-xl font-bold text-black dark:text-white">{formatCurrencyCompact(crmOverview.pipelineValue)}</p>
+        </div>
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Follow-Ups Due</p>
+          <p className="mt-2 text-xl font-bold text-amber-600 dark:text-amber-400">{crmOverview.followUpsDueCount}</p>
+        </div>
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Hot Contacts</p>
+          <p className="mt-2 text-xl font-bold text-rose-900 dark:text-rose-400">{crmOverview.hotContactsCount}</p>
+        </div>
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Open Pipeline</p>
+          <p className="mt-2 text-xl font-bold text-black dark:text-white">{crmOverview.openPipelineCount}</p>
+        </div>
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
+          <p className="text-zinc-500 dark:text-zinc-400">Stale Contacts</p>
+          <p className="mt-2 text-xl font-bold text-zinc-700 dark:text-zinc-300">{crmOverview.staleContactsCount}</p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-gradient-to-r from-zinc-50 via-white to-amber-50 dark:from-zinc-950 dark:via-zinc-900 dark:to-zinc-950 p-4 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-black dark:text-white">Attention Queue</h3>
+            <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400 max-w-2xl">These are the accounts most likely to need action because of deal value, timing, follow-up debt, or open work.</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full lg:w-auto lg:min-w-[32rem]">
+            {crmOverview.attentionContacts.map((item) => (
+              <button
+                key={item.contact.email || item.contact.id}
+                onClick={() => openDossier(item.contact)}
+                className="text-left p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/70 hover:border-amber-400 dark:hover:border-amber-500 transition"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-black dark:text-white">{item.contact.name}</p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">{item.contact.company || 'Unknown company'} · {item.contact.stage}</p>
+                  </div>
+                  <span className="text-[10px] px-2 py-1 rounded-full font-bold border bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-300">{item.urgencyScore}</span>
+                </div>
+                <p className="mt-2 text-xs text-zinc-700 dark:text-zinc-300 line-clamp-2">{item.contact.nextStep || item.contact.aiSummary || 'Needs a defined next step.'}</p>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       
       {/* Stage Filter Bar */}
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap">
         <Filter className="w-4 h-4 text-zinc-400" />
-        {['all', 'Lead', 'Contact', 'Opportunity', 'Customer', 'Cold', 'Warm', 'Hot'].map(stage => (
+        {['all', ...CONTACT_STAGE_OPTIONS].map(stage => (
           <button
             key={stage}
             onClick={() => setContactStageFilter(stage)}
@@ -3217,6 +3749,16 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             {stage === 'all' ? 'All Stages' : stage}
           </button>
         ))}
+        <div className="relative flex-1 min-w-[240px] max-w-sm ml-auto">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+          <input
+            type="text"
+            value={contactSearchQuery}
+            onChange={(e) => setContactSearchQuery(e.target.value)}
+            placeholder="Search company, owner, next step..."
+            className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-rose-900 text-black dark:text-white transition-colors"
+          />
+        </div>
         {contactStageFilter !== 'all' && (
           <span className="text-xs text-zinc-500 ml-2">{filteredContacts.length} of {contacts.length} contacts</span>
         )}
@@ -3227,32 +3769,45 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <thead>
             <tr className="bg-zinc-100 dark:bg-zinc-950 text-zinc-600 dark:text-zinc-400 text-sm border-b border-zinc-200 dark:border-zinc-800">
               <th className="p-4 font-medium text-black dark:text-white">Name</th>
-              <th className="p-4 font-medium text-black dark:text-white">Title & Company</th>
-              <th className="p-4 font-medium text-black dark:text-white">Contact Info</th>
-              <th className="p-4 font-medium text-black dark:text-white">Stage</th>
+              <th className="p-4 font-medium text-black dark:text-white">Account</th>
+              <th className="p-4 font-medium text-black dark:text-white">Flow</th>
+              <th className="p-4 font-medium text-black dark:text-white">Value & Owner</th>
               <th className="p-4 font-medium text-right text-black dark:text-white">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {filteredContacts.map(contact => (
+            {filteredContacts.map(contact => {
+              const attention = contactAttentionMap.get(contact.email || contact.id);
+              return (
               <tr key={contact.id || contact.email} className="border-b border-zinc-100 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors cursor-pointer" onClick={() => openDossier(contact)}>
-                <td className="p-4 text-sm font-bold text-black dark:text-white">{contact.name}</td>
                 <td className="p-4 text-sm text-zinc-600 dark:text-zinc-300">
-                  {contact.jobTitle && <span className="block text-xs font-bold text-zinc-500 dark:text-zinc-400">{contact.jobTitle}</span>}
-                  {contact.company}
+                  <div className="font-bold text-black dark:text-white">{contact.name}</div>
+                  <div className="mt-1 flex items-center gap-2 flex-wrap text-[10px] uppercase tracking-wide font-bold">
+                    <span className="px-2 py-0.5 rounded-full bg-black dark:bg-white text-white dark:text-black">{contact.stage}</span>
+                    <span className={`px-2 py-0.5 rounded-full ${contact.leadTemperature === 'Hot' ? 'bg-rose-100 text-rose-900 dark:bg-rose-900/30 dark:text-rose-300' : contact.leadTemperature === 'Warm' ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'}`}>{contact.leadTemperature}</span>
+                    {contact.source && <span className="px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">{contact.source}</span>}
+                  </div>
                 </td>
                 <td className="p-4 text-sm text-zinc-600 dark:text-zinc-300">
-                  <span className="block">{contact.email}</span>
+                  {contact.jobTitle && <span className="block text-xs font-bold text-zinc-500 dark:text-zinc-400">{contact.jobTitle}</span>}
+                  <span className="block font-medium text-black dark:text-white">{contact.company || 'Unknown company'}</span>
+                  <span className="block text-xs mt-1">{contact.email}</span>
                   {contact.phone && <span className="flex items-center text-xs mt-1 text-zinc-500 dark:text-zinc-400"><Phone className="w-3 h-3 mr-1" /> {contact.phone}</span>}
                 </td>
                 <td className="p-4 text-sm">
-                  <span className={`px-2 py-1 rounded-full text-xs font-bold ${
-                    contact.status === 'Warm' || contact.stage === 'Opportunity' ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-900 dark:text-rose-400' :
-                    contact.status === 'Cold' ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-300' :
-                    'bg-black dark:bg-white text-white dark:text-black'
-                  }`}>
-                    {contact.stage || contact.status}
-                  </span>
+                  <div className="space-y-2">
+                    <div className="text-xs text-zinc-500 dark:text-zinc-400">Next step</div>
+                    <div className="text-sm font-medium text-black dark:text-white line-clamp-2">{contact.nextStep || 'No next step defined yet.'}</div>
+                    <div className="flex items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+                      <span>Follow-up: {formatFriendlyDate(contact.nextFollowUpAt)}</span>
+                      <span>Open tasks: {attention?.openTasksCount || 0}</span>
+                    </div>
+                  </div>
+                </td>
+                <td className="p-4 text-sm text-zinc-600 dark:text-zinc-300">
+                  <div className="font-bold text-black dark:text-white">{formatCurrencyCompact(contact.estimatedValue)}</div>
+                  <div className="text-xs mt-1">Owner: {contact.owner || 'Unassigned'}</div>
+                  <div className="text-xs mt-1">Priority: {contact.priorityScore || 50}</div>
                 </td>
                 <td className="p-4 text-sm text-right">
                   <div className="flex items-center justify-end space-x-2">
@@ -3262,19 +3817,32 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     <button onClick={(e) => { e.stopPropagation(); setContactToDelete(contact); }} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-500 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Delete Contact">
                       <Trash2 className="w-4 h-4" />
                     </button>
+                    <button onClick={(e) => { e.stopPropagation(); createTaskForContact(contact); }} className="p-1.5 text-zinc-500 hover:text-amber-600 dark:text-zinc-400 dark:hover:text-amber-400 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Create follow-up task">
+                      <CheckSquare className="w-4 h-4" />
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); handleAIAction('aiContactPlan', { contact }); }} disabled={loading} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-400 bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Create AI contact plan">
+                      <Sparkles className="w-4 h-4" />
+                    </button>
                     <button onClick={(e) => { e.stopPropagation(); openDossier(contact); }} className="text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white font-bold text-sm flex items-center ml-2 transition-colors">
                       View <ChevronRight className="w-4 h-4 ml-0.5" />
                     </button>
                   </div>
                 </td>
               </tr>
-            ))}
+            )})}
             {filteredContacts.length === 0 && (
                <tr><td colSpan="5" className="p-8 text-center text-zinc-500 dark:text-zinc-400">{contactStageFilter !== 'all' ? `No contacts in "${contactStageFilter}" stage.` : 'No contacts found. Please sync from HubSpot, import a CSV, or Add a contact manually.'}</td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {crmWorkspaceInsight && (
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-sm">
+          <h3 className="text-sm font-bold text-black dark:text-white flex items-center"><Sparkles className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" /> AI CRM Guidance</h3>
+          <p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">{crmWorkspaceInsight}</p>
+        </div>
+      )}
     </div>
   );
 
@@ -4590,23 +5158,23 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       {/* CRM Create/Edit Modal Overlay */}
       {isContactModalOpen && editingContact && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-zinc-900 w-full max-w-md rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
+          <div className="bg-white dark:bg-zinc-900 w-full max-w-3xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
             <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center bg-zinc-50 dark:bg-zinc-950/50">
               <h2 className="text-xl font-bold text-black dark:text-white">{editingContact._isNew ? 'Add Contact' : 'Edit Contact'}</h2>
               <button onClick={() => { setIsContactModalOpen(false); setEditingContact(null); }} className="text-zinc-400 hover:text-black dark:hover:text-white transition">
                 <X className="w-6 h-6" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Full Name</label>
-                <input type="text" name="name" value={editingContact.name} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
-              </div>
-              <div>
-                <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Email <span className="text-rose-900">*</span></label>
-                <input type="email" name="email" disabled={!editingContact._isNew} value={editingContact.email} onChange={handleContactFormChange} className={`w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white transition-colors ${!editingContact._isNew ? 'bg-zinc-100 dark:bg-zinc-950 opacity-70' : 'bg-white dark:bg-zinc-800'}`} />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Full Name</label>
+                  <input type="text" name="name" value={editingContact.name} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Email <span className="text-rose-900">*</span></label>
+                  <input type="email" name="email" disabled={!editingContact._isNew} value={editingContact.email} onChange={handleContactFormChange} className={`w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white transition-colors ${!editingContact._isNew ? 'bg-zinc-100 dark:bg-zinc-950 opacity-70' : 'bg-white dark:bg-zinc-800'}`} />
+                </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Company</label>
                   <input type="text" name="company" value={editingContact.company} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
@@ -4615,20 +5183,57 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Job Title</label>
                   <input type="text" name="jobTitle" value={editingContact.jobTitle} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Phone</label>
                   <input type="text" name="phone" value={editingContact.phone} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
                 <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Website</label>
+                  <input type="url" name="website" value={editingContact.website || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                </div>
+                <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Stage</label>
                   <select name="stage" value={editingContact.stage} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors">
-                    <option value="Lead">Lead</option>
-                    <option value="Opportunity">Opportunity</option>
-                    <option value="Customer">Customer</option>
-                    <option value="Churned">Churned</option>
+                    {CONTACT_STAGE_OPTIONS.map((stageOption) => (
+                      <option key={stageOption} value={stageOption}>{stageOption}</option>
+                    ))}
                   </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Lead Temperature</label>
+                  <select name="leadTemperature" value={editingContact.leadTemperature || 'Cold'} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors">
+                    {CONTACT_TEMPERATURE_OPTIONS.map((temperature) => (
+                      <option key={temperature} value={temperature}>{temperature}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Owner</label>
+                  <input type="text" name="owner" value={editingContact.owner || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Source</label>
+                  <select name="source" value={editingContact.source || 'Manual'} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors">
+                    {CONTACT_SOURCE_OPTIONS.map((sourceOption) => (
+                      <option key={sourceOption} value={sourceOption}>{sourceOption}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Estimated Deal Value</label>
+                  <input type="number" name="estimatedValue" value={editingContact.estimatedValue || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Priority Score</label>
+                  <input type="number" name="priorityScore" min="1" max="100" value={editingContact.priorityScore || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Next Follow-Up Date</label>
+                  <input type="date" name="nextFollowUpAt" value={editingContact.nextFollowUpAt || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Last Contacted</label>
+                  <input type="date" name="lastContactedAt" value={editingContact.lastContactedAt || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
               </div>
               <div>
@@ -4636,8 +5241,22 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <input type="url" name="linkedin" value={editingContact.linkedin} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
               </div>
               <div>
+                <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Next Step</label>
+                <textarea name="nextStep" value={editingContact.nextStep || ''} onChange={handleContactFormChange} rows="2" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">AI Summary</label>
+                  <textarea name="aiSummary" value={editingContact.aiSummary || ''} onChange={handleContactFormChange} rows="3" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Pain Points</label>
+                  <textarea name="painPoints" value={editingContact.painPoints || ''} onChange={handleContactFormChange} rows="3" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
+                </div>
+              </div>
+              <div>
                 <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Notes</label>
-                <textarea name="notes" value={editingContact.notes} onChange={handleContactFormChange} rows="3" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
+                <textarea name="notes" value={editingContact.notes} onChange={handleContactFormChange} rows="4" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
               </div>
             </div>
             <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-end space-x-3">
@@ -4663,7 +5282,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               <div>
                 <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Task</label>
                 <input 
-                  type="text" name="text" value={editingTask.text || ''} onChange={handleTaskFormChange}
+                  type="text" name="title" value={editingTask.title || editingTask.text || ''} onChange={handleTaskFormChange}
                   className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 />
               </div>
@@ -4673,12 +5292,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <select name="type" value={editingTask.type || 'follow-up'} onChange={handleTaskFormChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   >
-                    <option value="follow-up">Follow-up</option>
-                    <option value="call">Call</option>
-                    <option value="meeting">Meeting</option>
-                    <option value="proposal">Proposal</option>
-                    <option value="research">Research</option>
-                    <option value="admin">Admin</option>
+                    {TASK_TYPE_OPTIONS.map((typeOption) => (
+                      <option key={typeOption} value={typeOption}>{typeOption}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -4699,6 +5315,15 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   />
                 </div>
                 <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Planner Day</label>
+                  <input 
+                    type="date" name="scheduledDate" value={editingTask.scheduledDate || ''} onChange={handleTaskFormChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
                   <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Contact</label>
                   <input 
                     type="text" name="contact" value={editingTask.contact || ''} onChange={handleTaskFormChange}
@@ -4706,9 +5331,45 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
                 </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Contact Email</label>
+                  <input 
+                    type="email" name="contactEmail" value={editingTask.contactEmail || ''} onChange={handleTaskFormChange}
+                    placeholder="contact@example.com"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Start Time</label>
+                  <input 
+                    type="text" name="time" value={editingTask.time || ''} onChange={handleTaskFormChange}
+                    placeholder="09:00 AM"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Duration (min)</label>
+                  <input 
+                    type="number" name="durationMinutes" value={editingTask.durationMinutes || 30} onChange={handleTaskFormChange}
+                    min="5" max="480"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Focus</label>
+                  <select name="focus" value={editingTask.focus || 'sales'} onChange={handleTaskFormChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  >
+                    {TASK_FOCUS_OPTIONS.map((focusOption) => (
+                      <option key={focusOption} value={focusOption}>{focusOption}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
               <div>
-                <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Rationale / Notes</label>
+                <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Rationale</label>
                 <textarea 
                   name="rationale" value={editingTask.rationale || ''} onChange={handleTaskFormChange} rows="2"
                   className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
@@ -4716,12 +5377,21 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 ></textarea>
               </div>
               <div>
+                <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Notes</label>
+                <textarea 
+                  name="notes" value={editingTask.notes || ''} onChange={handleTaskFormChange} rows="2"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  placeholder="Internal execution notes..."
+                ></textarea>
+              </div>
+              <div>
                 <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Status</label>
                 <select name="status" value={editingTask.status || 'pending'} onChange={handleTaskFormChange}
                   className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 >
-                  <option value="pending">Pending</option>
-                  <option value="completed">Completed</option>
+                  {TASK_STATUS_OPTIONS.map((statusOption) => (
+                    <option key={statusOption} value={statusOption}>{statusOption}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -4795,7 +5465,43 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         <a href={selectedContact.linkedin} target="_blank" rel="noopener noreferrer" className="hover:underline hover:text-rose-900 dark:hover:text-rose-500 truncate">LinkedIn Profile</a>
                       </div>
                     )}
+                    {selectedContact.website && (
+                      <div className="flex items-center text-sm text-zinc-700 dark:text-zinc-300">
+                        <Globe className="w-4 h-4 mr-2 text-zinc-400" />
+                        <a href={selectedContact.website} target="_blank" rel="noopener noreferrer" className="hover:underline hover:text-rose-900 dark:hover:text-rose-500 truncate">Company Website</a>
+                      </div>
+                    )}
                   </div>
+                  <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800 grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <div className="text-zinc-500 dark:text-zinc-400">Owner</div>
+                      <div className="mt-1 font-bold text-black dark:text-white">{selectedContact.owner || 'Unassigned'}</div>
+                    </div>
+                    <div>
+                      <div className="text-zinc-500 dark:text-zinc-400">Value</div>
+                      <div className="mt-1 font-bold text-black dark:text-white">{formatCurrencyCompact(selectedContact.estimatedValue)}</div>
+                    </div>
+                    <div>
+                      <div className="text-zinc-500 dark:text-zinc-400">Next Follow-Up</div>
+                      <div className="mt-1 font-bold text-black dark:text-white">{formatFriendlyDate(selectedContact.nextFollowUpAt)}</div>
+                    </div>
+                    <div>
+                      <div className="text-zinc-500 dark:text-zinc-400">Priority</div>
+                      <div className="mt-1 font-bold text-black dark:text-white">{selectedContact.priorityScore || 50}</div>
+                    </div>
+                  </div>
+                  {selectedContact.nextStep && (
+                    <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
+                      <h4 className="text-xs font-bold text-zinc-500 dark:text-zinc-400 mb-1">Next Step</h4>
+                      <p className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">{selectedContact.nextStep}</p>
+                    </div>
+                  )}
+                  {selectedContact.aiSummary && (
+                    <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
+                      <h4 className="text-xs font-bold text-zinc-500 dark:text-zinc-400 mb-1">AI Summary</h4>
+                      <p className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">{selectedContact.aiSummary}</p>
+                    </div>
+                  )}
                   {selectedContact.notes && (
                     <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
                       <h4 className="text-xs font-bold text-zinc-500 dark:text-zinc-400 mb-1">Notes</h4>
@@ -4809,18 +5515,8 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                    <div className="space-y-2">
                      <button 
                        onClick={() => {
-                         setComposerState(prev => ({ 
-                           ...prev, 
-                           to: selectedContact.email,
-                           hubspotId: selectedContact.hubspotId || null,
-                           recipientName: selectedContact.name,
-                           companyName: selectedContact.company,
-                           jobTitle: selectedContact.jobTitle || '',
-                          threadHistory: selectedContact.historyString,
-                          sequenceSteps: []
-                         }));
+                         loadContactIntoOutreach(selectedContact);
                          setSelectedContact(null);
-                         setActiveTab('outreach');
                        }}
                        className="w-full flex items-center justify-center bg-rose-900 text-white py-2 rounded-lg text-sm font-bold hover:bg-rose-800 transition"
                      >
@@ -4828,9 +5524,8 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      </button>
                      <button 
                         onClick={() => {
-                           setNewTaskInput(`Follow up with ${selectedContact.name}`);
+                           createTaskForContact(selectedContact);
                            setSelectedContact(null);
-                           setActiveTab('tasks');
                         }}
                         className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition"
                      >
@@ -4862,6 +5557,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                        className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition disabled:opacity-50"
                      >
                        <Target className="w-4 h-4 mr-2" /> Follow-Up Strategy
+                     </button>
+                     <button 
+                       onClick={() => handleAIAction('aiContactPlan', { contact: selectedContact })}
+                       disabled={loading}
+                       className="w-full flex items-center justify-center bg-amber-400 text-black py-2 rounded-lg text-sm font-bold hover:bg-amber-300 transition disabled:opacity-50"
+                     >
+                       <Sparkles className="w-4 h-4 mr-2" /> Build AI Action Plan
                      </button>
                    </div>
                 </div>
