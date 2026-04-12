@@ -217,6 +217,75 @@ test('buildContactActionPlan fills operator defaults for contacts missing a next
   assert.match(actionPlan.suggestedNextStep, /decision timeline/i);
 });
 
+test('buildContactActionPlan routes stale pipeline contacts into reactivation work', () => {
+  const actionPlan = buildContactActionPlan(
+    {
+      name: 'Dormant Deal',
+      email: 'dormant@example.com',
+      stage: 'Opportunity',
+      nextStep: 'Re-open the thread with a fresh business angle.',
+      priorityScore: 74
+    },
+    {
+      openTasksCount: 1,
+      followUpDue: false,
+      isStale: true,
+      lastTouchedDaysAgo: 19
+    },
+    new Date('2026-04-11T09:00:00.000Z')
+  );
+
+  assert.equal(actionPlan.primaryAction.key, 'reactivation-draft');
+  assert.match(actionPlan.primaryAction.label, /reactivation/i);
+  assert.ok(actionPlan.actionReasons.includes('Stale 19d'));
+});
+
+test('buildContactActionPlan routes customers into proactive check-ins', () => {
+  const actionPlan = buildContactActionPlan(
+    {
+      name: 'Core Customer',
+      email: 'customer@example.com',
+      stage: 'Customer',
+      nextStep: 'Review adoption and identify expansion opportunity.',
+      priorityScore: 78
+    },
+    {
+      openTasksCount: 0,
+      followUpDue: false,
+      isStale: false,
+      lastTouchedDaysAgo: 7
+    },
+    new Date('2026-04-11T09:00:00.000Z')
+  );
+
+  assert.equal(actionPlan.primaryAction.key, 'customer-check-in-task');
+  assert.match(actionPlan.primaryAction.label, /customer check-in/i);
+});
+
+test('buildContactActionPlan routes due customers into AI check-in drafts', () => {
+  const actionPlan = buildContactActionPlan(
+    {
+      name: 'Core Customer',
+      email: 'customer@example.com',
+      stage: 'Customer',
+      nextStep: 'Review adoption and identify expansion opportunity.',
+      priorityScore: 78,
+      nextFollowUpAt: '2026-04-10'
+    },
+    {
+      openTasksCount: 0,
+      followUpDue: true,
+      isStale: false,
+      lastTouchedDaysAgo: 7
+    },
+    new Date('2026-04-11T09:00:00.000Z')
+  );
+
+  assert.equal(actionPlan.primaryAction.key, 'customer-check-in-draft');
+  assert.match(actionPlan.primaryAction.label, /draft customer check-in/i);
+  assert.ok(actionPlan.actionReasons.includes('Follow-up due'));
+});
+
 test('buildPipelineOverview groups contacts by stage and calculates weighted forecast', () => {
   const pipeline = buildPipelineOverview([
     { name: 'Lead', email: 'lead@example.com', stage: 'Lead', estimatedValue: 10000 },

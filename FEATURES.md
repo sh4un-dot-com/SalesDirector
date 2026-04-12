@@ -87,6 +87,7 @@ Your single source of truth for every prospect and customer.
 - **Full interaction timeline** — every thread message with timestamps
 - **Quick actions** — Draft Outreach, Add Task, Log Call (persists to timeline with timestamp)
 - **AI Intelligence panel** — Research Contact (B2B sales intelligence dossier), Follow-Up Strategy (urgency/timing/action recommendations), Call Prep Brief (routes to Tasks), Proposal Follow-Up Draft (routes to Outreach), and AI Action Plan generation
+- **Stage-aware AI follow-up workflows** — stale opportunities can trigger Reactivation Drafts, proposal-stage deals can generate Proposal Follow-Up Drafts, and customer-stage accounts can generate Customer Check-In Drafts
 - **Action routing** — dossier AI buttons now close the modal and open the exact workspace where the output lands
 - **Timeline message management** — delete individual timeline messages
 - **Contact detail card** — clickable email, phone, LinkedIn links
@@ -138,6 +139,7 @@ The core of SalesDirector. A full AI-powered email composition workspace.
 - **Tone selector** — Professional, Persuasive, Friendly, Direct & Urgent, Consultative
 - **Length selector** — Concise, Standard, Detailed
 - **Recommended play + cadence defaults** — Outreach auto-suggests a playbook and sequence rhythm from CRM stage, stale status, and inbox signals
+- **Stage-aware CRM actions** — proposal follow-up, customer check-in, and reactivation flows now route directly from CRM and Smart Inbox into Outreach drafts and planner work
 - **Thread history context** — feed prior conversation into AI for continuity
 - **Ask Director for Strategy** — get psychological sales strategies and prospect-specific playbooks
 - **Objection Crusher** — AI generates psychology-backed rebuttals and persuasive scripts

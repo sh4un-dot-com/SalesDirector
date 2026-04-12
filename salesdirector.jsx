@@ -1200,6 +1200,17 @@ export default function App() {
       )
     };
   }, [contactAttentionMap, editingContact, getContactActionPlan, normalizedContacts]);
+  const selectedContactAttention = useMemo(() => {
+    if (!selectedContact) return null;
+
+    const normalizedContact = normalizeContactRecord(selectedContact);
+    return contactAttentionMap.get(normalizedContact.email || normalizedContact.id)
+      || getContactAttentionSummary(normalizedContact, normalizedTasks, threads);
+  }, [contactAttentionMap, normalizedTasks, selectedContact, threads]);
+  const selectedContactActionPlan = useMemo(
+    () => (selectedContact ? getContactActionPlan(selectedContact, selectedContactAttention) : null),
+    [getContactActionPlan, selectedContact, selectedContactAttention]
+  );
   const joinContextBlocks = useCallback((...blocks) => blocks
     .map((block) => String(block || '').trim())
     .filter(Boolean)
@@ -2120,6 +2131,15 @@ No emojis.`;
       case 'proposal-follow-up':
         void handleAIAction('proposalFollowUp', { contact: normalizedContact });
         break;
+      case 'reactivation-draft':
+        void handleAIAction('reactivationDraft', { contact: normalizedContact });
+        break;
+      case 'customer-check-in-draft':
+        void handleAIAction('customerCheckIn', { contact: normalizedContact });
+        break;
+      case 'customer-check-in-task':
+        createTaskForContact(normalizedContact);
+        break;
       case 'outreach':
         loadContactIntoOutreach(normalizedContact);
         break;
@@ -2149,6 +2169,15 @@ No emojis.`;
       case 'proposal-follow-up':
         void handleAIAction('proposalFollowUp', { contact: normalizedContact });
         break;
+      case 'reactivation-draft':
+        void handleAIAction('reactivationDraft', { contact: normalizedContact, inboxEmail: email });
+        break;
+      case 'customer-check-in-draft':
+        void handleAIAction('customerCheckIn', { contact: normalizedContact, inboxEmail: email });
+        break;
+      case 'customer-check-in-task':
+        addFollowUpTaskFromInboxEmail(email);
+        break;
       case 'create-task':
         addFollowUpTaskFromInboxEmail(email);
         break;
@@ -2172,7 +2201,7 @@ No emojis.`;
     return 'follow-up';
   };
 
-  const parseProposalFollowUpDraft = (text = '') => {
+  const parseStructuredOutreachDraft = (text = '') => {
     const source = String(text || '');
     const subject = source.match(/^SUBJECT\s*[:=-]\s*(.+)$/im)?.[1]?.trim() || '';
     const followUpDate = formatDateKey(source.match(/^FOLLOW-UP DATE\s*[:=-]\s*(.+)$/im)?.[1] || '');
@@ -3904,7 +3933,7 @@ ${threadSummary}
 The email should be short, commercial, and lightly urgent without sounding desperate. Ask for a concrete checkpoint or decision step. No emojis.`;
 
         const result = await callGeminiAPI(prompt);
-        const draft = parseProposalFollowUpDraft(result);
+        const draft = parseStructuredOutreachDraft(result);
         if (!draft.body) {
           throw new Error('Failed to parse the proposal follow-up draft.');
         }
@@ -3968,6 +3997,250 @@ The email should be short, commercial, and lightly urgent without sounding despe
           openDossier(savedContact);
         }
         showNotification(`Proposal follow-up draft loaded for ${proposalContact.name}.`);
+        setLoading(false);
+        return;
+      }
+
+      if (actionType === 'reactivationDraft') {
+        const reactivationContact = normalizeContactRecord(options?.contact || selectedContact || {});
+        if (!reactivationContact.email) {
+          showNotification('Choose a CRM contact first.', 'error');
+          setLoading(false);
+          return;
+        }
+        if (reactivationContact.stage === 'Customer') {
+          showNotification('Use customer check-in for active customers instead of the reactivation flow.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const threadMessages = threads[reactivationContact.email]?.messages || [];
+        const threadSummary = threadMessages
+          .slice(-6)
+          .map((message) => `${message.type === 'call' ? 'Call' : message.direction === 'outbound' ? 'Outbound' : 'Inbound'} | ${message.subject || 'No subject'} | ${formatDateKey(message.date) || 'Unknown date'}`)
+          .join('\n') || 'No recent interactions.';
+        const inboxSignal = options?.inboxEmail ? joinContextBlocks(
+          `Latest inbox subject: ${options.inboxEmail.subject || 'No subject'}`,
+          options.inboxEmail.aiSummary ? `Inbox insight: ${options.inboxEmail.aiSummary}` : '',
+          options.inboxEmail.body ? `Inbox body: ${options.inboxEmail.body}` : ''
+        ) : 'No fresh inbox signal.';
+
+        prompt = `Act as an elite small-business revenue operator. Draft a reactivation email for a stalled relationship.
+Return exactly in this format:
+SUBJECT: ...
+FOLLOW-UP DATE: ...
+BODY:
+...
+
+Contact:
+Name: ${reactivationContact.name}
+Company: ${reactivationContact.company || 'Unknown'}
+Title: ${reactivationContact.jobTitle || 'Unknown'}
+Stage: ${reactivationContact.stage}
+Value: ${reactivationContact.estimatedValue || 0}
+Priority: ${reactivationContact.priorityScore || 50}
+Pain Points: ${reactivationContact.painPoints || 'Not captured'}
+Current Next Step: ${reactivationContact.nextStep || 'Not defined'}
+
+Relationship Summary:
+${reactivationContact.timelineSummary || reactivationContact.aiSummary || 'No stored summary.'}
+
+Recent Timeline:
+${threadSummary}
+
+Fresh Signal:
+${inboxSignal}
+
+Make the email respectful, fresh, and low-friction. Acknowledge the gap without guilt, introduce a new business angle, and ask for a very easy next step. No emojis.`;
+
+        const result = await callGeminiAPI(prompt);
+        const draft = parseStructuredOutreachDraft(result);
+        if (!draft.body) {
+          throw new Error('Failed to parse the reactivation draft.');
+        }
+
+        const followUpDate = draft.followUpDate || reactivationContact.nextFollowUpAt || formatDateKey(new Date(Date.now() + (4 * 24 * 60 * 60 * 1000)));
+        let nextBody = draft.body;
+        if (config.signature && !nextBody.includes(config.signature.substring(0, 10))) {
+          nextBody = `${nextBody}\n\n${config.signature}`;
+        }
+
+        setComposerState({
+          ...createComposerResetState({ defaultTone: config.defaultTone, defaultLength: config.defaultLength }),
+          to: reactivationContact.email,
+          hubspotId: reactivationContact.hubspotId || null,
+          recipientName: reactivationContact.name,
+          companyName: reactivationContact.company,
+          jobTitle: reactivationContact.jobTitle || '',
+          threadHistory: buildHistoryStringFromMessages(threadMessages),
+          aiContext: `[AI Reactivation Draft: ${reactivationContact.name}]\n\n${result}`,
+          subject: draft.subject || `Quick idea to re-open the conversation with ${reactivationContact.company || reactivationContact.name}`,
+          body: nextBody
+        });
+        setSelectedInboxEmail(options?.inboxEmail || null);
+        setSelectedContact(null);
+        setActiveTab('outreach');
+        setSelectedCalendarDate(followUpDate);
+        setActiveCalendarMonth(formatMonthKey(followUpDate));
+
+        const hasActiveReactivationTask = normalizedTasks.some((task) => (
+          task.status !== 'completed'
+          && normalizeEmail(task.contactEmail || '') === reactivationContact.email
+          && task.source === 'ai-reactivation-draft'
+        ));
+        if (!hasActiveReactivationTask) {
+          appendTaskLocally(createEmptyTask({
+            id: `reactivation-follow-up-${Date.now()}`,
+            title: `${reactivationContact.stage === 'Churned' ? 'Win back' : 'Re-activate'} ${reactivationContact.name}`,
+            type: 'follow-up',
+            status: 'pending',
+            priority: Math.max(reactivationContact.priorityScore || 68, 74),
+            dueDate: followUpDate,
+            scheduledDate: followUpDate,
+            contact: reactivationContact.name,
+            contactEmail: reactivationContact.email,
+            company: reactivationContact.company,
+            owner: reactivationContact.owner,
+            rationale: reactivationContact.timelineSummary || reactivationContact.aiSummary || reactivationContact.nextStep || '',
+            notes: 'AI-generated reactivation draft is loaded in Outreach.',
+            source: 'ai-reactivation-draft'
+          }));
+        }
+
+        const savedContact = await saveContactRecord({
+          ...reactivationContact,
+          nextFollowUpAt: followUpDate,
+          nextStep: reactivationContact.stage === 'Churned'
+            ? 'Test for a respectful win-back conversation with a low-friction checkpoint.'
+            : 'Re-open the relationship with a fresh angle and ask for a quick checkpoint.',
+          lastAiReviewedAt: new Date().toISOString()
+        });
+        setCrmWorkspaceInsight(`[AI Reactivation Draft: ${reactivationContact.name}]\n\n${result}`);
+        if (selectedContact && normalizeEmail(selectedContact.email) === savedContact.email) {
+          openDossier(savedContact);
+        }
+        showNotification(`Reactivation draft loaded for ${reactivationContact.name}.`);
+        setLoading(false);
+        return;
+      }
+
+      if (actionType === 'customerCheckIn') {
+        const customerContact = normalizeContactRecord(options?.contact || selectedContact || {});
+        if (!customerContact.email) {
+          showNotification('Choose a customer contact first.', 'error');
+          setLoading(false);
+          return;
+        }
+        if (customerContact.stage !== 'Customer') {
+          showNotification('Customer check-in is designed for customer-stage accounts.', 'error');
+          setLoading(false);
+          return;
+        }
+
+        const threadMessages = threads[customerContact.email]?.messages || [];
+        const threadSummary = threadMessages
+          .slice(-6)
+          .map((message) => `${message.type === 'call' ? 'Call' : message.direction === 'outbound' ? 'Outbound' : 'Inbound'} | ${message.subject || 'No subject'} | ${formatDateKey(message.date) || 'Unknown date'}`)
+          .join('\n') || 'No recent interactions.';
+        const inboxSignal = options?.inboxEmail ? joinContextBlocks(
+          `Latest inbox subject: ${options.inboxEmail.subject || 'No subject'}`,
+          options.inboxEmail.aiSummary ? `Inbox insight: ${options.inboxEmail.aiSummary}` : '',
+          options.inboxEmail.body ? `Inbox body: ${options.inboxEmail.body}` : ''
+        ) : 'No fresh inbox signal.';
+
+        prompt = `Act as an elite account manager and revenue operator. Draft a customer check-in email that protects retention while opening expansion or referral motion.
+Return exactly in this format:
+SUBJECT: ...
+FOLLOW-UP DATE: ...
+BODY:
+...
+
+Contact:
+Name: ${customerContact.name}
+Company: ${customerContact.company || 'Unknown'}
+Title: ${customerContact.jobTitle || 'Unknown'}
+Stage: ${customerContact.stage}
+Value: ${customerContact.estimatedValue || 0}
+Priority: ${customerContact.priorityScore || 50}
+Pain Points: ${customerContact.painPoints || 'Not captured'}
+Current Next Step: ${customerContact.nextStep || 'Not defined'}
+
+Relationship Summary:
+${customerContact.timelineSummary || customerContact.aiSummary || 'No stored summary.'}
+
+Recent Timeline:
+${threadSummary}
+
+Fresh Signal:
+${inboxSignal}
+
+Make the email warm, concise, and commercially aware. Reinforce delivered value, ask one smart check-in question, and open the door to the next meeting, expansion, or referral. No emojis.`;
+
+        const result = await callGeminiAPI(prompt);
+        const draft = parseStructuredOutreachDraft(result);
+        if (!draft.body) {
+          throw new Error('Failed to parse the customer check-in draft.');
+        }
+
+        const followUpDate = draft.followUpDate || customerContact.nextFollowUpAt || formatDateKey(new Date(Date.now() + (14 * 24 * 60 * 60 * 1000)));
+        let nextBody = draft.body;
+        if (config.signature && !nextBody.includes(config.signature.substring(0, 10))) {
+          nextBody = `${nextBody}\n\n${config.signature}`;
+        }
+
+        setComposerState({
+          ...createComposerResetState({ defaultTone: config.defaultTone, defaultLength: config.defaultLength }),
+          to: customerContact.email,
+          hubspotId: customerContact.hubspotId || null,
+          recipientName: customerContact.name,
+          companyName: customerContact.company,
+          jobTitle: customerContact.jobTitle || '',
+          threadHistory: buildHistoryStringFromMessages(threadMessages),
+          aiContext: `[AI Customer Check-In: ${customerContact.name}]\n\n${result}`,
+          subject: draft.subject || `Quick customer check-in for ${customerContact.company || customerContact.name}`,
+          body: nextBody
+        });
+        setSelectedInboxEmail(options?.inboxEmail || null);
+        setSelectedContact(null);
+        setActiveTab('outreach');
+        setSelectedCalendarDate(followUpDate);
+        setActiveCalendarMonth(formatMonthKey(followUpDate));
+
+        const hasActiveCustomerTask = normalizedTasks.some((task) => (
+          task.status !== 'completed'
+          && normalizeEmail(task.contactEmail || '') === customerContact.email
+          && task.source === 'ai-customer-check-in'
+        ));
+        if (!hasActiveCustomerTask) {
+          appendTaskLocally(createEmptyTask({
+            id: `customer-check-in-${Date.now()}`,
+            title: `Customer check-in with ${customerContact.name}`,
+            type: 'follow-up',
+            status: 'pending',
+            priority: Math.max(customerContact.priorityScore || 76, 76),
+            dueDate: followUpDate,
+            scheduledDate: followUpDate,
+            contact: customerContact.name,
+            contactEmail: customerContact.email,
+            company: customerContact.company,
+            owner: customerContact.owner,
+            rationale: customerContact.timelineSummary || customerContact.aiSummary || customerContact.nextStep || '',
+            notes: 'AI-generated customer check-in draft is loaded in Outreach.',
+            source: 'ai-customer-check-in'
+          }));
+        }
+
+        const savedContact = await saveContactRecord({
+          ...customerContact,
+          nextFollowUpAt: followUpDate,
+          nextStep: 'Confirm outcomes, uncover expansion or referral signals, and lock the next checkpoint.',
+          lastAiReviewedAt: new Date().toISOString()
+        });
+        setCrmWorkspaceInsight(`[AI Customer Check-In: ${customerContact.name}]\n\n${result}`);
+        if (selectedContact && normalizeEmail(selectedContact.email) === savedContact.email) {
+          openDossier(savedContact);
+        }
+        showNotification(`Customer check-in draft loaded for ${customerContact.name}.`);
         setLoading(false);
         return;
       }
@@ -4160,16 +4433,17 @@ Be concise, practical, and specific. No emojis.`;
         
         const result = await callGeminiAPI(prompt);
         const parsedSteps = parseSequenceSteps(result);
+        const generatedStepCount = parsedSteps.length || sequenceStepCount;
         setComposerState(prev => ({
           ...prev,
           body: result,
-          subject: '3-Step Sequence Generated',
+          subject: `${generatedStepCount}-Step Sequence Generated`,
           sequenceSteps: parsedSteps
         }));
         showNotification(
           parsedSteps.length > 0
-            ? '3-Step Sequence generated. Use the step loader buttons to copy one email at a time.'
-            : '3-Step Sequence generated successfully'
+            ? `${generatedStepCount}-step sequence generated. Use the step loader buttons to copy one email at a time.`
+            : `${sequenceStepCount}-step sequence generated successfully`
         );
       } else if (actionType === 'replyFromInbox') {
         const inboxEmail = options?.inboxEmail;
@@ -8081,6 +8355,20 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <div className="mt-1 font-bold text-black dark:text-white">{selectedContact.priorityScore || 50}</div>
                     </div>
                   </div>
+                  {selectedContactActionPlan && (
+                    <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
+                      <h4 className="text-xs font-bold text-zinc-500 dark:text-zinc-400 mb-1">Next Best Action</h4>
+                      <p className="text-sm font-bold text-black dark:text-white">{selectedContactActionPlan.primaryAction.label}</p>
+                      <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">{selectedContactActionPlan.primaryAction.detail}</p>
+                      <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        {selectedContactActionPlan.actionReasons.slice(0, 4).map((reason) => (
+                          <span key={`selected-contact-reason-${reason}`} className="rounded-full border border-zinc-200 bg-white px-2 py-1 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                            {reason}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {selectedContact.nextStep && (
                     <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
                       <h4 className="text-xs font-bold text-zinc-500 dark:text-zinc-400 mb-1">Next Step</h4>
@@ -8138,6 +8426,14 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      >
                        <Phone className="w-4 h-4 mr-2" /> Log Call
                      </button>
+                     {selectedContactActionPlan && (
+                       <button
+                         onClick={() => runContactPrimaryAction(selectedContact, selectedContactAttention)}
+                         className="w-full flex items-center justify-center bg-white dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-100 dark:hover:bg-zinc-700 transition"
+                       >
+                         <Target className="w-4 h-4 mr-2" /> {selectedContactActionPlan.primaryAction.label}
+                       </button>
+                     )}
                    </div>
                 </div>
 
@@ -8173,6 +8469,24 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      >
                        <Sparkles className="w-4 h-4 mr-2" /> Build AI Action Plan
                      </button>
+                     {selectedContactAttention?.isStale && selectedContact.stage !== 'Proposal' && selectedContact.stage !== 'Customer' && (
+                       <button
+                         onClick={() => handleAIAction('reactivationDraft', { contact: selectedContact })}
+                         disabled={loading}
+                         className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition disabled:opacity-50"
+                       >
+                         <RotateCcw className="w-4 h-4 mr-2" /> Reactivation Draft
+                       </button>
+                     )}
+                     {selectedContact.stage === 'Customer' && (
+                       <button
+                         onClick={() => handleAIAction('customerCheckIn', { contact: selectedContact })}
+                         disabled={loading}
+                         className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition disabled:opacity-50"
+                       >
+                         <Mail className="w-4 h-4 mr-2" /> Customer Check-In Draft
+                       </button>
+                     )}
                      {selectedContact.stage === 'Proposal' && (
                        <button
                          onClick={() => handleAIAction('proposalFollowUp', { contact: selectedContact })}

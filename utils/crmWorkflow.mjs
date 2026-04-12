@@ -865,6 +865,22 @@ export const buildContactActionPlan = (contact = {}, attention = null, reference
       label: 'Draft proposal follow-up',
       detail: 'Push the commercial decision toward a clear yes, no, or checkpoint.'
     };
+  } else if (normalizedContact.stage === 'Customer') {
+    primaryAction = {
+      key: resolvedAttention.followUpDue || resolvedAttention.isStale ? 'customer-check-in-draft' : 'customer-check-in-task',
+      label: resolvedAttention.followUpDue || resolvedAttention.isStale ? 'Draft customer check-in' : 'Plan customer check-in',
+      detail: resolvedAttention.followUpDue || resolvedAttention.isStale
+        ? 'Reinforce value, confirm outcomes, and look for renewal, expansion, or referral motion now.'
+        : 'Protect retention early by creating a thoughtful customer check-in before the account cools.'
+    };
+  } else if (normalizedContact.stage === 'Churned' || resolvedAttention.isStale) {
+    primaryAction = {
+      key: 'reactivation-draft',
+      label: normalizedContact.stage === 'Churned' ? 'Draft win-back' : 'Draft reactivation',
+      detail: normalizedContact.stage === 'Churned'
+        ? 'Re-open the relationship with a respectful win-back angle and a low-friction next step.'
+        : 'Restart the conversation with a fresh angle before the opportunity goes fully cold.'
+    };
   } else if (resolvedAttention.followUpDue || resolvedAttention.isStale) {
     primaryAction = {
       key: 'outreach',

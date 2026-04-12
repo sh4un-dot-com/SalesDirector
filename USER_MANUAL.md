@@ -206,6 +206,10 @@ Click any contact to open their full dossier:
 - **AI Intelligence panel:**
   - **Research Contact** — generates a B2B sales intelligence dossier (role analysis, pain points, conversation starters, approach, deal potential)
   - **Follow-Up Strategy** — AI recommends follow-up urgency, timing, channel, opening line, and strategic approach
+- **Stage-aware AI drafts:**
+  - **Proposal Follow-Up Draft** — for proposal-stage deals that need a commercial checkpoint
+  - **Reactivation Draft** — for stale or churned relationships that need a fresh angle
+  - **Customer Check-In Draft** — for customer-stage accounts where retention, expansion, or referrals matter
 - **Attention queue and next best action cards** — the CRM workspace surfaces urgency reasons plus the recommended action for the hottest accounts
 
 ---
