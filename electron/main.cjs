@@ -4,11 +4,356 @@ const fs = require('node:fs/promises');
 const crypto = require('node:crypto');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
+const msal = require('@azure/msal-node');
+const nodemailer = require('nodemailer');
 
 const LOCAL_DB_FILE = 'salesdirector-localdb.enc.json';
 const LOCAL_DB_VERSION = 1;
 const LOCAL_DB_ITERATIONS = 250000;
 const CI_SMOKE_TEST_FLAG = '--ci-smoke-test';
+
+// --- OAuth2 (Microsoft Office 365 / Google) ---
+const OAUTH2_REDIRECT_URI = 'http://localhost';
+const MS_OAUTH2_SCOPES = {
+  imap: [
+    'https://outlook.office365.com/IMAP.AccessAsUser.All',
+    'https://outlook.office365.com/SMTP.Send',
+    'offline_access',
+    'openid',
+    'profile',
+    'email'
+  ],
+  graph: [
+    'Mail.Read',
+    'Mail.ReadWrite',
+    'Mail.Send',
+    'offline_access',
+    'openid',
+    'profile',
+    'email'
+  ]
+};
+const GOOGLE_OAUTH2_SCOPES = [
+  'https://mail.google.com/',
+  'openid',
+  'email',
+  'profile'
+];
+const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+
+// In-memory token cache keyed by `${provider}|${clientId}|${user}`
+const oauth2TokenCache = new Map();
+const msalClientCache = new Map();
+
+const getMsalClient = (clientId, tenantId) => {
+  const key = `${clientId}|${tenantId}`;
+  if (msalClientCache.has(key)) return msalClientCache.get(key);
+  const config = {
+    auth: {
+      clientId,
+      authority: `https://login.microsoftonline.com/${tenantId || 'common'}`,
+    }
+  };
+  const pca = new msal.PublicClientApplication(config);
+  msalClientCache.set(key, pca);
+  return pca;
+};
+
+const buildOAuth2CacheKey = (provider, clientId, user) => `${provider}|${clientId}|${user.toLowerCase()}`;
+
+// --- Microsoft OAuth2 ---
+const acquireMsOAuth2Interactive = async (clientId, tenantId, loginHint, scopeSet = 'imap') => {
+  const pca = getMsalClient(clientId, tenantId);
+  const scopes = MS_OAUTH2_SCOPES[scopeSet] || MS_OAUTH2_SCOPES.imap;
+
+  const authCodeUrl = await pca.getAuthCodeUrl({
+    scopes,
+    redirectUri: OAUTH2_REDIRECT_URI,
+    loginHint: loginHint || undefined
+  });
+
+  return new Promise((resolve, reject) => {
+    const authWindow = new BrowserWindow({
+      width: 520,
+      height: 700,
+      show: true,
+      autoHideMenuBar: true,
+      title: 'Sign in with Microsoft',
+      webPreferences: { nodeIntegration: false, contextIsolation: true }
+    });
+
+    let settled = false;
+    authWindow.loadURL(authCodeUrl);
+
+    const handleRedirect = async (url) => {
+      if (settled) return;
+      try {
+        const parsed = new URL(url);
+        if (!parsed.href.startsWith(OAUTH2_REDIRECT_URI)) return;
+
+        const code = parsed.searchParams.get('code');
+        const error = parsed.searchParams.get('error');
+        const errorDescription = parsed.searchParams.get('error_description');
+
+        if (error) {
+          settled = true;
+          if (!authWindow.isDestroyed()) authWindow.destroy();
+          reject(new Error(`Microsoft login error: ${error} — ${errorDescription || 'No details.'}`));
+          return;
+        }
+        if (!code) return;
+
+        settled = true;
+        const tokenResponse = await pca.acquireTokenByCode({ code, scopes, redirectUri: OAUTH2_REDIRECT_URI });
+        if (!authWindow.isDestroyed()) authWindow.destroy();
+
+        const account = tokenResponse.account;
+        const cacheKey = buildOAuth2CacheKey('microsoft', clientId, account?.username || loginHint || '');
+        oauth2TokenCache.set(cacheKey, {
+          provider: 'microsoft',
+          accessToken: tokenResponse.accessToken,
+          expiresOn: tokenResponse.expiresOn,
+          account,
+          idTokenClaims: tokenResponse.idTokenClaims,
+          scopeSet
+        });
+
+        resolve({
+          ok: true,
+          provider: 'microsoft',
+          accessToken: tokenResponse.accessToken,
+          expiresOn: tokenResponse.expiresOn?.toISOString(),
+          user: account?.username || loginHint || '',
+          name: account?.name || ''
+        });
+      } catch (err) {
+        if (!settled) {
+          settled = true;
+          if (!authWindow.isDestroyed()) authWindow.destroy();
+          reject(err);
+        }
+      }
+    };
+
+    authWindow.webContents.on('will-redirect', (_event, url) => handleRedirect(url));
+    authWindow.webContents.on('will-navigate', (_event, url) => handleRedirect(url));
+    authWindow.on('closed', () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('Microsoft login window was closed before authentication completed.'));
+      }
+    });
+  });
+};
+
+const acquireMsOAuth2Silent = async (clientId, tenantId, user, scopeSet = 'imap') => {
+  const pca = getMsalClient(clientId, tenantId);
+  const cacheKey = buildOAuth2CacheKey('microsoft', clientId, user);
+  const cached = oauth2TokenCache.get(cacheKey);
+  if (!cached?.account) return null;
+
+  if (cached.accessToken && cached.expiresOn && new Date(cached.expiresOn) > new Date(Date.now() + 120000)) {
+    return cached.accessToken;
+  }
+
+  try {
+    const scopes = MS_OAUTH2_SCOPES[scopeSet] || MS_OAUTH2_SCOPES.imap;
+    const result = await pca.acquireTokenSilent({ account: cached.account, scopes });
+    oauth2TokenCache.set(cacheKey, {
+      provider: 'microsoft',
+      accessToken: result.accessToken,
+      expiresOn: result.expiresOn,
+      account: result.account || cached.account,
+      idTokenClaims: result.idTokenClaims || cached.idTokenClaims,
+      scopeSet
+    });
+    return result.accessToken;
+  } catch {
+    return null;
+  }
+};
+
+const getMsAccessToken = async (clientId, tenantId, user, scopeSet = 'imap') => {
+  const silent = await acquireMsOAuth2Silent(clientId, tenantId, user, scopeSet);
+  if (silent) return silent;
+  const interactive = await acquireMsOAuth2Interactive(clientId, tenantId, user, scopeSet);
+  return interactive.accessToken;
+};
+
+// --- Google OAuth2 ---
+const googleTokenStore = new Map(); // keyed by `google|${clientId}|${user}`
+
+const acquireGoogleOAuth2Interactive = async (clientId, clientSecret, loginHint) => {
+  const state = crypto.randomBytes(16).toString('hex');
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: OAUTH2_REDIRECT_URI,
+    response_type: 'code',
+    scope: GOOGLE_OAUTH2_SCOPES.join(' '),
+    access_type: 'offline',
+    prompt: 'consent',
+    state,
+    login_hint: loginHint || ''
+  });
+  const authUrl = `${GOOGLE_AUTH_URL}?${params.toString()}`;
+
+  return new Promise((resolve, reject) => {
+    const authWindow = new BrowserWindow({
+      width: 520,
+      height: 700,
+      show: true,
+      autoHideMenuBar: true,
+      title: 'Sign in with Google',
+      webPreferences: { nodeIntegration: false, contextIsolation: true }
+    });
+
+    let settled = false;
+    authWindow.loadURL(authUrl);
+
+    const handleRedirect = async (url) => {
+      if (settled) return;
+      try {
+        const parsed = new URL(url);
+        if (!parsed.href.startsWith(OAUTH2_REDIRECT_URI)) return;
+
+        const code = parsed.searchParams.get('code');
+        const error = parsed.searchParams.get('error');
+
+        if (error) {
+          settled = true;
+          if (!authWindow.isDestroyed()) authWindow.destroy();
+          reject(new Error(`Google login error: ${error}`));
+          return;
+        }
+        if (!code) return;
+
+        settled = true;
+        if (!authWindow.isDestroyed()) authWindow.destroy();
+
+        // Exchange code for tokens
+        const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            code,
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uri: OAUTH2_REDIRECT_URI,
+            grant_type: 'authorization_code'
+          }).toString()
+        });
+        const tokenData = await tokenRes.json();
+        if (tokenData.error) {
+          reject(new Error(`Google token error: ${tokenData.error} — ${tokenData.error_description || ''}`));
+          return;
+        }
+
+        // Decode ID token to get user email
+        let email = loginHint || '';
+        if (tokenData.id_token) {
+          try {
+            const payload = JSON.parse(Buffer.from(tokenData.id_token.split('.')[1], 'base64').toString());
+            email = payload.email || email;
+          } catch { /* ignore decode errors */ }
+        }
+
+        const expiresOn = new Date(Date.now() + (tokenData.expires_in || 3600) * 1000);
+        const cacheKey = buildOAuth2CacheKey('google', clientId, email);
+        const tokenEntry = {
+          provider: 'google',
+          accessToken: tokenData.access_token,
+          refreshToken: tokenData.refresh_token,
+          expiresOn,
+          user: email,
+          clientId,
+          clientSecret
+        };
+        oauth2TokenCache.set(cacheKey, tokenEntry);
+        googleTokenStore.set(cacheKey, tokenEntry);
+
+        resolve({
+          ok: true,
+          provider: 'google',
+          accessToken: tokenData.access_token,
+          expiresOn: expiresOn.toISOString(),
+          user: email,
+          name: ''
+        });
+      } catch (err) {
+        if (!settled) {
+          settled = true;
+          if (!authWindow.isDestroyed()) authWindow.destroy();
+          reject(err);
+        }
+      }
+    };
+
+    authWindow.webContents.on('will-redirect', (_event, url) => handleRedirect(url));
+    authWindow.webContents.on('will-navigate', (_event, url) => handleRedirect(url));
+    authWindow.on('closed', () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('Google login window was closed before authentication completed.'));
+      }
+    });
+  });
+};
+
+const refreshGoogleToken = async (cacheKey) => {
+  const stored = googleTokenStore.get(cacheKey);
+  if (!stored?.refreshToken) return null;
+
+  try {
+    const res = await fetch(GOOGLE_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        refresh_token: stored.refreshToken,
+        client_id: stored.clientId,
+        client_secret: stored.clientSecret,
+        grant_type: 'refresh_token'
+      }).toString()
+    });
+    const data = await res.json();
+    if (data.error) return null;
+
+    const expiresOn = new Date(Date.now() + (data.expires_in || 3600) * 1000);
+    const updated = { ...stored, accessToken: data.access_token, expiresOn };
+    if (data.refresh_token) updated.refreshToken = data.refresh_token;
+    oauth2TokenCache.set(cacheKey, updated);
+    googleTokenStore.set(cacheKey, updated);
+    return data.access_token;
+  } catch {
+    return null;
+  }
+};
+
+const getGoogleAccessToken = async (clientId, clientSecret, user) => {
+  const cacheKey = buildOAuth2CacheKey('google', clientId, user);
+  const cached = oauth2TokenCache.get(cacheKey);
+
+  if (cached?.accessToken && cached.expiresOn && new Date(cached.expiresOn) > new Date(Date.now() + 120000)) {
+    return cached.accessToken;
+  }
+
+  // Try refresh
+  const refreshed = await refreshGoogleToken(cacheKey);
+  if (refreshed) return refreshed;
+
+  // Fall back to interactive
+  const interactive = await acquireGoogleOAuth2Interactive(clientId, clientSecret, user);
+  return interactive.accessToken;
+};
+
+// --- Unified OAuth2 accessor ---
+const getOAuth2AccessToken = async (provider, clientId, opts = {}) => {
+  if (provider === 'google') {
+    return getGoogleAccessToken(clientId, opts.clientSecret || '', opts.user || '');
+  }
+  // Default: microsoft
+  return getMsAccessToken(clientId, opts.tenantId || '', opts.user || '', opts.scopeSet || 'imap');
+};
 
 const getLocalDbPath = () => path.join(app.getPath('userData'), LOCAL_DB_FILE);
 const isCiSmokeTest = process.argv.includes(CI_SMOKE_TEST_FLAG);
@@ -32,12 +377,159 @@ const parseImapConnection = (payload = {}) => {
   const port = clampInt(payload.port, 1, 65535, secure ? 993 : 143);
   const folder = String(payload.folder || 'INBOX').trim() || 'INBOX';
   const archiveFolder = String(payload.archiveFolder || 'Archive').trim() || 'Archive';
+  const authMethod = String(payload.authMethod || 'basic').trim();
+  const oauth2Provider = String(payload.oauth2Provider || 'microsoft').trim();
+  const oauth2ClientId = String(payload.oauth2ClientId || '').trim();
+  const oauth2TenantId = String(payload.oauth2TenantId || '').trim();
+  const oauth2ClientSecret = String(payload.oauth2ClientSecret || '').trim();
 
   if (!host) throw new Error('IMAP host is required.');
   if (!user) throw new Error('IMAP username is required.');
-  if (!password) throw new Error('IMAP password or app password is required.');
 
-  return { host, user, password, secure, port, folder, archiveFolder };
+  if (authMethod === 'oauth2') {
+    if (!oauth2ClientId) throw new Error('OAuth2 Client ID is required.');
+    if (oauth2Provider === 'google' && !oauth2ClientSecret) throw new Error('Google OAuth2 Client Secret is required.');
+  } else {
+    if (!password) throw new Error('IMAP password or app password is required.');
+  }
+
+  return { host, user, password, secure, port, folder, archiveFolder, authMethod, oauth2Provider, oauth2ClientId, oauth2TenantId, oauth2ClientSecret };
+};
+
+const buildImapClient = async (connParams) => {
+  const { host, port, secure, user, password, authMethod, oauth2Provider, oauth2ClientId, oauth2TenantId, oauth2ClientSecret } = connParams;
+
+  if (authMethod === 'oauth2') {
+    const token = await getOAuth2AccessToken(oauth2Provider, oauth2ClientId, {
+      tenantId: oauth2TenantId,
+      clientSecret: oauth2ClientSecret,
+      user,
+      scopeSet: 'imap'
+    });
+    if (!token) throw new Error('Failed to obtain OAuth2 access token. Please sign in again.');
+
+    return new ImapFlow({
+      host,
+      port,
+      secure,
+      auth: { user, accessToken: token },
+      logger: false
+    });
+  }
+
+  return new ImapFlow({
+    host,
+    port,
+    secure,
+    auth: { user, pass: password },
+    logger: false
+  });
+};
+
+// --- SMTP Sending ---
+const parseSmtpConnection = (payload = {}) => {
+  const host = String(payload.smtpHost || '').trim();
+  const user = String(payload.smtpUser || '').trim();
+  const password = String(payload.smtpPass || '');
+  const portRaw = clampInt(payload.smtpPort, 1, 65535, 587);
+  const secureMode = String(payload.smtpSecure || 'tls').trim();
+  const authMethod = String(payload.smtpAuthMethod || 'basic').trim();
+  const oauth2Provider = String(payload.oauth2Provider || 'microsoft').trim();
+  const oauth2ClientId = String(payload.oauth2ClientId || '').trim();
+  const oauth2TenantId = String(payload.oauth2TenantId || '').trim();
+  const oauth2ClientSecret = String(payload.oauth2ClientSecret || '').trim();
+
+  if (!host) throw new Error('SMTP host is required.');
+  if (!user) throw new Error('SMTP username is required.');
+
+  if (authMethod === 'oauth2') {
+    if (!oauth2ClientId) throw new Error('OAuth2 Client ID is required for SMTP.');
+    if (oauth2Provider === 'google' && !oauth2ClientSecret) throw new Error('Google OAuth2 Client Secret is required.');
+  } else {
+    if (!password) throw new Error('SMTP password is required.');
+  }
+
+  return { host, user, password, port: portRaw, secureMode, authMethod, oauth2Provider, oauth2ClientId, oauth2TenantId, oauth2ClientSecret };
+};
+
+const buildSmtpTransport = async (connParams) => {
+  const { host, port, secureMode, user, password, authMethod, oauth2Provider, oauth2ClientId, oauth2TenantId, oauth2ClientSecret } = connParams;
+  const useSsl = secureMode === 'ssl';
+  const useStartTls = secureMode === 'tls';
+
+  const transportConfig = {
+    host,
+    port,
+    secure: useSsl,
+    requireTLS: useStartTls,
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 30000
+  };
+
+  if (authMethod === 'oauth2') {
+    const token = await getOAuth2AccessToken(oauth2Provider, oauth2ClientId, {
+      tenantId: oauth2TenantId,
+      clientSecret: oauth2ClientSecret,
+      user,
+      scopeSet: 'imap' // Microsoft uses same token for SMTP.Send
+    });
+    if (!token) throw new Error('Failed to obtain OAuth2 access token for SMTP.');
+    transportConfig.auth = { type: 'OAuth2', user, accessToken: token };
+  } else {
+    transportConfig.auth = { user, pass: password };
+  }
+
+  return nodemailer.createTransport(transportConfig);
+};
+
+// --- Microsoft Graph API ---
+const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+
+const graphFetch = async (accessToken, endpoint, options = {}) => {
+  const url = endpoint.startsWith('http') ? endpoint : `${GRAPH_BASE}${endpoint}`;
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Graph API ${res.status}: ${body.slice(0, 500)}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+};
+
+const normalizeGraphEmail = (msg) => {
+  const from = msg.from?.emailAddress || {};
+  const fromEmail = String(from.address || '').trim().toLowerCase();
+  const fromName = String(from.name || fromEmail || 'Unknown Sender').trim();
+  const dateIso = msg.receivedDateTime || new Date().toISOString();
+
+  return {
+    id: `graph-${msg.id}`,
+    source: 'graph',
+    sourceId: msg.id,
+    uid: null,
+    graphId: msg.id,
+    messageId: String(msg.internetMessageId || '').trim(),
+    fromName,
+    fromEmail,
+    company: formatCompanyFromEmail(fromEmail),
+    subject: String(msg.subject || 'No subject').trim(),
+    body: sanitizeBodyPreview(msg.bodyPreview || msg.body?.content || ''),
+    dateRaw: dateIso,
+    date: new Date(dateIso).toLocaleDateString(),
+    isRead: Boolean(msg.isRead),
+    needsResponse: !msg.isRead && !msg.isDraft,
+    isArchived: false,
+    aiScore: null,
+    aiSummary: ''
+  };
 };
 
 const formatCompanyFromEmail = (email = '') => {
@@ -190,25 +682,13 @@ const registerLocalDbIpcHandlers = () => {
   });
 
   ipcMain.handle('imap:syncInbox', async (_event, payload = {}) => {
-    const {
-      host,
-      user,
-      password,
-      secure,
-      port,
-      folder
-    } = parseImapConnection(payload);
+    const connParams = parseImapConnection(payload);
+    const { folder } = connParams;
     const lookbackDays = clampInt(payload.lookbackDays, 1, 365, 14);
     const limit = clampInt(payload.limit, 1, 200, 50);
     const unreadOnly = Boolean(payload.unreadOnly);
 
-    const client = new ImapFlow({
-      host,
-      port,
-      secure,
-      auth: { user, pass: password },
-      logger: false
-    });
+    const client = await buildImapClient(connParams);
 
     let mailboxLock;
     try {
@@ -284,15 +764,8 @@ const registerLocalDbIpcHandlers = () => {
   });
 
   ipcMain.handle('imap:updateMessageState', async (_event, payload = {}) => {
-    const {
-      host,
-      user,
-      password,
-      secure,
-      port,
-      folder,
-      archiveFolder
-    } = parseImapConnection(payload);
+    const connParams = parseImapConnection(payload);
+    const { folder, archiveFolder } = connParams;
 
     const action = String(payload.action || '').trim();
     const uid = clampInt(payload.uid, 1, Number.MAX_SAFE_INTEGER, 0);
@@ -303,13 +776,7 @@ const registerLocalDbIpcHandlers = () => {
     const value = Boolean(payload.value);
     const currentFolder = String(payload.currentFolder || folder).trim() || folder;
 
-    const client = new ImapFlow({
-      host,
-      port,
-      secure,
-      auth: { user, pass: password },
-      logger: false
-    });
+    const client = await buildImapClient(connParams);
 
     let lock;
     try {
@@ -350,6 +817,239 @@ const registerLocalDbIpcHandlers = () => {
       }
       await client.logout().catch(() => {});
     }
+  });
+
+  // --- OAuth2 IPC handlers ---
+  ipcMain.handle('imap:oauth2Login', async (_event, payload = {}) => {
+    const provider = String(payload.provider || 'microsoft').trim();
+    const clientId = String(payload.clientId || '').trim();
+    const tenantId = String(payload.tenantId || '').trim();
+    const clientSecret = String(payload.clientSecret || '').trim();
+    const loginHint = String(payload.loginHint || '').trim();
+    const scopeSet = String(payload.scopeSet || 'imap').trim();
+
+    if (!clientId) throw new Error('OAuth2 Client ID (Application ID) is required.');
+
+    if (provider === 'google') {
+      if (!clientSecret) throw new Error('Google OAuth2 Client Secret is required.');
+      return acquireGoogleOAuth2Interactive(clientId, clientSecret, loginHint);
+    }
+    return acquireMsOAuth2Interactive(clientId, tenantId, loginHint, scopeSet);
+  });
+
+  ipcMain.handle('imap:oauth2Status', async (_event, payload = {}) => {
+    const provider = String(payload.provider || 'microsoft').trim();
+    const clientId = String(payload.clientId || '').trim();
+    const user = String(payload.user || '').trim();
+
+    if (!clientId || !user) return { authenticated: false };
+
+    const cacheKey = buildOAuth2CacheKey(provider, clientId, user);
+    const cached = oauth2TokenCache.get(cacheKey);
+
+    if (!cached?.accessToken) return { authenticated: false };
+
+    const expired = cached.expiresOn && new Date(cached.expiresOn) <= new Date();
+    return {
+      authenticated: true,
+      provider,
+      user: cached.user || cached.account?.username || user,
+      name: cached.account?.name || '',
+      expired: Boolean(expired),
+      expiresOn: cached.expiresOn ? new Date(cached.expiresOn).toISOString() : null
+    };
+  });
+
+  ipcMain.handle('imap:oauth2Logout', async (_event, payload = {}) => {
+    const provider = String(payload.provider || 'microsoft').trim();
+    const clientId = String(payload.clientId || '').trim();
+    const user = String(payload.user || '').trim();
+
+    if (clientId && user) {
+      const cacheKey = buildOAuth2CacheKey(provider, clientId, user);
+      oauth2TokenCache.delete(cacheKey);
+      googleTokenStore.delete(cacheKey);
+    }
+    return { ok: true };
+  });
+
+  // --- Connection Test handlers ---
+  ipcMain.handle('imap:testConnection', async (_event, payload = {}) => {
+    const connParams = parseImapConnection(payload);
+    const client = await buildImapClient(connParams);
+    try {
+      await client.connect();
+      const mailbox = await client.status(connParams.folder, { messages: true, unseen: true });
+      return {
+        ok: true,
+        folder: connParams.folder,
+        totalMessages: mailbox?.messages ?? null,
+        unseenMessages: mailbox?.unseen ?? null
+      };
+    } finally {
+      await client.logout().catch(() => {});
+    }
+  });
+
+  ipcMain.handle('smtp:testConnection', async (_event, payload = {}) => {
+    const connParams = parseSmtpConnection(payload);
+    const transport = await buildSmtpTransport(connParams);
+    try {
+      await transport.verify();
+      return { ok: true };
+    } finally {
+      transport.close();
+    }
+  });
+
+  // --- SMTP Sending ---
+  ipcMain.handle('smtp:sendEmail', async (_event, payload = {}) => {
+    const connParams = parseSmtpConnection(payload);
+    const to = String(payload.to || '').trim();
+    const subject = String(payload.subject || '').trim();
+    const text = String(payload.text || '');
+    const html = String(payload.html || '');
+    const from = String(payload.from || connParams.user).trim();
+    const replyTo = String(payload.replyTo || '').trim() || undefined;
+    const bcc = String(payload.bcc || '').trim() || undefined;
+    const inReplyTo = String(payload.inReplyTo || '').trim() || undefined;
+    const references = String(payload.references || '').trim() || undefined;
+
+    if (!to) throw new Error('Recipient email (to) is required.');
+    if (!subject && !text && !html) throw new Error('Email must have a subject or body.');
+
+    const transport = await buildSmtpTransport(connParams);
+    try {
+      const info = await transport.sendMail({
+        from,
+        to,
+        subject,
+        text: text || undefined,
+        html: html || undefined,
+        replyTo,
+        bcc,
+        inReplyTo,
+        references
+      });
+      return {
+        ok: true,
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected
+      };
+    } finally {
+      transport.close();
+    }
+  });
+
+  // --- Microsoft Graph API handlers ---
+  ipcMain.handle('graph:syncInbox', async (_event, payload = {}) => {
+    const clientId = String(payload.oauth2ClientId || '').trim();
+    const tenantId = String(payload.oauth2TenantId || '').trim();
+    const user = String(payload.user || '').trim();
+    const lookbackDays = clampInt(payload.lookbackDays, 1, 365, 14);
+    const limit = clampInt(payload.limit, 1, 200, 50);
+    const unreadOnly = Boolean(payload.unreadOnly);
+
+    if (!clientId) throw new Error('OAuth2 Client ID is required for Graph API.');
+    if (!user) throw new Error('User email is required for Graph API.');
+
+    const token = await getOAuth2AccessToken('microsoft', clientId, { tenantId, user, scopeSet: 'graph' });
+    if (!token) throw new Error('Failed to obtain Graph API access token.');
+
+    const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+    let filter = `receivedDateTime ge ${since}`;
+    if (unreadOnly) filter += ' and isRead eq false';
+
+    const result = await graphFetch(token, `/me/messages?$filter=${encodeURIComponent(filter)}&$top=${limit}&$orderby=receivedDateTime desc&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,isDraft,internetMessageId,flag,body`);
+
+    const emails = (result?.value || []).map(normalizeGraphEmail);
+    return {
+      ok: true,
+      folder: 'Inbox',
+      lookbackDays,
+      limit,
+      matchedCount: result?.['@odata.count'] || emails.length,
+      fetchedCount: emails.length,
+      fetchedAt: new Date().toISOString(),
+      emails
+    };
+  });
+
+  ipcMain.handle('graph:sendEmail', async (_event, payload = {}) => {
+    const clientId = String(payload.oauth2ClientId || '').trim();
+    const tenantId = String(payload.oauth2TenantId || '').trim();
+    const user = String(payload.user || '').trim();
+    const to = String(payload.to || '').trim();
+    const subject = String(payload.subject || '').trim();
+    const body = String(payload.body || '');
+    const contentType = String(payload.contentType || 'Text').trim();
+    const replyTo = String(payload.replyTo || '').trim();
+    const bcc = String(payload.bcc || '').trim();
+
+    if (!clientId) throw new Error('OAuth2 Client ID is required.');
+    if (!to) throw new Error('Recipient email is required.');
+
+    const token = await getOAuth2AccessToken('microsoft', clientId, { tenantId, user, scopeSet: 'graph' });
+    if (!token) throw new Error('Failed to obtain Graph API access token.');
+
+    const message = {
+      subject,
+      body: { contentType, content: body },
+      toRecipients: to.split(',').map((addr) => ({ emailAddress: { address: addr.trim() } }))
+    };
+    if (replyTo) message.replyTo = [{ emailAddress: { address: replyTo } }];
+    if (bcc) message.bccRecipients = bcc.split(',').map((addr) => ({ emailAddress: { address: addr.trim() } }));
+
+    await graphFetch(token, '/me/sendMail', {
+      method: 'POST',
+      body: JSON.stringify({ message, saveToSentItems: true })
+    });
+
+    return { ok: true };
+  });
+
+  ipcMain.handle('graph:updateMessageState', async (_event, payload = {}) => {
+    const clientId = String(payload.oauth2ClientId || '').trim();
+    const tenantId = String(payload.oauth2TenantId || '').trim();
+    const user = String(payload.user || '').trim();
+    const graphId = String(payload.graphId || '').trim();
+    const action = String(payload.action || '').trim();
+    const value = Boolean(payload.value);
+
+    if (!graphId) throw new Error('Graph message ID is required.');
+
+    const token = await getOAuth2AccessToken('microsoft', clientId, { tenantId, user, scopeSet: 'graph' });
+    if (!token) throw new Error('Failed to obtain Graph API access token.');
+
+    if (action === 'setRead') {
+      await graphFetch(token, `/me/messages/${graphId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isRead: value })
+      });
+      return { ok: true, action, graphId, value };
+    }
+
+    if (action === 'setFlagged') {
+      await graphFetch(token, `/me/messages/${graphId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ flag: { flagStatus: value ? 'flagged' : 'notFlagged' } })
+      });
+      return { ok: true, action, graphId, value };
+    }
+
+    if (action === 'setArchived') {
+      const archiveFolder = String(payload.archiveFolder || 'archive').trim();
+      const destFolder = value ? archiveFolder : 'inbox';
+      // Resolve well-known folder name or use folder ID
+      await graphFetch(token, `/me/messages/${graphId}/move`, {
+        method: 'POST',
+        body: JSON.stringify({ destinationId: destFolder })
+      });
+      return { ok: true, action, graphId, value };
+    }
+
+    throw new Error(`Unsupported Graph message action: ${action}`);
   });
 };
 

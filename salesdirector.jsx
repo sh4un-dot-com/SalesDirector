@@ -370,6 +370,7 @@ const PERSISTED_CONFIG_KEYS = [
   'smtpSecure',
   'smtpUser',
   'smtpPass',
+  'smtpAuthMethod',
   'imapHost',
   'imapPort',
   'imapUser',
@@ -383,6 +384,13 @@ const PERSISTED_CONFIG_KEYS = [
   'imapSyncOnStartup',
   'imapAutoSyncMinutes',
   'imapSyncFlagChanges',
+  'imapAuthMethod',
+  'imapOAuth2ClientId',
+  'imapOAuth2TenantId',
+  'oauth2Provider',
+  'googleOAuth2ClientId',
+  'googleOAuth2ClientSecret',
+  'useGraphApi',
   'maxDailyEmails',
   'sendDelay',
   'activeHoursStart',
@@ -478,6 +486,7 @@ export default function App() {
     smtpSecure: 'tls',
     smtpUser: '',
     smtpPass: '',
+    smtpAuthMethod: 'basic',
     imapHost: '',
     imapPort: '993',
     imapUser: '',
@@ -491,6 +500,13 @@ export default function App() {
     imapSyncOnStartup: 'true',
     imapAutoSyncMinutes: '10',
     imapSyncFlagChanges: 'true',
+    imapAuthMethod: 'basic',
+    imapOAuth2ClientId: '',
+    imapOAuth2TenantId: '',
+    oauth2Provider: 'microsoft',
+    googleOAuth2ClientId: '',
+    googleOAuth2ClientSecret: '',
+    useGraphApi: 'false',
     maxDailyEmails: '100',
     sendDelay: '30',
     activeHoursStart: '09:00',
@@ -559,6 +575,7 @@ export default function App() {
   const localDbSaveTimerRef = useRef(null);
   const imapSyncInFlightRef = useRef(false);
   const imapStartupSyncTriggeredRef = useRef(false);
+  const [imapOAuth2Status, setImapOAuth2Status] = useState({ authenticated: false, user: '', name: '', expired: false });
 
   const clampOutreachContextWidth = useCallback((requestedWidth) => {
     const workspaceWidth = outreachWorkspaceRef.current?.getBoundingClientRect()?.width || 0;
@@ -2430,6 +2447,8 @@ No emojis.`;
   const getImapActionConfig = () => {
     const user = (config.imapUser || config.smtpUser || '').trim();
     const password = String(config.imapPass || config.smtpPass || '');
+    const provider = config.oauth2Provider || 'microsoft';
+    const isGoogle = provider === 'google';
     return {
       host: config.imapHost,
       port: Number(config.imapPort),
@@ -2437,15 +2456,230 @@ No emojis.`;
       user,
       password,
       folder: config.imapFolder || 'INBOX',
-      archiveFolder: config.imapArchiveFolder || 'Archive'
+      archiveFolder: config.imapArchiveFolder || 'Archive',
+      authMethod: config.imapAuthMethod || 'basic',
+      oauth2Provider: provider,
+      oauth2ClientId: isGoogle ? (config.googleOAuth2ClientId || '') : (config.imapOAuth2ClientId || ''),
+      oauth2TenantId: config.imapOAuth2TenantId || '',
+      oauth2ClientSecret: isGoogle ? (config.googleOAuth2ClientSecret || '') : ''
     };
   };
 
+  const getSmtpSendConfig = () => {
+    const provider = config.oauth2Provider || 'microsoft';
+    const isGoogle = provider === 'google';
+    return {
+      smtpHost: config.smtpHost,
+      smtpPort: Number(config.smtpPort),
+      smtpSecure: config.smtpSecure || 'tls',
+      smtpUser: config.smtpUser || '',
+      smtpPass: config.smtpPass || '',
+      smtpAuthMethod: config.smtpAuthMethod || 'basic',
+      oauth2Provider: provider,
+      oauth2ClientId: isGoogle ? (config.googleOAuth2ClientId || '') : (config.imapOAuth2ClientId || ''),
+      oauth2TenantId: config.imapOAuth2TenantId || '',
+      oauth2ClientSecret: isGoogle ? (config.googleOAuth2ClientSecret || '') : ''
+    };
+  };
+
+  const getOAuth2LoginParams = () => {
+    const provider = config.oauth2Provider || 'microsoft';
+    const isGoogle = provider === 'google';
+    return {
+      provider,
+      clientId: isGoogle ? (config.googleOAuth2ClientId || '').trim() : (config.imapOAuth2ClientId || '').trim(),
+      tenantId: (config.imapOAuth2TenantId || '').trim(),
+      clientSecret: isGoogle ? (config.googleOAuth2ClientSecret || '').trim() : '',
+      loginHint: (config.imapUser || config.smtpUser || '').trim()
+    };
+  };
+
+  const handleOAuth2Login = async () => {
+    const desktopImapApi = getDesktopImapApi();
+    if (!desktopImapApi || typeof desktopImapApi.oauth2Login !== 'function') {
+      showNotification('OAuth2 login requires the desktop app runtime.', 'error');
+      return;
+    }
+    const params = getOAuth2LoginParams();
+    if (!params.clientId) {
+      showNotification(`Enter your ${params.provider === 'google' ? 'Google' : 'Azure'} Client ID before signing in.`, 'error');
+      return;
+    }
+    if (params.provider === 'google' && !params.clientSecret) {
+      showNotification('Enter your Google Client Secret before signing in.', 'error');
+      return;
+    }
+    try {
+      setLoading(true);
+      const scopeSet = String(config.useGraphApi) === 'true' ? 'graph' : 'imap';
+      const result = await desktopImapApi.oauth2Login({ ...params, scopeSet });
+      if (result?.ok) {
+        setImapOAuth2Status({ authenticated: true, user: result.user || params.loginHint, name: result.name || '', expired: false });
+        const label = params.provider === 'google' ? 'Google' : 'Microsoft';
+        showNotification(`Signed in to ${label} as ${result.user || result.name || 'user'}.`);
+      }
+    } catch (error) {
+      showNotification(error?.message || 'Sign-in failed.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOAuth2Logout = async () => {
+    const desktopImapApi = getDesktopImapApi();
+    if (!desktopImapApi || typeof desktopImapApi.oauth2Logout !== 'function') return;
+    const params = getOAuth2LoginParams();
+    try {
+      await desktopImapApi.oauth2Logout({ provider: params.provider, clientId: params.clientId, user: params.loginHint });
+      setImapOAuth2Status({ authenticated: false, user: '', name: '', expired: false });
+      showNotification('Account disconnected.');
+    } catch (error) {
+      showNotification(error?.message || 'Sign-out failed.', 'error');
+    }
+  };
+
+  const refreshOAuth2Status = async () => {
+    const desktopImapApi = getDesktopImapApi();
+    if (!desktopImapApi || typeof desktopImapApi.oauth2Status !== 'function') return;
+    const params = getOAuth2LoginParams();
+    if (!params.clientId || !params.loginHint) {
+      setImapOAuth2Status({ authenticated: false, user: '', name: '', expired: false });
+      return;
+    }
+    try {
+      const status = await desktopImapApi.oauth2Status({ provider: params.provider, clientId: params.clientId, user: params.loginHint });
+      setImapOAuth2Status({
+        authenticated: Boolean(status?.authenticated),
+        user: status?.user || '',
+        name: status?.name || '',
+        expired: Boolean(status?.expired)
+      });
+    } catch {
+      setImapOAuth2Status({ authenticated: false, user: '', name: '', expired: false });
+    }
+  };
+
+  useEffect(() => {
+    if (config.imapAuthMethod !== 'oauth2') {
+      setImapOAuth2Status({ authenticated: false, user: '', name: '', expired: false });
+      return;
+    }
+    void refreshOAuth2Status();
+  }, [
+    config.imapAuthMethod,
+    config.imapUser,
+    config.smtpUser,
+    config.imapOAuth2ClientId,
+    config.imapOAuth2TenantId,
+    config.oauth2Provider,
+    config.googleOAuth2ClientId,
+    config.googleOAuth2ClientSecret
+  ]);
+
+  const [connectionTestResult, setConnectionTestResult] = useState({ imap: null, smtp: null });
+
+  const handleTestImapConnection = async () => {
+    const desktopImapApi = getDesktopImapApi();
+    if (!desktopImapApi || typeof desktopImapApi.testConnection !== 'function') {
+      showNotification('Connection test requires the desktop app runtime.', 'error');
+      return;
+    }
+    const imapConfig = getImapActionConfig();
+    if (!imapConfig.host || !imapConfig.user) {
+      showNotification('Set IMAP host and username first.', 'error');
+      return;
+    }
+    try {
+      setLoading(true);
+      setConnectionTestResult((prev) => ({ ...prev, imap: null }));
+      const result = await desktopImapApi.testConnection({
+        ...imapConfig,
+        password: imapConfig.authMethod === 'oauth2' ? '' : imapConfig.password
+      });
+      setConnectionTestResult((prev) => ({
+        ...prev,
+        imap: {
+          ...result,
+          message: `IMAP OK: ${result.totalMessages ?? '?'} messages, ${result.unseenMessages ?? '?'} unseen in ${result.folder}.`
+        }
+      }));
+      showNotification(`IMAP connected — ${result.totalMessages ?? '?'} messages, ${result.unseenMessages ?? '?'} unseen in ${result.folder}.`);
+    } catch (error) {
+      setConnectionTestResult((prev) => ({
+        ...prev,
+        imap: {
+          ok: false,
+          error: error?.message || 'IMAP test failed.',
+          message: error?.message || 'IMAP test failed.'
+        }
+      }));
+      showNotification(error?.message || 'IMAP connection test failed.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTestSmtpConnection = async () => {
+    const smtpApi = window.salesDirectorDesktop?.smtp;
+    if (!smtpApi || typeof smtpApi.testConnection !== 'function') {
+      showNotification('SMTP test requires the desktop app runtime.', 'error');
+      return;
+    }
+    const smtpConfig = getSmtpSendConfig();
+    if (!smtpConfig.smtpHost || !smtpConfig.smtpUser) {
+      showNotification('Set SMTP host and username first.', 'error');
+      return;
+    }
+    try {
+      setLoading(true);
+      setConnectionTestResult((prev) => ({ ...prev, smtp: null }));
+      const result = await smtpApi.testConnection(smtpConfig);
+      setConnectionTestResult((prev) => ({
+        ...prev,
+        smtp: {
+          ...result,
+          message: 'SMTP OK: connection verified successfully.'
+        }
+      }));
+      showNotification('SMTP connection verified successfully.');
+    } catch (error) {
+      setConnectionTestResult((prev) => ({
+        ...prev,
+        smtp: {
+          ok: false,
+          error: error?.message || 'SMTP test failed.',
+          message: error?.message || 'SMTP test failed.'
+        }
+      }));
+      showNotification(error?.message || 'SMTP connection test failed.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const shouldSyncImapFlags = (email) => {
-    return email?.source === 'imap' && String(config.imapSyncFlagChanges) === 'true';
+    return (email?.source === 'imap' || email?.source === 'graph') && String(config.imapSyncFlagChanges) === 'true';
   };
 
   const syncImapMessageState = async (email, action, value) => {
+    // Graph API path
+    if (email?.source === 'graph' && email?.graphId) {
+      const graphApi = window.salesDirectorDesktop?.graph;
+      if (!graphApi || typeof graphApi.updateMessageState !== 'function') {
+        throw new Error('Graph message sync requires the desktop app runtime.');
+      }
+      return graphApi.updateMessageState({
+        oauth2ClientId: config.imapOAuth2ClientId,
+        oauth2TenantId: config.imapOAuth2TenantId,
+        user: (config.imapUser || config.smtpUser || '').trim(),
+        graphId: email.graphId,
+        archiveFolder: config.imapArchiveFolder || 'Archive',
+        action,
+        value
+      });
+    }
+
+    // IMAP path
     const desktopImapApi = getDesktopImapApi();
     if (!desktopImapApi || typeof desktopImapApi.updateMessageState !== 'function') {
       throw new Error('Mailbox action sync requires the desktop app runtime.');
@@ -2457,12 +2691,17 @@ No emojis.`;
     }
 
     const imapConfig = getImapActionConfig();
-    if (!imapConfig.host || !imapConfig.port || !imapConfig.user || !imapConfig.password) {
-      throw new Error('Set IMAP host, port, username, and password before syncing mailbox actions.');
+    const isOAuth2 = imapConfig.authMethod === 'oauth2';
+    if (!imapConfig.host || !imapConfig.port || !imapConfig.user) {
+      throw new Error('Set IMAP host, port, and username before syncing mailbox actions.');
+    }
+    if (!isOAuth2 && !imapConfig.password) {
+      throw new Error('Set IMAP password or switch to OAuth2 authentication before syncing mailbox actions.');
     }
 
     return desktopImapApi.updateMessageState({
       ...imapConfig,
+      password: isOAuth2 ? '' : imapConfig.password,
       action,
       value,
       uid,
@@ -2860,6 +3099,64 @@ No emojis.`;
       return;
     }
 
+    const useGraph =
+      String(config.useGraphApi) === 'true' &&
+      (config.oauth2Provider || 'microsoft') === 'microsoft';
+    const imapUser = (config.imapUser || config.smtpUser || '').trim();
+    const isOAuth2 = config.imapAuthMethod === 'oauth2';
+    const provider = config.oauth2Provider || 'microsoft';
+    const isGoogle = provider === 'google';
+    const oauthClientId = isGoogle ? (config.googleOAuth2ClientId || '').trim() : (config.imapOAuth2ClientId || '').trim();
+
+    // --- Graph API path ---
+    if (useGraph) {
+      const graphApi = window.salesDirectorDesktop?.graph;
+      if (!graphApi || typeof graphApi.syncInbox !== 'function') {
+        if (!silent) showNotification('Graph API sync requires the desktop app runtime.', 'error');
+        return;
+      }
+      if (!oauthClientId || !imapUser) {
+        if (!silent) showNotification('Set Client ID and user email for Graph API sync.', 'error');
+        return;
+      }
+
+      imapSyncInFlightRef.current = true;
+      setInboxSyncBusy((prev) => ({ ...prev, imap: true }));
+      if (!background) setLoading(true);
+      try {
+        const result = await graphApi.syncInbox({
+          oauth2ClientId: oauthClientId,
+          oauth2TenantId: config.imapOAuth2TenantId || '',
+          user: imapUser,
+          lookbackDays: Number(config.imapLookbackDays || 14),
+          limit: Number(config.imapSyncLimit || 50),
+          unreadOnly: String(config.imapUnreadOnly) === 'true'
+        });
+
+        const syncedEmails = normalizeSyncedInboxEmails(result?.emails || [], 'graph');
+        setInboxEmails((prev) => mergeInboxEmails(prev, syncedEmails));
+        setInboxSyncStatus((prev) => ({
+          ...prev,
+          imap: { lastRunAt: new Date().toISOString(), fetchedCount: syncedEmails.length, error: '' }
+        }));
+        if (!silent) {
+          showNotification(syncedEmails.length > 0
+            ? `Graph sync complete. Imported ${syncedEmails.length} email${syncedEmails.length === 1 ? '' : 's'}.`
+            : 'Graph sync complete. No recent emails found.');
+        }
+      } catch (error) {
+        const message = error?.message || 'Graph API sync failed.';
+        setInboxSyncStatus((prev) => ({ ...prev, imap: { lastRunAt: new Date().toISOString(), fetchedCount: 0, error: message } }));
+        if (!silent) showNotification(message, 'error');
+      } finally {
+        imapSyncInFlightRef.current = false;
+        setInboxSyncBusy((prev) => ({ ...prev, imap: false }));
+        if (!background) setLoading(false);
+      }
+      return;
+    }
+
+    // --- IMAP path ---
     const desktopImapApi = getDesktopImapApi();
     if (!desktopImapApi) {
       if (!silent) {
@@ -2868,12 +3165,25 @@ No emojis.`;
       return;
     }
 
-    const imapUser = (config.imapUser || config.smtpUser || '').trim();
     const imapPassword = String(config.imapPass || config.smtpPass || '');
 
-    if (!config.imapHost || !config.imapPort || !imapUser || !imapPassword) {
+    if (!config.imapHost || !config.imapPort || !imapUser) {
       if (!silent) {
-        showNotification('Set IMAP host, port, username, and password before syncing mailbox.', 'error');
+        showNotification('Set IMAP host, port, and username before syncing mailbox.', 'error');
+      }
+      return;
+    }
+
+    if (!isOAuth2 && !imapPassword) {
+      if (!silent) {
+        showNotification('Set IMAP password or switch to OAuth2 authentication.', 'error');
+      }
+      return;
+    }
+
+    if (isOAuth2 && !oauthClientId) {
+      if (!silent) {
+        showNotification('Set OAuth2 Client ID for authentication.', 'error');
       }
       return;
     }
@@ -2889,7 +3199,12 @@ No emojis.`;
         port: Number(config.imapPort),
         secure: true,
         user: imapUser,
-        password: imapPassword,
+        password: isOAuth2 ? '' : imapPassword,
+        authMethod: config.imapAuthMethod || 'basic',
+        oauth2Provider: provider,
+        oauth2ClientId: oauthClientId,
+        oauth2TenantId: config.imapOAuth2TenantId || '',
+        oauth2ClientSecret: isGoogle ? (config.googleOAuth2ClientSecret || '') : '',
         folder: config.imapFolder || 'INBOX',
         lookbackDays: Number(config.imapLookbackDays || 14),
         limit: Number(config.imapSyncLimit || 50),
@@ -3070,7 +3385,14 @@ No emojis.`;
     config.imapFolder,
     config.imapLookbackDays,
     config.imapSyncLimit,
-    config.imapUnreadOnly
+    config.imapUnreadOnly,
+    config.imapAuthMethod,
+    config.imapOAuth2ClientId,
+    config.imapOAuth2TenantId,
+    config.oauth2Provider,
+    config.googleOAuth2ClientId,
+    config.googleOAuth2ClientSecret,
+    config.useGraphApi
   ]);
 
   // --- Call Logging ---
@@ -4850,8 +5172,55 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
     setLoading(true);
     try {
-      const notificationParts = ['Email sent and thread saved.'];
+      const notificationParts = [];
       const partialIssues = [];
+
+      // --- Attempt actual email delivery via SMTP or Graph ---
+      const useGraph =
+        String(config.useGraphApi) === 'true' &&
+        (config.oauth2Provider || 'microsoft') === 'microsoft';
+      const desktopApi = window.salesDirectorDesktop;
+
+      if (useGraph && desktopApi?.graph?.sendEmail) {
+        try {
+          await desktopApi.graph.sendEmail({
+            oauth2ClientId: config.imapOAuth2ClientId || '',
+            oauth2TenantId: config.imapOAuth2TenantId || '',
+            user: (config.imapUser || config.smtpUser || '').trim(),
+            to: recipientEmail,
+            subject: composerState.subject || '',
+            body: composerState.body || '',
+            contentType: 'Text',
+            replyTo: config.replyTo || '',
+            bcc: config.autoBcc || ''
+          });
+          notificationParts.push('Email sent via Graph API and thread saved.');
+        } catch (graphErr) {
+          partialIssues.push(`Graph send failed: ${graphErr?.message || 'Unknown error'}`);
+        }
+      } else if (desktopApi?.smtp?.sendEmail && config.smtpHost && config.smtpUser) {
+        const smtpConfig = getSmtpSendConfig();
+        const bodyWithSig = config.signature ? `${composerState.body}\n\n${config.signature}` : composerState.body;
+        try {
+          await desktopApi.smtp.sendEmail({
+            ...smtpConfig,
+            from: config.senderName ? `"${config.senderName}" <${config.smtpUser}>` : config.smtpUser,
+            to: recipientEmail,
+            subject: composerState.subject || '',
+            text: bodyWithSig,
+            replyTo: config.replyTo || '',
+            bcc: config.autoBcc || '',
+            inReplyTo: selectedInboxEmail?.messageId || '',
+            references: selectedInboxEmail?.messageId || ''
+          });
+          notificationParts.push('Email sent via SMTP and thread saved.');
+        } catch (smtpErr) {
+          partialIssues.push(`SMTP send failed: ${smtpErr?.message || 'Unknown error'}`);
+        }
+      } else {
+        notificationParts.push('Email saved to thread (SMTP not configured — not delivered).');
+      }
+
       const inboxThreadMessages = selectedInboxMatchesRecipient && selectedInboxEmail
         ? [buildThreadMessageFromInboxEmail(selectedInboxEmail)]
         : [];
@@ -7069,6 +7438,10 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   );
 
   const renderSettings = () => {
+    const graphModeEnabled =
+      String(config.useGraphApi) === 'true' &&
+      (config.oauth2Provider || 'microsoft') === 'microsoft';
+
     const diagnostics = [
       {
         label: 'Auth Session',
@@ -7103,17 +7476,45 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       },
       {
         label: 'SMTP Readiness',
-        ok: Boolean(config.smtpHost && config.smtpUser && config.smtpPass),
-        detail: config.smtpHost && config.smtpUser && config.smtpPass ? 'Host/user/password present' : 'Missing required fields'
+        ok: Boolean(config.smtpHost && config.smtpUser && (
+          (config.smtpAuthMethod || 'basic') === 'oauth2'
+            ? (config.imapAuthMethod === 'oauth2' && (
+                (config.oauth2Provider || 'microsoft') === 'google' ? config.googleOAuth2ClientId : config.imapOAuth2ClientId
+              ))
+            : (config.smtpPass)
+        )) || (graphModeEnabled && config.imapOAuth2ClientId),
+        detail: graphModeEnabled
+          ? (config.imapOAuth2ClientId ? 'Sending via Graph API' : 'Graph API — Client ID missing')
+          : (config.smtpHost && config.smtpUser
+            ? ((config.smtpAuthMethod || 'basic') === 'oauth2'
+              ? 'SMTP sending via OAuth2 token'
+              : (config.smtpPass ? 'Host/user/password present' : 'Password missing'))
+            : 'Missing required fields')
       },
       {
         label: 'IMAP Readiness',
-        ok: Boolean(config.imapHost && config.imapPort && (config.imapUser || config.smtpUser) && (config.imapPass || config.smtpPass)),
-        detail: config.imapHost && config.imapPort
-          ? ((config.imapUser || config.smtpUser) && (config.imapPass || config.smtpPass)
-            ? 'Host, port, and credentials present'
-            : 'Host/port set, credentials missing')
-          : 'Missing host or port'
+        ok: Boolean(
+          graphModeEnabled
+            ? (config.imapOAuth2ClientId && (config.imapUser || config.smtpUser))
+            : (config.imapHost && config.imapPort && (config.imapUser || config.smtpUser) && (
+              config.imapAuthMethod === 'oauth2'
+                ? ((config.oauth2Provider || 'microsoft') === 'google' ? config.googleOAuth2ClientId : config.imapOAuth2ClientId)
+                : (config.imapPass || config.smtpPass)
+            ))
+        ),
+        detail: graphModeEnabled
+          ? (config.imapOAuth2ClientId
+            ? (imapOAuth2Status.authenticated ? `Graph API — signed in as ${imapOAuth2Status.user}` : 'Graph API configured — sign in required')
+            : 'Graph API — Client ID missing')
+          : (config.imapHost && config.imapPort
+            ? ((config.imapUser || config.smtpUser)
+              ? (config.imapAuthMethod === 'oauth2'
+                ? (((config.oauth2Provider || 'microsoft') === 'google' ? config.googleOAuth2ClientId : config.imapOAuth2ClientId)
+                  ? (imapOAuth2Status.authenticated ? `OAuth2 — signed in as ${imapOAuth2Status.user}` : 'OAuth2 configured — sign in required')
+                  : 'OAuth2 selected — Client ID missing')
+                : ((config.imapPass || config.smtpPass) ? 'Host, port, and credentials present' : 'Host/port set, password missing'))
+              : 'Host/port set, username missing')
+            : 'Missing host or port')
       }
     ];
 
@@ -7398,12 +7799,51 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   {configErrors.smtpUser && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.smtpUser}</p>}
                 </div>
                 <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">SMTP Auth Method</label>
+                  <select
+                    name="smtpAuthMethod" value={config.smtpAuthMethod || 'basic'} onChange={handleConfigChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  >
+                    <option value="basic">Password / App Password</option>
+                    <option value="oauth2">OAuth2 (uses IMAP OAuth2 token)</option>
+                  </select>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">OAuth2 reuses the IMAP OAuth2 credentials above for SMTP sending.</p>
+                </div>
+              </div>
+              {(config.smtpAuthMethod || 'basic') === 'basic' && (
+                <div className="mt-2">
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">SMTP Password</label>
                   <input 
                     type="password" name="smtpPass" value={config.smtpPass} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" placeholder="••••••••"
                   />
                 </div>
+              )}
+
+              {/* Connection Test Buttons */}
+              <div className="flex items-center gap-3 mt-2">
+                <button
+                  type="button" onClick={handleTestSmtpConnection}
+                  className="px-3 py-1.5 text-xs font-bold text-zinc-700 dark:text-zinc-300 border border-zinc-300 dark:border-zinc-700 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  Test SMTP Connection
+                </button>
+                <button
+                  type="button" onClick={handleTestImapConnection}
+                  className="px-3 py-1.5 text-xs font-bold text-zinc-700 dark:text-zinc-300 border border-zinc-300 dark:border-zinc-700 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  Test IMAP Connection
+                </button>
+                {connectionTestResult.smtp && (
+                  <span className={`text-xs font-medium ${connectionTestResult.smtp.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                    {connectionTestResult.smtp.message}
+                  </span>
+                )}
+                {connectionTestResult.imap && (
+                  <span className={`text-xs font-medium ${connectionTestResult.imap.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                    {connectionTestResult.imap.message}
+                  </span>
+                )}
               </div>
 
               <div className="pt-4 border-t border-zinc-100 dark:border-zinc-800">
@@ -7436,15 +7876,142 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">If blank, SMTP username is used as fallback.</p>
                   </div>
                   <div>
-                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">IMAP Password / App Password</label>
-                    <input
-                      type="password" name="imapPass" value={config.imapPass} onChange={handleConfigChange}
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Authentication Method</label>
+                    <select
+                      name="imapAuthMethod" value={config.imapAuthMethod} onChange={handleConfigChange}
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
-                      placeholder="••••••••"
-                    />
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Persisted in local storage for faster reconnects.</p>
+                    >
+                      <option value="basic">Password / App Password (Basic Auth)</option>
+                      <option value="oauth2">OAuth2 (Microsoft or Google)</option>
+                    </select>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                      {config.imapAuthMethod === 'oauth2'
+                        ? 'Required for Office 365 / Gmail tenants that have disabled Basic Auth.'
+                        : 'Works with most IMAP servers. Office 365 / Gmail may require OAuth2.'}
+                    </p>
                   </div>
                 </div>
+
+                {config.imapAuthMethod === 'oauth2' ? (
+                  <div className="mt-3 p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
+                    <div className="mb-3">
+                      <label className="block text-sm font-bold text-blue-800 dark:text-blue-300 mb-1">OAuth2 Provider</label>
+                      <select
+                        name="oauth2Provider" value={config.oauth2Provider || 'microsoft'} onChange={handleConfigChange}
+                        className="w-full border border-blue-200 dark:border-blue-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                      >
+                        <option value="microsoft">Microsoft (Office 365 / Outlook)</option>
+                        <option value="google">Google (Gmail / Google Workspace)</option>
+                      </select>
+                    </div>
+
+                    {(config.oauth2Provider || 'microsoft') === 'microsoft' ? (
+                      <>
+                        <p className="text-xs text-blue-700 dark:text-blue-400 mb-3">
+                          Register an app in <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer" className="underline font-semibold">Microsoft Entra (Azure AD)</a> with redirect URI <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">http://localhost</code> and IMAP.AccessAsUser.All + SMTP.Send permissions.
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-xs font-bold text-blue-800 dark:text-blue-300 mb-1">Application (Client) ID</label>
+                            <input
+                              type="text" name="imapOAuth2ClientId" value={config.imapOAuth2ClientId} onChange={handleConfigChange}
+                              className="w-full border border-blue-200 dark:border-blue-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-blue-800 dark:text-blue-300 mb-1">Directory (Tenant) ID</label>
+                            <input
+                              type="text" name="imapOAuth2TenantId" value={config.imapOAuth2TenantId} onChange={handleConfigChange}
+                              className="w-full border border-blue-200 dark:border-blue-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx or common"
+                            />
+                            <p className="text-xs text-blue-600 dark:text-blue-500 mt-1">Use &quot;common&quot; for multi-tenant or personal accounts.</p>
+                          </div>
+                        </div>
+                        <div className="mt-3">
+                          <label className="block text-xs font-bold text-blue-800 dark:text-blue-300 mb-1">Use Microsoft Graph API (instead of IMAP/SMTP)</label>
+                          <select
+                            name="useGraphApi" value={config.useGraphApi || 'false'} onChange={handleConfigChange}
+                            className="w-full border border-blue-200 dark:border-blue-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                          >
+                            <option value="false">No — use IMAP/SMTP with OAuth2 tokens</option>
+                            <option value="true">Yes — use Graph API for inbox sync and sending</option>
+                          </select>
+                          <p className="text-xs text-blue-600 dark:text-blue-500 mt-1">Graph API bypasses IMAP/SMTP entirely. Requires Mail.ReadWrite and Mail.Send permissions on your app.</p>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-xs text-blue-700 dark:text-blue-400 mb-3">
+                          Create OAuth credentials in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="underline font-semibold">Google Cloud Console</a>. Add <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">http://localhost</code> as an authorized redirect URI and enable the Gmail API.
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-xs font-bold text-blue-800 dark:text-blue-300 mb-1">Client ID</label>
+                            <input
+                              type="text" name="googleOAuth2ClientId" value={config.googleOAuth2ClientId} onChange={handleConfigChange}
+                              className="w-full border border-blue-200 dark:border-blue-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                              placeholder="xxxx.apps.googleusercontent.com"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-blue-800 dark:text-blue-300 mb-1">Client Secret</label>
+                            <input
+                              type="password" name="googleOAuth2ClientSecret" value={config.googleOAuth2ClientSecret} onChange={handleConfigChange}
+                              className="w-full border border-blue-200 dark:border-blue-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                              placeholder="GOCSPX-xxxxxxxxxx"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    <div className="flex items-center gap-3 mt-3">
+                      {imapOAuth2Status.authenticated ? (
+                        <>
+                          <span className="inline-flex items-center gap-1.5 text-sm text-emerald-700 dark:text-emerald-400 font-medium">
+                            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+                            Signed in{imapOAuth2Status.user ? ` as ${imapOAuth2Status.user}` : ''}
+                            {imapOAuth2Status.expired && <span className="text-amber-600 dark:text-amber-400 ml-1">(token expired — will refresh on next sync)</span>}
+                          </span>
+                          <button
+                            type="button" onClick={handleOAuth2Logout}
+                            className="px-3 py-1.5 text-xs font-bold text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-700 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950 transition-colors"
+                          >
+                            Disconnect
+                          </button>
+                          <button
+                            type="button" onClick={handleOAuth2Login}
+                            className="px-3 py-1.5 text-xs font-bold text-blue-700 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors"
+                          >
+                            Re-authenticate
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button" onClick={handleOAuth2Login}
+                          className="px-4 py-2 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors flex items-center gap-2"
+                        >
+                          <Mail className="w-4 h-4" />
+                          Sign in with {(config.oauth2Provider || 'microsoft') === 'google' ? 'Google' : 'Microsoft'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-2 mt-3">
+                    <div>
+                      <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">IMAP Password / App Password</label>
+                      <input
+                        type="password" name="imapPass" value={config.imapPass} onChange={handleConfigChange}
+                        className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                        placeholder="••••••••"
+                      />
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Persisted in local storage for faster reconnects. For Office 365, use an App Password or switch to OAuth2.</p>
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-4 gap-2 mt-3">
                   <div className="col-span-2">
