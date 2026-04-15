@@ -5625,7 +5625,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   };
 
   const renderTasks = () => (
-    <div className="p-4 md:p-8 max-w-7xl mx-auto w-full h-full flex flex-col">
+    <div className="p-4 md:p-8 max-w-7xl mx-auto w-full flex flex-col">
       <div className="flex justify-between items-center mb-6 gap-4 flex-wrap">
         <div>
           <h2 className="text-2xl font-bold text-black dark:text-white transition-colors">Smart Agenda & Tasks</h2>
@@ -5773,9 +5773,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
       </div>
       
-      <div className="flex flex-col xl:flex-row flex-1 gap-4 min-h-0">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)] gap-4 items-start">
         {/* Left: Task List */}
-        <div className="w-full xl:flex-1 flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors min-h-[300px]">
+        <div className="min-w-0 flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors min-h-[300px]">
           <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 space-y-3">
             <form onSubmit={addTask} className="w-full flex relative">
               <input 
@@ -5967,7 +5967,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
 
         {/* Right: AI Schedule Timeline & Calendar */}
-        <div className="hidden xl:flex w-[340px] flex-shrink-0 flex-col gap-4 transition-colors min-h-0">
+        <div className="hidden xl:flex min-w-0 flex-col gap-4 transition-colors">
 
           <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm p-5 flex-shrink-0">
             <div className="flex items-start justify-between gap-3 mb-4">
@@ -6071,7 +6071,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           </div>
 
           {/* Daily Schedule */}
-          <div className="flex-1 flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden min-h-0">
+          <div className="flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden min-h-[240px]">
             <div className="p-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-between items-center">
               <h3 className="font-bold text-black dark:text-white flex items-center text-sm">
                  <Clock className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" /> {selectedCalendarDateLabel}
@@ -6085,7 +6085,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 )}
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-3">
+            <div className="p-3">
               <div className="relative border-l-2 border-zinc-200 dark:border-zinc-800 ml-2 space-y-5">
                 {selectedDayOpenTasks.map((task, idx) => {
                   const scheduleState = getTaskScheduleState(task);
