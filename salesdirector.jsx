@@ -1193,6 +1193,10 @@ export default function App() {
     (contact, attention = null) => buildContactActionPlan(contact, attention, new Date()),
     []
   );
+  const isReviewDossierAction = useCallback(
+    (actionPlan) => actionPlan?.primaryAction?.key === 'review-dossier',
+    []
+  );
   const editingContactInsights = useMemo(() => {
     if (!editingContact) return null;
 
@@ -6606,6 +6610,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full lg:w-auto">
             {crmOverview.attentionContacts.map((item) => {
               const actionPlan = getContactActionPlan(item.contact, item);
+              const showOpenDossierButton = !isReviewDossierAction(actionPlan);
 
               return (
               <div
@@ -6634,12 +6639,14 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   >
                     {actionPlan.primaryAction.label}
                   </button>
-                  <button
-                    onClick={() => openDossier(item.contact)}
-                    className="text-xs bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-3 py-2 rounded font-bold hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
-                  >
-                    Open Dossier
-                  </button>
+                  {showOpenDossierButton && (
+                    <button
+                      onClick={() => openDossier(item.contact)}
+                      className="text-xs bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-3 py-2 rounded font-bold hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
+                    >
+                      Open Dossier
+                    </button>
+                  )}
                 </div>
               </div>
             )})}
@@ -6689,6 +6696,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             {filteredContacts.map(contact => {
               const attention = contactAttentionMap.get(contact.email || contact.id);
               const actionPlan = getContactActionPlan(contact, attention);
+              const showViewButton = !isReviewDossierAction(actionPlan);
               return (
               <tr key={contact.id || contact.email} className="border-b border-zinc-100 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors cursor-pointer" onClick={() => openDossier(contact)}>
                 <td className="p-4 text-sm text-zinc-600 dark:text-zinc-300">
@@ -6758,9 +6766,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                           <Send className="w-4 h-4" />
                         </button>
                       )}
-                      <button onClick={(e) => { e.stopPropagation(); openDossier(contact); }} className="text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white font-bold text-sm flex items-center ml-2 transition-colors">
-                        View <ChevronRight className="w-4 h-4 ml-0.5" />
-                      </button>
+                      {showViewButton && (
+                        <button onClick={(e) => { e.stopPropagation(); openDossier(contact); }} className="text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white font-bold text-sm flex items-center ml-2 transition-colors">
+                          View <ChevronRight className="w-4 h-4 ml-0.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </td>
@@ -8993,7 +9003,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      >
                        <Phone className="w-4 h-4 mr-2" /> Log Call
                      </button>
-                     {selectedContactActionPlan && (
+                     {selectedContactActionPlan && !isReviewDossierAction(selectedContactActionPlan) && (
                        <button
                          onClick={() => runContactPrimaryAction(selectedContact, selectedContactAttention)}
                          className="w-full flex items-center justify-center bg-white dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-100 dark:hover:bg-zinc-700 transition"
