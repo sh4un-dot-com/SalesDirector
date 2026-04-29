@@ -3661,6 +3661,8 @@ No emojis.`;
     const proxyBaseUrl = getApiBaseUrl();
     const usingProxy = Boolean(proxyBaseUrl);
     const apiKey = (config.geminiKey || '').trim();
+    const maxAttempts = 2;
+    const requestTimeoutMs = 20000;
 
     if (!usingProxy && !apiKey) {
       throw new Error("Add your Gemini API key in Settings before using AI features.");
@@ -3693,11 +3695,17 @@ No emojis.`;
       headers['x-proxy-secret'] = config.proxySecret;
     }
 
-    let retries = 5;
+    let attemptsRemaining = maxAttempts;
     let delay = 1000;
 
     try {
-      while (retries > 0) {
+      while (attemptsRemaining > 0) {
+        let didTimeout = false;
+        const timeoutId = setTimeout(() => {
+          didTimeout = true;
+          controller.abort();
+        }, requestTimeoutMs);
+
         try {
           const response = await fetch(url, {
             method: 'POST',
@@ -3705,23 +3713,64 @@ No emojis.`;
             body: JSON.stringify(usingProxy ? proxyPayload : payload),
             signal: controller.signal
           });
+          clearTimeout(timeoutId);
           
           if (!response.ok) {
-            const failed = await response.json().catch(() => ({}));
-            throw new Error(failed.error || 'Network response was not ok');
+            const rawBody = await response.text().catch(() => '');
+            let failed = {};
+            if (rawBody) {
+              try {
+                failed = JSON.parse(rawBody);
+              } catch {
+                failed = { error: rawBody.trim() };
+              }
+            }
+
+            const providerError = new Error(
+              failed.error
+                || failed.message
+                || rawBody.trim()
+                || `AI request failed (${response.status}).`
+            );
+            providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+            throw providerError;
           }
           
           const data = await response.json();
-          return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
+          const text = (data.candidates || [])
+            .flatMap(candidate => candidate?.content?.parts || [])
+            .map(part => part?.text || '')
+            .join('\n')
+            .trim();
+
+          if (!text) {
+            const blockReason = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '';
+            throw new Error(blockReason
+              ? `Gemini returned no usable text (${blockReason}).`
+              : 'Gemini returned no usable text.');
+          }
+
+          return text;
         } catch (error) {
+          clearTimeout(timeoutId);
+
           if (error?.name === 'AbortError') {
+            if (didTimeout) {
+              throw new Error('AI request timed out after 20 seconds. Check your Gemini key, proxy, or network and try again.');
+            }
             throw new Error("AI request cancelled.");
           }
 
-          retries--;
-          if (retries === 0) {
-            throw new Error("Failed to generate AI response after multiple attempts.");
+          attemptsRemaining--;
+          const shouldRetry = attemptsRemaining > 0 && (Boolean(error?.retryable) || error instanceof TypeError);
+
+          if (!shouldRetry) {
+            if (error instanceof Error) {
+              throw error;
+            }
+            throw new Error("Failed to generate AI response.");
           }
+
           await new Promise(res => setTimeout(res, delay));
           delay *= 2;
         }
@@ -7954,11 +8003,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     ) : (
                       <>
                         <p className="text-xs text-blue-700 dark:text-blue-400 mb-3">
-                          Create OAuth credentials in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="underline font-semibold">Google Cloud Console</a>. Add <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">http://localhost</code> as an authorized redirect URI and enable the Gmail API.
+                          Create a <span className="font-semibold">Desktop app</span> OAuth client in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="underline font-semibold">Google Cloud Console</a>, enable the Gmail API, then enter the client ID and secret below. SalesDirector opens your default browser and completes sign-in through a temporary localhost callback automatically.
                         </p>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label className="block text-xs font-bold text-blue-800 dark:text-blue-300 mb-1">Client ID</label>
+                            <label className="block text-xs font-bold text-blue-800 dark:text-blue-300 mb-1">Desktop Client ID</label>
                             <input
                               type="text" name="googleOAuth2ClientId" value={config.googleOAuth2ClientId} onChange={handleConfigChange}
                               className="w-full border border-blue-200 dark:border-blue-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
@@ -7966,7 +8015,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                             />
                           </div>
                           <div>
-                            <label className="block text-xs font-bold text-blue-800 dark:text-blue-300 mb-1">Client Secret</label>
+                            <label className="block text-xs font-bold text-blue-800 dark:text-blue-300 mb-1">Desktop Client Secret</label>
                             <input
                               type="password" name="googleOAuth2ClientSecret" value={config.googleOAuth2ClientSecret} onChange={handleConfigChange}
                               className="w-full border border-blue-200 dark:border-blue-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"

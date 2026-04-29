@@ -1,4 +1,5 @@
 const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const http = require('node:http');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const crypto = require('node:crypto');
@@ -184,11 +185,118 @@ const getMsAccessToken = async (clientId, tenantId, user, scopeSet = 'imap') => 
 // --- Google OAuth2 ---
 const googleTokenStore = new Map(); // keyed by `google|${clientId}|${user}`
 
+const createGoogleLoopbackServer = async (expectedState) => {
+  let settled = false;
+  let closed = false;
+  let resolveCallback;
+  let rejectCallback;
+
+  const callbackPromise = new Promise((resolve, reject) => {
+    resolveCallback = resolve;
+    rejectCallback = reject;
+  });
+
+  const settle = (fn, value) => {
+    if (settled) return;
+    settled = true;
+    fn(value);
+  };
+
+  const server = http.createServer((req, res) => {
+    try {
+      const requestUrl = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
+      if (requestUrl.pathname !== '/oauth2/google/callback') {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Not found');
+        return;
+      }
+
+      const code = requestUrl.searchParams.get('code');
+      const error = requestUrl.searchParams.get('error');
+      const errorDescription = requestUrl.searchParams.get('error_description');
+      const returnedState = requestUrl.searchParams.get('state');
+
+      if (error) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<html><body><h2>Google sign-in failed</h2><p>You can close this tab and return to SalesDirector.</p></body></html>');
+        settle(rejectCallback, new Error(`Google login error: ${errorDescription || error}`));
+        return;
+      }
+
+      if (!code) {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<html><body><h2>Missing authorization code</h2><p>You can close this tab and try signing in again from SalesDirector.</p></body></html>');
+        settle(rejectCallback, new Error('Google login did not return an authorization code.'));
+        return;
+      }
+
+      if (!returnedState || returnedState !== expectedState) {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<html><body><h2>State mismatch</h2><p>You can close this tab and try signing in again from SalesDirector.</p></body></html>');
+        settle(rejectCallback, new Error('Google login state mismatch. Please try signing in again.'));
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<html><body><h2>Google sign-in complete</h2><p>You can close this tab and return to SalesDirector.</p></body></html>');
+      settle(resolveCallback, { code });
+    } catch (error) {
+      settle(rejectCallback, error);
+    }
+  });
+
+  const closeServer = () => new Promise((resolve) => {
+    if (closed) {
+      resolve();
+      return;
+    }
+    closed = true;
+    server.close(() => resolve());
+  });
+
+  await new Promise((resolve, reject) => {
+    const handleError = (error) => {
+      server.off('listening', handleListening);
+      reject(error);
+    };
+    const handleListening = () => {
+      server.off('error', handleError);
+      resolve();
+    };
+    server.once('error', handleError);
+    server.once('listening', handleListening);
+    server.listen(0, '127.0.0.1');
+  });
+
+  const address = server.address();
+  if (!address || typeof address !== 'object') {
+    await closeServer();
+    throw new Error('Failed to reserve a local callback port for Google sign-in.');
+  }
+
+  const timeoutId = setTimeout(() => {
+    settle(rejectCallback, new Error('Google sign-in timed out. Finish the browser sign-in and try again.'));
+  }, 180000);
+
+  return {
+    redirectUri: `http://127.0.0.1:${address.port}/oauth2/google/callback`,
+    waitForCallback: async () => {
+      try {
+        return await callbackPromise;
+      } finally {
+        clearTimeout(timeoutId);
+        await closeServer();
+      }
+    }
+  };
+};
+
 const acquireGoogleOAuth2Interactive = async (clientId, clientSecret, loginHint) => {
   const state = crypto.randomBytes(16).toString('hex');
+  const loopback = await createGoogleLoopbackServer(state);
   const params = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: OAUTH2_REDIRECT_URI,
+    redirect_uri: loopback.redirectUri,
     response_type: 'code',
     scope: GOOGLE_OAUTH2_SCOPES.join(' '),
     access_type: 'offline',
@@ -198,106 +306,57 @@ const acquireGoogleOAuth2Interactive = async (clientId, clientSecret, loginHint)
   });
   const authUrl = `${GOOGLE_AUTH_URL}?${params.toString()}`;
 
-  return new Promise((resolve, reject) => {
-    const authWindow = new BrowserWindow({
-      width: 520,
-      height: 700,
-      show: true,
-      autoHideMenuBar: true,
-      title: 'Sign in with Google',
-      webPreferences: { nodeIntegration: false, contextIsolation: true }
-    });
+  await shell.openExternal(authUrl);
 
-    let settled = false;
-    authWindow.loadURL(authUrl);
-
-    const handleRedirect = async (url) => {
-      if (settled) return;
-      try {
-        const parsed = new URL(url);
-        if (!parsed.href.startsWith(OAUTH2_REDIRECT_URI)) return;
-
-        const code = parsed.searchParams.get('code');
-        const error = parsed.searchParams.get('error');
-
-        if (error) {
-          settled = true;
-          if (!authWindow.isDestroyed()) authWindow.destroy();
-          reject(new Error(`Google login error: ${error}`));
-          return;
-        }
-        if (!code) return;
-
-        settled = true;
-        if (!authWindow.isDestroyed()) authWindow.destroy();
-
-        // Exchange code for tokens
-        const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            code,
-            client_id: clientId,
-            client_secret: clientSecret,
-            redirect_uri: OAUTH2_REDIRECT_URI,
-            grant_type: 'authorization_code'
-          }).toString()
-        });
-        const tokenData = await tokenRes.json();
-        if (tokenData.error) {
-          reject(new Error(`Google token error: ${tokenData.error} — ${tokenData.error_description || ''}`));
-          return;
-        }
-
-        // Decode ID token to get user email
-        let email = loginHint || '';
-        if (tokenData.id_token) {
-          try {
-            const payload = JSON.parse(Buffer.from(tokenData.id_token.split('.')[1], 'base64').toString());
-            email = payload.email || email;
-          } catch { /* ignore decode errors */ }
-        }
-
-        const expiresOn = new Date(Date.now() + (tokenData.expires_in || 3600) * 1000);
-        const cacheKey = buildOAuth2CacheKey('google', clientId, email);
-        const tokenEntry = {
-          provider: 'google',
-          accessToken: tokenData.access_token,
-          refreshToken: tokenData.refresh_token,
-          expiresOn,
-          user: email,
-          clientId,
-          clientSecret
-        };
-        oauth2TokenCache.set(cacheKey, tokenEntry);
-        googleTokenStore.set(cacheKey, tokenEntry);
-
-        resolve({
-          ok: true,
-          provider: 'google',
-          accessToken: tokenData.access_token,
-          expiresOn: expiresOn.toISOString(),
-          user: email,
-          name: ''
-        });
-      } catch (err) {
-        if (!settled) {
-          settled = true;
-          if (!authWindow.isDestroyed()) authWindow.destroy();
-          reject(err);
-        }
-      }
-    };
-
-    authWindow.webContents.on('will-redirect', (_event, url) => handleRedirect(url));
-    authWindow.webContents.on('will-navigate', (_event, url) => handleRedirect(url));
-    authWindow.on('closed', () => {
-      if (!settled) {
-        settled = true;
-        reject(new Error('Google login window was closed before authentication completed.'));
-      }
-    });
+  const { code } = await loopback.waitForCallback();
+  const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: loopback.redirectUri,
+      grant_type: 'authorization_code'
+    }).toString()
   });
+  const tokenData = await tokenRes.json();
+  if (tokenData.error) {
+    throw new Error(`Google token error: ${tokenData.error} — ${tokenData.error_description || ''}`);
+  }
+
+  let email = loginHint || '';
+  if (tokenData.id_token) {
+    try {
+      const payload = JSON.parse(Buffer.from(tokenData.id_token.split('.')[1], 'base64').toString());
+      email = payload.email || email;
+    } catch {
+      // Ignore ID token decode errors and keep the login hint as the cache key fallback.
+    }
+  }
+
+  const expiresOn = new Date(Date.now() + (tokenData.expires_in || 3600) * 1000);
+  const cacheKey = buildOAuth2CacheKey('google', clientId, email);
+  const tokenEntry = {
+    provider: 'google',
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token,
+    expiresOn,
+    user: email,
+    clientId,
+    clientSecret
+  };
+  oauth2TokenCache.set(cacheKey, tokenEntry);
+  googleTokenStore.set(cacheKey, tokenEntry);
+
+  return {
+    ok: true,
+    provider: 'google',
+    accessToken: tokenData.access_token,
+    expiresOn: expiresOn.toISOString(),
+    user: email,
+    name: ''
+  };
 };
 
 const refreshGoogleToken = async (cacheKey) => {
