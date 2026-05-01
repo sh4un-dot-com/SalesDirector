@@ -3,6 +3,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('salesDirectorDesktop', {
   platform: process.platform,
   getAppInfo: () => ipcRenderer.invoke('app:info'),
+  ai: {
+    generateText: (payload = {}) => ipcRenderer.invoke('ai:generateText', payload),
+    cancelRequest: (requestId) => ipcRenderer.send('ai:cancelRequest', requestId)
+  },
   imap: {
     syncInbox: (payload = {}) => ipcRenderer.invoke('imap:syncInbox', payload),
     updateMessageState: (payload = {}) => ipcRenderer.invoke('imap:updateMessageState', payload),

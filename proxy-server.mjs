@@ -10,6 +10,10 @@ const toPositiveInt = (value, fallback) => {
 
 const PORT = toPositiveInt(process.env.PORT, 8787);
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const XAI_API_KEY = process.env.XAI_API_KEY || '';
+const META_API_KEY = process.env.META_API_KEY || '';
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN || '';
 const PROXY_SHARED_SECRET = process.env.PROXY_SHARED_SECRET || '';
 const MAX_BODY_BYTES = toPositiveInt(process.env.MAX_BODY_BYTES, 1024 * 1024);
@@ -32,11 +36,45 @@ const DEFAULT_EMAIL_PROPERTIES = [
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'info').toLowerCase();
 
 const ROUTE_LIMITS = {
+  'POST /api/ai': RATE_LIMIT_GEMINI,
   'POST /api/gemini': RATE_LIMIT_GEMINI,
   'GET /api/hubspot/contacts': RATE_LIMIT_HUBSPOT_CONTACTS,
   'GET /api/hubspot/emails': RATE_LIMIT_HUBSPOT_EMAILS,
   'POST /api/hubspot/emails': RATE_LIMIT_HUBSPOT_EMAILS
 };
+
+const AI_PROVIDER_CONFIG = {
+  gemini: {
+    label: 'Gemini',
+    model: 'gemini-2.5-flash',
+    envVarName: 'GEMINI_API_KEY'
+  },
+  openai: {
+    label: 'OpenAI',
+    model: 'gpt-4.1-mini',
+    envVarName: 'OPENAI_API_KEY'
+  },
+  anthropic: {
+    label: 'Anthropic',
+    model: 'claude-3-5-sonnet-latest',
+    envVarName: 'ANTHROPIC_API_KEY'
+  },
+  xai: {
+    label: 'xAI',
+    model: 'grok-2-latest',
+    envVarName: 'XAI_API_KEY'
+  },
+  meta: {
+    label: 'Meta',
+    model: '',
+    envVarName: 'META_API_KEY'
+  }
+};
+const AI_GENERATION_PROFILE_DEFAULTS = Object.freeze({
+  temperature: 0.7,
+  topP: 0.9,
+  maxOutputTokens: 1200
+});
 
 const rateLimitState = new Map();
 
@@ -205,10 +243,151 @@ const validateEmailPropertiesQuery = (rawValue) => {
   return Array.from(new Set(parts)).join(',');
 };
 
-const validateGeminiBody = (body) => {
+const normalizeAiProvider = (value) => {
+  const provider = String(value || 'gemini').trim().toLowerCase();
+  return AI_PROVIDER_CONFIG[provider] ? provider : 'gemini';
+};
+
+const clampAiSetting = (value, min, max, fallback) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+};
+
+const buildAiGenerationProfile = (input = {}) => ({
+  temperature: clampAiSetting(input.temperature ?? input.aiTemperature, 0, 1.5, AI_GENERATION_PROFILE_DEFAULTS.temperature),
+  topP: clampAiSetting(input.topP ?? input.aiTopP, 0, 1, AI_GENERATION_PROFILE_DEFAULTS.topP),
+  maxOutputTokens: Math.round(clampAiSetting(input.maxOutputTokens ?? input.aiMaxOutputTokens, 256, 4096, AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens))
+});
+
+const buildGeminiGenerationConfig = (profile) => ({
+  temperature: profile.temperature,
+  topP: profile.topP,
+  maxOutputTokens: profile.maxOutputTokens
+});
+
+const buildAnthropicGenerationConfig = (profile) => ({
+  temperature: profile.temperature,
+  top_p: profile.topP,
+  max_tokens: profile.maxOutputTokens
+});
+
+const buildOpenAiCompatibleGenerationConfig = (profile) => ({
+  temperature: profile.temperature,
+  top_p: profile.topP,
+  max_tokens: profile.maxOutputTokens
+});
+
+const getAiProviderApiKey = (provider) => {
+  switch (provider) {
+    case 'openai':
+      return OPENAI_API_KEY;
+    case 'anthropic':
+      return ANTHROPIC_API_KEY;
+    case 'xai':
+      return XAI_API_KEY;
+    case 'meta':
+      return META_API_KEY;
+    case 'gemini':
+    default:
+      return GEMINI_API_KEY;
+  }
+};
+
+const getAiSystemInstructionText = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value?.text === 'string') return value.text.trim();
+  if (Array.isArray(value?.parts)) {
+    return value.parts
+      .map((part) => String(part?.text || '').trim())
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  return '';
+};
+
+const flattenProviderText = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => flattenProviderText(item))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.output_text === 'string') return value.output_text;
+    if (typeof value.content === 'string') return value.content;
+    if (Array.isArray(value.content)) return flattenProviderText(value.content);
+  }
+  return '';
+};
+
+const getProviderErrorMessage = async (response, fallbackMessage) => {
+  const rawBody = await response.text().catch(() => '');
+  if (!rawBody) {
+    return `${fallbackMessage} (${response.status}).`;
+  }
+
+  try {
+    const parsed = JSON.parse(rawBody);
+    const detailMessage = Array.isArray(parsed?.error?.details)
+      ? parsed.error.details.find((detail) => detail?.message)?.message
+      : '';
+    return String(
+      parsed?.error?.message
+      || parsed?.error?.details?.message
+      || parsed?.message
+      || detailMessage
+      || rawBody
+    ).trim() || `${fallbackMessage} (${response.status}).`;
+  } catch {
+    return rawBody.trim() || `${fallbackMessage} (${response.status}).`;
+  }
+};
+
+const validateAiGenerationProfile = (value) => {
+  if (value === undefined) {
+    return buildAiGenerationProfile();
+  }
+
+  if (!isPlainObject(value)) {
+    throw new HttpError(400, 'generationProfile must be a JSON object when provided.');
+  }
+
+  if (value.temperature !== undefined) {
+    const parsed = Number(value.temperature);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1.5) {
+      throw new HttpError(400, 'generationProfile.temperature must be between 0 and 1.5.');
+    }
+  }
+
+  if (value.topP !== undefined) {
+    const parsed = Number(value.topP);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+      throw new HttpError(400, 'generationProfile.topP must be between 0 and 1.');
+    }
+  }
+
+  if (value.maxOutputTokens !== undefined) {
+    const parsed = Number(value.maxOutputTokens);
+    if (!Number.isInteger(parsed) || parsed < 256 || parsed > 4096) {
+      throw new HttpError(400, 'generationProfile.maxOutputTokens must be an integer between 256 and 4096.');
+    }
+  }
+
+  return buildAiGenerationProfile(value);
+};
+
+const validateAiBody = (body) => {
   if (!isPlainObject(body)) {
     throw new HttpError(400, 'Request body must be a JSON object.');
   }
+
+  const provider = normalizeAiProvider(body.provider);
 
   if (typeof body.promptText !== 'string') {
     throw new HttpError(400, 'promptText must be a string.');
@@ -235,7 +414,16 @@ const validateGeminiBody = (body) => {
     });
   }
 
-  return promptText;
+  const generationProfile = validateAiGenerationProfile(body.generationProfile);
+
+  return {
+    provider,
+    promptText,
+    systemInstruction: body.systemInstruction || {
+      parts: [{ text: 'You are an elite Virtual Sales Director. No emojis.' }]
+    },
+    generationProfile
+  };
 };
 
 const validateHubSpotEmailBody = (body) => {
@@ -323,35 +511,115 @@ const hasSecretMismatch = (req) => {
   return incoming !== PROXY_SHARED_SECRET;
 };
 
-const handleGemini = async (req, res) => {
-  if (!GEMINI_API_KEY) {
-    sendJson(res, 500, { error: 'GEMINI_API_KEY is not configured on the proxy.' });
-    return;
+const requestAiText = async ({ provider, promptText, systemInstruction, generationProfile }) => {
+  const providerConfig = AI_PROVIDER_CONFIG[provider] || AI_PROVIDER_CONFIG.gemini;
+  const apiKey = getAiProviderApiKey(provider);
+  const systemText = getAiSystemInstructionText(systemInstruction);
+  const sharedGenerationProfile = buildAiGenerationProfile(generationProfile);
+
+  if (!apiKey) {
+    throw new HttpError(500, `${providerConfig.envVarName} is not configured on the proxy.`);
   }
 
-  const body = await readJsonBody(req);
-  const promptText = validateGeminiBody(body);
+  if (provider === 'meta') {
+    throw new HttpError(400, 'Meta proxy routing is not available yet.');
+  }
 
-  const payload = {
-    contents: [{ parts: [{ text: promptText }] }],
-    systemInstruction: body.systemInstruction || {
-      parts: [{ text: 'You are an elite Virtual Sales Director. No emojis.' }]
+  if (provider === 'gemini') {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${providerConfig.model}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: promptText }] }],
+        systemInstruction,
+        generationConfig: buildGeminiGenerationConfig(sharedGenerationProfile)
+      })
+    });
+
+    if (!response.ok) {
+      throw new HttpError(response.status, await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
     }
-  };
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+    const data = await response.json().catch(() => ({}));
+    const text = flattenProviderText((data?.candidates || []).map((candidate) => candidate?.content?.parts || []));
+    if (!String(text || '').trim()) {
+      const finishReason = String(data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '').trim();
+      throw new HttpError(502, finishReason
+        ? `${providerConfig.label} returned no usable text (${finishReason}).`
+        : `${providerConfig.label} returned no usable text.`);
+    }
+
+    return String(text).trim();
+  }
+
+  if (provider === 'anthropic') {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: providerConfig.model,
+        ...buildAnthropicGenerationConfig(sharedGenerationProfile),
+        system: systemText || undefined,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: promptText }]
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      throw new HttpError(response.status, await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+    }
+
+    const data = await response.json().catch(() => ({}));
+    const text = flattenProviderText(data?.content || []);
+    if (!String(text || '').trim()) {
+      throw new HttpError(502, `${providerConfig.label} returned no usable text.`);
+    }
+
+    return String(text).trim();
+  }
+
+  const response = await fetch(provider === 'xai' ? 'https://api.x.ai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: providerConfig.model,
+      ...buildOpenAiCompatibleGenerationConfig(sharedGenerationProfile),
+      messages: [
+        ...(systemText ? [{ role: 'system', content: systemText }] : []),
+        { role: 'user', content: promptText }
+      ]
+    })
   });
 
-  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    sendJson(res, response.status, { error: data.error?.message || 'Gemini request failed.' });
-    return;
+    throw new HttpError(response.status, await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
   }
 
-  sendJson(res, 200, data);
+  const data = await response.json().catch(() => ({}));
+  const text = flattenProviderText(data?.choices?.[0]?.message?.content);
+  if (!String(text || '').trim()) {
+    throw new HttpError(502, `${providerConfig.label} returned no usable text.`);
+  }
+
+  return String(text).trim();
+};
+
+const handleAi = async (req, res) => {
+  const body = await readJsonBody(req);
+  const { provider, promptText, systemInstruction, generationProfile } = validateAiBody(body);
+  const text = await requestAiText({ provider, promptText, systemInstruction, generationProfile });
+  sendJson(res, 200, { provider, text });
 };
 
 const handleHubSpotContacts = async (req, res, url) => {
@@ -498,8 +766,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (method === 'POST' && requestUrl.pathname === '/api/gemini') {
-      await handleGemini(req, res);
+    if (method === 'POST' && (requestUrl.pathname === '/api/ai' || requestUrl.pathname === '/api/gemini')) {
+      await handleAi(req, res);
       return;
     }
 

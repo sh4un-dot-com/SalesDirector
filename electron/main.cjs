@@ -42,10 +42,38 @@ const GOOGLE_OAUTH2_SCOPES = [
 ];
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const AI_PROVIDER_CONFIG = {
+  gemini: {
+    label: 'Gemini',
+    model: 'gemini-2.5-flash'
+  },
+  openai: {
+    label: 'OpenAI',
+    model: 'gpt-4.1-mini'
+  },
+  anthropic: {
+    label: 'Anthropic',
+    model: 'claude-3-5-sonnet-latest'
+  },
+  xai: {
+    label: 'xAI',
+    model: 'grok-2-latest'
+  },
+  meta: {
+    label: 'Meta',
+    model: ''
+  }
+};
+const AI_GENERATION_PROFILE_DEFAULTS = Object.freeze({
+  temperature: 0.7,
+  topP: 0.9,
+  maxOutputTokens: 1200
+});
 
 // In-memory token cache keyed by `${provider}|${clientId}|${user}`
 const oauth2TokenCache = new Map();
 const msalClientCache = new Map();
+const desktopAiRequestControllers = new Map();
 
 const getMsalClient = (clientId, tenantId) => {
   const key = `${clientId}|${tenantId}`;
@@ -680,6 +708,208 @@ const decryptPayload = (encryptedPayload, passphrase) => {
   return JSON.parse(decrypted.toString('utf8'));
 };
 
+const normalizeAiProvider = (value) => {
+  const provider = String(value || 'gemini').trim().toLowerCase();
+  return AI_PROVIDER_CONFIG[provider] ? provider : 'gemini';
+};
+
+const clampAiSetting = (value, min, max, fallback) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+};
+
+const buildAiGenerationProfile = (input = {}) => ({
+  temperature: clampAiSetting(input.temperature ?? input.aiTemperature, 0, 1.5, AI_GENERATION_PROFILE_DEFAULTS.temperature),
+  topP: clampAiSetting(input.topP ?? input.aiTopP, 0, 1, AI_GENERATION_PROFILE_DEFAULTS.topP),
+  maxOutputTokens: Math.round(clampAiSetting(input.maxOutputTokens ?? input.aiMaxOutputTokens, 256, 4096, AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens))
+});
+
+const buildGeminiGenerationConfig = (profile) => ({
+  temperature: profile.temperature,
+  topP: profile.topP,
+  maxOutputTokens: profile.maxOutputTokens
+});
+
+const buildAnthropicGenerationConfig = (profile) => ({
+  temperature: profile.temperature,
+  top_p: profile.topP,
+  max_tokens: profile.maxOutputTokens
+});
+
+const buildOpenAiCompatibleGenerationConfig = (profile) => ({
+  temperature: profile.temperature,
+  top_p: profile.topP,
+  max_tokens: profile.maxOutputTokens
+});
+
+const getAiSystemInstructionText = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value?.text === 'string') return value.text.trim();
+  if (Array.isArray(value?.parts)) {
+    return value.parts
+      .map((part) => String(part?.text || '').trim())
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  return '';
+};
+
+const getProviderErrorMessage = async (response, fallbackMessage) => {
+  const rawBody = await response.text().catch(() => '');
+  if (!rawBody) {
+    return `${fallbackMessage} (${response.status}).`;
+  }
+
+  try {
+    const parsed = JSON.parse(rawBody);
+    const firstAnthropicMessage = Array.isArray(parsed?.error?.details)
+      ? parsed.error.details.find((detail) => detail?.message)?.message
+      : '';
+    return String(
+      parsed?.error?.message
+      || parsed?.error?.details?.message
+      || parsed?.message
+      || firstAnthropicMessage
+      || rawBody
+    ).trim() || `${fallbackMessage} (${response.status}).`;
+  } catch {
+    return rawBody.trim() || `${fallbackMessage} (${response.status}).`;
+  }
+};
+
+const flattenProviderText = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => flattenProviderText(item))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.output_text === 'string') return value.output_text;
+    if (typeof value.content === 'string') return value.content;
+    if (Array.isArray(value.content)) return flattenProviderText(value.content);
+  }
+  return '';
+};
+
+const requestDesktopAiText = async ({ provider, apiKey, promptText, systemInstruction, generationProfile, signal }) => {
+  const normalizedProvider = normalizeAiProvider(provider);
+  const providerConfig = AI_PROVIDER_CONFIG[normalizedProvider] || AI_PROVIDER_CONFIG.gemini;
+  const systemText = getAiSystemInstructionText(systemInstruction);
+  const sharedGenerationProfile = buildAiGenerationProfile(generationProfile);
+
+  if (!promptText) {
+    throw new Error('AI prompt text is required.');
+  }
+
+  if (!apiKey && normalizedProvider !== 'meta') {
+    throw new Error(`${providerConfig.label} API key is required.`);
+  }
+
+  if (normalizedProvider === 'meta') {
+    throw new Error('Meta direct routing is not available yet. Use Gemini, OpenAI, Anthropic, xAI, or proxy mode.');
+  }
+
+  if (normalizedProvider === 'gemini') {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${providerConfig.model}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: promptText }] }],
+        systemInstruction: systemText ? { parts: [{ text: systemText }] } : undefined,
+        generationConfig: buildGeminiGenerationConfig(sharedGenerationProfile)
+      }),
+      signal
+    });
+
+    if (!response.ok) {
+      throw new Error(await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+    }
+
+    const data = await response.json();
+    const text = flattenProviderText(data?.candidates?.map((candidate) => candidate?.content?.parts || []));
+    if (!text.trim()) {
+      const finishReason = String(data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '').trim();
+      throw new Error(finishReason ? `${providerConfig.label} returned no usable text (${finishReason}).` : `${providerConfig.label} returned no usable text.`);
+    }
+
+    return text.trim();
+  }
+
+  if (normalizedProvider === 'anthropic') {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: providerConfig.model,
+        ...buildAnthropicGenerationConfig(sharedGenerationProfile),
+        system: systemText || undefined,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: promptText }]
+          }
+        ]
+      }),
+      signal
+    });
+
+    if (!response.ok) {
+      throw new Error(await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+    }
+
+    const data = await response.json();
+    const text = flattenProviderText(data?.content || []);
+    if (!text.trim()) {
+      throw new Error(`${providerConfig.label} returned no usable text.`);
+    }
+
+    return text.trim();
+  }
+
+  const openAiCompatibleUrl = normalizedProvider === 'xai'
+    ? 'https://api.x.ai/v1/chat/completions'
+    : 'https://api.openai.com/v1/chat/completions';
+  const response = await fetch(openAiCompatibleUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: providerConfig.model,
+      ...buildOpenAiCompatibleGenerationConfig(sharedGenerationProfile),
+      messages: [
+        ...(systemText ? [{ role: 'system', content: systemText }] : []),
+        { role: 'user', content: promptText }
+      ]
+    }),
+    signal
+  });
+
+  if (!response.ok) {
+    throw new Error(await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+  }
+
+  const data = await response.json();
+  const text = flattenProviderText(data?.choices?.[0]?.message?.content);
+  if (!text.trim()) {
+    throw new Error(`${providerConfig.label} returned no usable text.`);
+  }
+
+  return text.trim();
+};
+
 const registerLocalDbIpcHandlers = () => {
   ipcMain.handle('app:info', async () => {
     return {
@@ -738,6 +968,38 @@ const registerLocalDbIpcHandlers = () => {
       }
     }
     return { ok: true, backend: 'electron-encrypted-file' };
+  });
+
+  ipcMain.handle('ai:generateText', async (_event, payload = {}) => {
+    const requestId = String(payload.requestId || crypto.randomUUID()).trim();
+    const controller = new AbortController();
+    desktopAiRequestControllers.set(requestId, controller);
+
+    try {
+      const provider = normalizeAiProvider(payload.provider);
+      const promptText = String(payload.promptText || '').trim();
+      const apiKey = String(payload.apiKey || '').trim();
+      const systemInstruction = payload.systemInstruction || '';
+      const generationProfile = buildAiGenerationProfile(payload.generationProfile || {});
+      const text = await requestDesktopAiText({
+        provider,
+        apiKey,
+        promptText,
+        systemInstruction,
+        generationProfile,
+        signal: controller.signal
+      });
+
+      return { ok: true, provider, text };
+    } finally {
+      desktopAiRequestControllers.delete(requestId);
+    }
+  });
+
+  ipcMain.on('ai:cancelRequest', (_event, requestId = '') => {
+    const normalizedId = String(requestId || '').trim();
+    if (!normalizedId) return;
+    desktopAiRequestControllers.get(normalizedId)?.abort();
   });
 
   ipcMain.handle('imap:syncInbox', async (_event, payload = {}) => {

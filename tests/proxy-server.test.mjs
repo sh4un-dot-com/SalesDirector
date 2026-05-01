@@ -122,6 +122,44 @@ test('proxy validates Gemini payload without upstream call', async () => {
   }
 });
 
+test('proxy validates generic AI route provider configuration without upstream call', async () => {
+  const server = await startProxy();
+  try {
+    const response = await fetch(`${server.baseUrl}/api/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', promptText: 'hello' })
+    });
+
+    const body = await response.json();
+    assert.equal(response.status, 500);
+    assert.match(body.error, /OPENAI_API_KEY is not configured/i);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('proxy validates AI generation profile values without upstream call', async () => {
+  const server = await startProxy({ GEMINI_API_KEY: 'dummy-key' });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'gemini',
+        promptText: 'hello',
+        generationProfile: { temperature: 9 }
+      })
+    });
+
+    const body = await response.json();
+    assert.equal(response.status, 400);
+    assert.match(body.error, /generationProfile\.temperature/i);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('proxy validates HubSpot contacts properties query', async () => {
   const server = await startProxy({ HUBSPOT_TOKEN: 'dummy-token' });
   try {

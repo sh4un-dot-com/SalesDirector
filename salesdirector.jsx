@@ -163,6 +163,19 @@ const getDesktopImapApi = () => {
   return null;
 };
 
+const getDesktopAiApi = () => {
+  if (typeof window === 'undefined') return null;
+  const aiApi = window.salesDirectorDesktop?.ai;
+  if (
+    aiApi &&
+    typeof aiApi.generateText === 'function' &&
+    typeof aiApi.cancelRequest === 'function'
+  ) {
+    return aiApi;
+  }
+  return null;
+};
+
 const DEFAULT_TASKS = [];
 
 const DEFAULT_INBOX_EMAILS = [];
@@ -399,8 +412,173 @@ const PERSISTED_CONFIG_KEYS = [
   'timezone',
   'defaultTone',
   'defaultLength',
+  'aiTemperature',
+  'aiTopP',
+  'aiMaxOutputTokens',
   'selectedAI'
 ];
+
+const AI_PROVIDER_OPTIONS = [
+  { value: 'gemini', label: 'Gemini', keyName: 'geminiKey', model: 'gemini-2.5-flash' },
+  { value: 'openai', label: 'OpenAI', keyName: 'openaiKey', model: 'gpt-4.1-mini' },
+  { value: 'anthropic', label: 'Anthropic', keyName: 'anthropicKey', model: 'claude-3-5-sonnet-latest' },
+  { value: 'xai', label: 'xAI', keyName: 'xaiKey', model: 'grok-2-latest' }
+];
+
+const AI_PROVIDER_CONFIG = AI_PROVIDER_OPTIONS.reduce((accumulator, option) => {
+  accumulator[option.value] = option;
+  return accumulator;
+}, {});
+
+const AI_GENERATION_PROFILE_DEFAULTS = Object.freeze({
+  temperature: 0.7,
+  topP: 0.9,
+  maxOutputTokens: 1200
+});
+const AI_PROVIDER_HEALTHCHECK_PREFIX = 'SALESDIRECTOR_AI_OK';
+const AI_PROVIDER_HEALTHCHECK_SYSTEM_TEXT = 'You are an AI transport health-check harness. Return only the exact verification token requested by the user. Do not add punctuation, markdown, labels, or explanation.';
+
+const clampAiSetting = (value, min, max, fallback) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+};
+
+const normalizeAiProvider = (value = '') => {
+  const provider = String(value || 'gemini').trim().toLowerCase();
+  return AI_PROVIDER_CONFIG[provider] ? provider : 'gemini';
+};
+
+const buildAiGenerationProfile = (input = {}) => ({
+  temperature: clampAiSetting(input.aiTemperature ?? input.temperature, 0, 1.5, AI_GENERATION_PROFILE_DEFAULTS.temperature),
+  topP: clampAiSetting(input.aiTopP ?? input.topP, 0, 1, AI_GENERATION_PROFILE_DEFAULTS.topP),
+  maxOutputTokens: Math.round(clampAiSetting(input.aiMaxOutputTokens ?? input.maxOutputTokens, 256, 4096, AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens))
+});
+
+const formatAiGenerationProfileSummary = (profile = AI_GENERATION_PROFILE_DEFAULTS) => (
+  `Temp ${Number(profile.temperature).toFixed(2)} | Top-p ${Number(profile.topP).toFixed(2)} | Max ${profile.maxOutputTokens} tokens`
+);
+
+const getAiSystemInstructionText = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value?.text === 'string') return value.text.trim();
+  if (Array.isArray(value?.parts)) {
+    return value.parts
+      .map((part) => String(part?.text || '').trim())
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  return '';
+};
+
+const flattenProviderText = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => flattenProviderText(item))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.output_text === 'string') return value.output_text;
+    if (typeof value.content === 'string') return value.content;
+    if (Array.isArray(value.content)) return flattenProviderText(value.content);
+  }
+  return '';
+};
+
+const parseProviderErrorMessage = async (response, fallbackMessage) => {
+  const rawBody = await response.text().catch(() => '');
+  if (!rawBody) {
+    return `${fallbackMessage} (${response.status}).`;
+  }
+
+  try {
+    const parsed = JSON.parse(rawBody);
+    const detailMessage = Array.isArray(parsed?.error?.details)
+      ? parsed.error.details.find((detail) => detail?.message)?.message
+      : '';
+    return String(
+      parsed?.error?.message
+      || parsed?.error?.details?.message
+      || parsed?.message
+      || detailMessage
+      || rawBody
+    ).trim() || `${fallbackMessage} (${response.status}).`;
+  } catch {
+    return rawBody.trim() || `${fallbackMessage} (${response.status}).`;
+  }
+};
+
+const getAiProviderRuntimeInfo = ({ provider, apiBaseUrl, hasDesktopAiApi, hasApiKey }) => {
+  const normalizedProvider = normalizeAiProvider(provider);
+  const providerConfig = AI_PROVIDER_CONFIG[normalizedProvider] || AI_PROVIDER_CONFIG.gemini;
+  const usingProxy = Boolean(String(apiBaseUrl || '').trim());
+  const requiresDesktop = false;
+  const supported = usingProxy || normalizedProvider !== 'meta';
+  const routeLabel = usingProxy
+    ? `${providerConfig.label} via proxy`
+    : (hasDesktopAiApi
+      ? `${providerConfig.label} via desktop runtime`
+      : `${providerConfig.label} direct from the app`);
+
+  let supportDetail = '';
+  if (!supported) {
+    supportDetail = `${providerConfig.label} direct routing is not available yet.`;
+  } else if (!usingProxy && !hasApiKey) {
+    supportDetail = `${providerConfig.label} key is missing.`;
+  } else if (usingProxy) {
+    supportDetail = 'Proxy mode will validate this provider against the server configuration.';
+  } else if (hasDesktopAiApi) {
+    supportDetail = 'Ready via the desktop runtime.';
+  } else {
+    supportDetail = 'Ready for direct browser calls.';
+  }
+
+  return {
+    provider: normalizedProvider,
+    keyName: providerConfig.keyName,
+    label: providerConfig.label,
+    usingProxy,
+    requiresDesktop,
+    supported,
+    hasApiKey: Boolean(hasApiKey),
+    ready: supported && (usingProxy || Boolean(hasApiKey)),
+    routeLabel,
+    supportDetail
+  };
+};
+
+const buildAiProviderHealthcheckToken = (provider) => `${AI_PROVIDER_HEALTHCHECK_PREFIX}::${normalizeAiProvider(provider)}`;
+
+const truncateAiPreview = (value = '', maxLength = 96) => {
+  const text = String(value || '').trim().replace(/\s+/g, ' ');
+  if (!text) return '';
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 3)}...`;
+};
+
+const normalizeAiHealthcheckResponse = (value = '') => String(value || '')
+  .trim()
+  .replace(/[`"'“”‘’]+/g, '')
+  .replace(/[.!?]+$/g, '')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const humanizeActionLabel = (value = 'AI action') => {
+  const normalized = String(value || 'AI action')
+    .replace(/([A-Z])/g, ' $1')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return 'AI action';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+};
 
 // Main Application Component
 export default function App() {
@@ -515,6 +693,9 @@ export default function App() {
     timezone: SYSTEM_TIMEZONE_VALUE,
     defaultTone: 'Professional',
     defaultLength: 'Concise',
+    aiTemperature: String(AI_GENERATION_PROFILE_DEFAULTS.temperature),
+    aiTopP: String(AI_GENERATION_PROFILE_DEFAULTS.topP),
+    aiMaxOutputTokens: String(AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens),
     selectedAI: 'gemini',
     geminiKey: '',
     openaiKey: '',
@@ -546,11 +727,17 @@ export default function App() {
   const [composerErrors, setComposerErrors] = useState({});
   const notificationTimerRef = useRef(null);
   const activeAIRequestRef = useRef(null);
+  const aiOperationQueueRef = useRef([]);
+  const aiOperationActiveRef = useRef(null);
+  const aiOperationSequenceRef = useRef(0);
+  const aiDesktopRequestSequenceRef = useRef(0);
+  const aiQueueDisposedRef = useRef(false);
   const outreachWorkspaceRef = useRef(null);
   const hasLoadedLocalConfigRef = useRef(false);
   const configChangeCountRef = useRef(0);
   const configSaveTimerRef = useRef(null);
   const [configSaveStatus, setConfigSaveStatus] = useState(null);
+  const [aiQueueStatus, setAiQueueStatus] = useState({ running: false, activeLabel: '', pendingCount: 0 });
   const [outreachContextWidth, setOutreachContextWidth] = useState(() => {
     if (typeof window === 'undefined') return OUTREACH_CONTEXT_DEFAULT_WIDTH;
     try {
@@ -576,6 +763,15 @@ export default function App() {
   const imapSyncInFlightRef = useRef(false);
   const imapStartupSyncTriggeredRef = useRef(false);
   const [imapOAuth2Status, setImapOAuth2Status] = useState({ authenticated: false, user: '', name: '', expired: false });
+  const [hasHydratedConfig, setHasHydratedConfig] = useState(false);
+  const [aiProviderTestBusy, setAiProviderTestBusy] = useState(false);
+  const [aiProviderTestResults, setAiProviderTestResults] = useState({});
+  const [aiStartupReadiness, setAiStartupReadiness] = useState({ level: 'ok', title: '', message: '', key: '' });
+  const aiStartupWarningKeyRef = useRef('');
+  const aiGenerationProfile = useMemo(
+    () => buildAiGenerationProfile(config),
+    [config.aiTemperature, config.aiTopP, config.aiMaxOutputTokens]
+  );
 
   const clampOutreachContextWidth = useCallback((requestedWidth) => {
     const workspaceWidth = outreachWorkspaceRef.current?.getBoundingClientRect()?.width || 0;
@@ -837,7 +1033,10 @@ export default function App() {
     if (hasLoadedLocalConfigRef.current) return;
     hasLoadedLocalConfigRef.current = true;
 
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') {
+      setHasHydratedConfig(true);
+      return;
+    }
 
     try {
       const raw = window.localStorage.getItem(CONFIG_STORAGE_KEY);
@@ -854,6 +1053,8 @@ export default function App() {
       }
     } catch {
       // Ignore malformed local storage data and continue with defaults.
+    } finally {
+      setHasHydratedConfig(true);
     }
   }, []);
 
@@ -878,16 +1079,66 @@ export default function App() {
   }, [config]);
 
   useEffect(() => {
+    if (!hasHydratedConfig) return;
+
+    const runtime = getAiProviderRuntime();
+    const missingKeyMessage = !runtime.usingProxy && !runtime.hasApiKey
+      ? `Add your ${runtime.label} API key in Settings before using AI features.`
+      : '';
+    const nextReadiness = !runtime.supported
+      ? {
+          level: 'error',
+          title: 'Selected AI provider is unavailable in this mode',
+          message: runtime.supportDetail,
+          key: `unsupported:${runtime.provider}:${runtime.routeLabel}`
+        }
+      : (missingKeyMessage
+        ? {
+            level: 'warn',
+            title: `${runtime.label} is selected but not configured`,
+            message: missingKeyMessage,
+            key: `missing-key:${runtime.provider}`
+          }
+        : {
+            level: 'ok',
+            title: `${runtime.label} is ready`,
+            message: `${runtime.label} is ready via ${runtime.routeLabel}.`,
+            key: ''
+          });
+
+    setAiStartupReadiness(nextReadiness);
+
+    if (!nextReadiness.key) {
+      aiStartupWarningKeyRef.current = '';
+      return;
+    }
+
+    if (aiStartupWarningKeyRef.current === nextReadiness.key) {
+      return;
+    }
+
+    aiStartupWarningKeyRef.current = nextReadiness.key;
+    showNotification(nextReadiness.message, 'error');
+  }, [
+    hasHydratedConfig,
+    config.selectedAI,
+    config.apiBaseUrl,
+    config.geminiKey,
+    config.openaiKey,
+    config.anthropicKey,
+    config.xaiKey
+  ]);
+
+  useEffect(() => {
     return () => {
+      aiQueueDisposedRef.current = true;
       if (notificationTimerRef.current) {
         clearTimeout(notificationTimerRef.current);
       }
       if (localDbSaveTimerRef.current) {
         clearTimeout(localDbSaveTimerRef.current);
       }
-      if (activeAIRequestRef.current) {
-        activeAIRequestRef.current.abort();
-      }
+      cancelQueuedAiOperations('AI queue cleared.');
     };
   }, []);
 
@@ -903,6 +1154,272 @@ export default function App() {
   };
 
   const getApiBaseUrl = () => (config.apiBaseUrl || '').trim().replace(/\/+$/, '');
+
+  const getSelectedAiProvider = () => {
+    return normalizeAiProvider(config.selectedAI || 'gemini');
+  };
+
+  const getSelectedAiProviderConfig = (provider = getSelectedAiProvider()) => (
+    AI_PROVIDER_CONFIG[provider] || AI_PROVIDER_CONFIG.gemini
+  );
+
+  const getSelectedAiLabel = (provider = getSelectedAiProvider()) => getSelectedAiProviderConfig(provider).label;
+
+  const getSelectedAiApiKey = (provider = getSelectedAiProvider()) => {
+    const providerConfig = getSelectedAiProviderConfig(provider);
+    return String(config[providerConfig.keyName] || '').trim();
+  };
+
+  const getAiProviderRuntime = (provider = getSelectedAiProvider()) => getAiProviderRuntimeInfo({
+    provider,
+    apiBaseUrl: getApiBaseUrl(),
+    hasDesktopAiApi: Boolean(getDesktopAiApi()),
+    hasApiKey: Boolean(getSelectedAiApiKey(provider))
+  });
+
+  const getAiProviderBlockMessage = (provider = getSelectedAiProvider(), options = {}) => {
+    const runtime = getAiProviderRuntime(provider);
+    if (!runtime.supported) {
+      return runtime.supportDetail;
+    }
+    if (!runtime.usingProxy && !runtime.hasApiKey) {
+      return options.forHealthCheck
+        ? `Add your ${runtime.label} API key in Settings before running the health check.`
+        : `Add your ${runtime.label} API key in Settings before using AI features.`;
+    }
+    return '';
+  };
+
+  const setAiProviderTestResult = (provider, nextResult) => {
+    const normalizedProvider = normalizeAiProvider(provider);
+    setAiProviderTestResults((prev) => ({
+      ...prev,
+      [normalizedProvider]: {
+        ...(prev[normalizedProvider] || {}),
+        ...nextResult,
+        provider: normalizedProvider
+      }
+    }));
+  };
+
+  const switchToFirstSupportedAiProvider = () => {
+    const nextProvider = AI_PROVIDER_OPTIONS.find((option) => getAiProviderRuntime(option.value).supported)?.value || 'gemini';
+    if (nextProvider === getSelectedAiProvider()) {
+      return;
+    }
+    setConfig((prev) => ({ ...prev, selectedAI: nextProvider }));
+    showNotification(`Active AI provider switched to ${getSelectedAiLabel(nextProvider)}.`);
+  };
+
+  const isAiProviderReady = (provider = getSelectedAiProvider()) => {
+    return getAiProviderRuntime(provider).ready;
+  };
+
+  const runAiProviderHealthCheck = async (providerInput) => {
+    const runtime = getAiProviderRuntime(providerInput);
+    const blockMessage = getAiProviderBlockMessage(runtime.provider, { forHealthCheck: true });
+    const checkedAt = new Date().toISOString();
+
+    if (blockMessage) {
+      setAiProviderTestResult(runtime.provider, {
+        status: runtime.supported ? 'blocked' : 'unsupported',
+        ok: false,
+        checkedAt,
+        routeLabel: runtime.routeLabel,
+        message: blockMessage
+      });
+      throw new Error(blockMessage);
+    }
+
+    const expectedToken = buildAiProviderHealthcheckToken(runtime.provider);
+    setAiProviderTestResult(runtime.provider, {
+      status: 'running',
+      ok: null,
+      checkedAt,
+      routeLabel: runtime.routeLabel,
+      message: `Testing ${runtime.routeLabel}...`
+    });
+
+    const startedAt = Date.now();
+    try {
+      const responseText = await callGeminiAPI(
+        `Return exactly this text and nothing else: ${expectedToken}`,
+        {
+          abortPrevious: false,
+          providerOverride: runtime.provider,
+          systemInstructionOverride: {
+            parts: [{ text: AI_PROVIDER_HEALTHCHECK_SYSTEM_TEXT }]
+          }
+        }
+      );
+
+      const normalizedResponse = normalizeAiHealthcheckResponse(responseText);
+      if (normalizedResponse !== expectedToken && !String(responseText || '').includes(expectedToken)) {
+        throw new Error(`${runtime.label} responded, but the verification token did not match exactly. Received: ${truncateAiPreview(responseText || 'empty response')}`);
+      }
+
+      const durationMs = Date.now() - startedAt;
+      setAiProviderTestResult(runtime.provider, {
+        status: 'passed',
+        ok: true,
+        checkedAt: new Date().toISOString(),
+        routeLabel: runtime.routeLabel,
+        durationMs,
+        message: `Passed in ${durationMs} ms via ${runtime.routeLabel}.`,
+        preview: String(responseText || '').trim()
+      });
+      return { provider: runtime.provider, label: runtime.label, ok: true, durationMs };
+    } catch (error) {
+      const message = error?.message || `${runtime.label} health check failed.`;
+      setAiProviderTestResult(runtime.provider, {
+        status: 'failed',
+        ok: false,
+        checkedAt: new Date().toISOString(),
+        routeLabel: runtime.routeLabel,
+        durationMs: Date.now() - startedAt,
+        message
+      });
+      throw error instanceof Error ? error : new Error(message);
+    }
+  };
+
+  const queueAiProviderHealthCheck = (providerInput) => {
+    const provider = normalizeAiProvider(providerInput);
+    const label = `${getSelectedAiLabel(provider)} health check`;
+    setAiProviderTestBusy(true);
+
+    void enqueueAiOperation(label, async () => {
+      try {
+        const result = await runAiProviderHealthCheck(provider);
+        showNotification(`${result.label} AI health check passed in ${result.durationMs} ms.`);
+      } catch (error) {
+        if (error?.message !== 'AI queue cleared.') {
+          showNotification(error?.message || 'AI health check failed.', 'error');
+        }
+        throw error;
+      } finally {
+        setAiProviderTestBusy(false);
+      }
+    }, { notifyOnQueue: true }).catch((error) => {
+      setAiProviderTestBusy(false);
+      if (error?.message !== 'AI queue cleared.') {
+        console.error('AI provider health check queue failed:', error);
+      }
+    });
+  };
+
+  const queueAllAiProviderHealthChecks = () => {
+    setAiProviderTestBusy(true);
+
+    void enqueueAiOperation('AI provider parity check', async () => {
+      const results = [];
+
+      try {
+        for (const option of AI_PROVIDER_OPTIONS) {
+          try {
+            const result = await runAiProviderHealthCheck(option.value);
+            results.push(result);
+          } catch (error) {
+            results.push({
+              provider: option.value,
+              label: getSelectedAiLabel(option.value),
+              ok: false,
+              message: error?.message || 'AI health check failed.'
+            });
+          }
+        }
+
+        const passedCount = results.filter((result) => result.ok).length;
+        const failedCount = results.length - passedCount;
+        showNotification(
+          failedCount === 0
+            ? `AI parity check complete. ${passedCount}/${results.length} providers passed.`
+            : `AI parity check complete. ${passedCount}/${results.length} providers passed; ${failedCount} need attention.`,
+          failedCount === 0 ? 'success' : 'error'
+        );
+      } finally {
+        setAiProviderTestBusy(false);
+      }
+    }, { notifyOnQueue: true }).catch((error) => {
+      setAiProviderTestBusy(false);
+      if (error?.message !== 'AI queue cleared.') {
+        console.error('AI provider parity check queue failed:', error);
+      }
+    });
+  };
+
+  const syncAiQueueStatus = () => {
+    if (aiQueueDisposedRef.current) return;
+    const activeJob = aiOperationActiveRef.current;
+    setAiQueueStatus({
+      running: Boolean(activeJob),
+      activeLabel: activeJob?.label || '',
+      pendingCount: aiOperationQueueRef.current.length
+    });
+  };
+
+  const processAiOperationQueue = () => {
+    if (aiOperationActiveRef.current) {
+      syncAiQueueStatus();
+      return;
+    }
+
+    const nextJob = aiOperationQueueRef.current.shift();
+    if (!nextJob) {
+      syncAiQueueStatus();
+      return;
+    }
+
+    aiOperationActiveRef.current = nextJob;
+    syncAiQueueStatus();
+
+    Promise.resolve()
+      .then(() => nextJob.run())
+      .then((result) => nextJob.resolve(result))
+      .catch((error) => nextJob.reject(error))
+      .finally(() => {
+        if (aiOperationActiveRef.current?.id === nextJob.id) {
+          aiOperationActiveRef.current = null;
+        }
+        syncAiQueueStatus();
+        Promise.resolve().then(() => processAiOperationQueue());
+      });
+  };
+
+  const enqueueAiOperation = (label, run, options = {}) => {
+    const queuedAhead = aiOperationQueueRef.current.length + (aiOperationActiveRef.current ? 1 : 0);
+
+    return new Promise((resolve, reject) => {
+      aiOperationQueueRef.current.push({
+        id: ++aiOperationSequenceRef.current,
+        label,
+        run,
+        resolve,
+        reject
+      });
+
+      syncAiQueueStatus();
+      processAiOperationQueue();
+
+      if (options.notifyOnQueue && queuedAhead > 0) {
+        showNotification(`Queued ${label}. ${queuedAhead} AI job${queuedAhead === 1 ? '' : 's'} ahead.`, 'success');
+      }
+    });
+  };
+
+  const cancelQueuedAiOperations = (reason = 'AI queue cleared.') => {
+    const error = new Error(reason);
+    while (aiOperationQueueRef.current.length > 0) {
+      const queuedJob = aiOperationQueueRef.current.shift();
+      queuedJob?.reject?.(error);
+    }
+    if (activeAIRequestRef.current) {
+      activeAIRequestRef.current.abort();
+      activeAIRequestRef.current = null;
+    }
+    aiOperationActiveRef.current = null;
+    syncAiQueueStatus();
+  };
 
   const applyLocalDataset = (dataset = {}) => {
     if (Array.isArray(dataset.contacts)) {
@@ -1602,6 +2119,27 @@ export default function App() {
       }
     }
 
+    if (name === 'aiTemperature') {
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1.5) {
+        return 'Enter a number between 0.00 and 1.50.';
+      }
+    }
+
+    if (name === 'aiTopP') {
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+        return 'Enter a number between 0.00 and 1.00.';
+      }
+    }
+
+    if (name === 'aiMaxOutputTokens') {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 256 || parsed > 4096) {
+        return 'Enter a whole number between 256 and 4096.';
+      }
+    }
+
     const start = nextConfig.activeHoursStart;
     const end = nextConfig.activeHoursEnd;
     if ((name === 'activeHoursStart' || name === 'activeHoursEnd') && start && end && start >= end) {
@@ -1614,6 +2152,9 @@ export default function App() {
   const handleConfigChange = (e) => {
     const { name, value, type, checked } = e.target;
     const nextValue = type === 'checkbox' ? checked : value;
+    if (['apiBaseUrl', 'proxySecret', 'selectedAI', 'geminiKey', 'openaiKey', 'anthropicKey', 'xaiKey', 'aiTemperature', 'aiTopP', 'aiMaxOutputTokens'].includes(name)) {
+      setAiProviderTestResults({});
+    }
     setConfig(prev => {
       const nextConfig = { ...prev, [name]: nextValue };
       setConfigErrors(prevErrors => {
@@ -1632,6 +2173,16 @@ export default function App() {
 
       return nextConfig;
     });
+  };
+
+  const handleAiProviderChange = (e) => {
+    const provider = normalizeAiProvider(e.target.value);
+    const runtime = getAiProviderRuntime(provider);
+    if (!runtime.supported) {
+      showNotification(runtime.supportDetail, 'error');
+      return;
+    }
+    handleConfigChange(e);
   };
 
   const handleComposerChange = (e) => {
@@ -1660,9 +2211,7 @@ export default function App() {
   });
 
   const clearWorkspace = () => {
-    if (activeAIRequestRef.current) {
-      activeAIRequestRef.current.abort();
-    }
+    cancelQueuedAiOperations('AI queue cleared.');
     setComposerState(getComposerResetState());
     setComposerErrors({});
     setInboxFilter('all');
@@ -2008,7 +2557,7 @@ export default function App() {
     return saveContactRecord(nextContact);
   };
 
-  const refreshContactTimelineSummary = async (contactInput, options = {}) => {
+  const runContactTimelineSummary = async (contactInput, options = {}) => {
     const normalizedContact = normalizeContactRecord(contactInput);
     if (!normalizedContact.email || !isValidEmail(normalizedContact.email)) return null;
 
@@ -2023,7 +2572,7 @@ export default function App() {
 
     setTimelineSummaryRefreshingEmail(normalizedContact.email);
     try {
-      const canUseAi = !options.preferHeuristic && (Boolean(getApiBaseUrl()) || Boolean((config.geminiKey || '').trim()));
+      const canUseAi = !options.preferHeuristic && isAiProviderReady();
       let timelineSummary = buildHeuristicTimelineSummary(normalizedContact, timelineMessages);
 
       if (canUseAi) {
@@ -2071,6 +2620,21 @@ No emojis.`;
     } finally {
       setTimelineSummaryRefreshingEmail((prev) => (prev === normalizedContact.email ? '' : prev));
     }
+  };
+
+  const refreshContactTimelineSummary = async (contactInput, options = {}) => {
+    const normalizedContact = normalizeContactRecord(contactInput);
+    const shouldQueue = !options.preferHeuristic && isAiProviderReady() && Boolean(normalizedContact.email);
+
+    if (!shouldQueue) {
+      return runContactTimelineSummary(contactInput, options);
+    }
+
+    const label = normalizedContact.name
+      ? `Refresh pulse for ${normalizedContact.name}`
+      : 'Refresh relationship pulse';
+
+    return enqueueAiOperation(label, () => runContactTimelineSummary(contactInput, options));
   };
 
   const appendTaskLocally = (taskInput) => {
@@ -2779,7 +3343,7 @@ No emojis.`;
       throw new Error('No inbox email selected for analysis.');
     }
 
-    const useHeuristicFallback = IS_LOCAL_DEV_MODE && !getApiBaseUrl() && !(config.geminiKey || '').trim();
+    const useHeuristicFallback = IS_LOCAL_DEV_MODE && !isAiProviderReady();
     if (useHeuristicFallback) {
       return buildHeuristicInboxInsight(email);
     }
@@ -3050,18 +3614,27 @@ No emojis.`;
     setActiveTab('outreach');
   };
 
-  const handleAnalyzeInboxEmail = async (email) => {
+  const runAnalyzeInboxEmail = async (email) => {
     if (!email) return;
-    setLoading(true);
     try {
       const parsed = await analyzeInboxEmailInsight(email);
       setInboxEmailInsight(email.id, { aiScore: parsed.score, aiSummary: parsed.summary });
       showNotification('AI inbox insight added.');
     } catch (error) {
       showNotification(error.message || 'Failed to analyze inbox email.', 'error');
-    } finally {
-      setLoading(false);
     }
+  };
+
+  const handleAnalyzeInboxEmail = (email) => {
+    if (!email) return;
+    const label = email.fromName || email.fromEmail
+      ? `Analyze inbox email from ${email.fromName || email.fromEmail}`
+      : 'Analyze inbox email';
+    void enqueueAiOperation(label, () => runAnalyzeInboxEmail(email), { notifyOnQueue: true }).catch((error) => {
+      if (error?.message !== 'AI queue cleared.') {
+        console.error('Inbox insight queue failed:', error);
+      }
+    });
   };
 
   const normalizeSyncedInboxEmails = (emails = [], source = 'manual') => {
@@ -3657,43 +4230,61 @@ No emojis.`;
 
   // --- AI Integration Logic ---
   const callGeminiAPI = async (promptText, options = {}) => {
-    const { abortPrevious = true } = options;
+    const {
+      abortPrevious = true,
+      providerOverride = '',
+      systemInstructionOverride = null
+    } = options;
+    const provider = normalizeAiProvider(providerOverride || getSelectedAiProvider());
+    const providerRuntime = getAiProviderRuntime(provider);
+    const providerLabel = providerRuntime.label;
     const proxyBaseUrl = getApiBaseUrl();
-    const usingProxy = Boolean(proxyBaseUrl);
-    const apiKey = (config.geminiKey || '').trim();
+    const usingProxy = providerRuntime.usingProxy;
+    const apiKey = getSelectedAiApiKey(provider);
+    const desktopAiApi = getDesktopAiApi();
+    const providerConfig = getSelectedAiProviderConfig(provider);
+    const generationProfile = aiGenerationProfile;
     const maxAttempts = 2;
     const requestTimeoutMs = 20000;
+    const blockMessage = getAiProviderBlockMessage(provider);
 
-    if (!usingProxy && !apiKey) {
-      throw new Error("Add your Gemini API key in Settings before using AI features.");
+    if (blockMessage) {
+      throw new Error(blockMessage);
     }
 
     if (abortPrevious && activeAIRequestRef.current) {
       activeAIRequestRef.current.abort();
     }
     const controller = new AbortController();
-    activeAIRequestRef.current = controller;
-
-    const url = usingProxy
-      ? `${proxyBaseUrl}/api/gemini`
-      : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const requestId = `ai-${Date.now()}-${++aiDesktopRequestSequenceRef.current}`;
+    const abortRequest = () => {
+      controller.abort();
+      if (desktopAiApi && !usingProxy) {
+        desktopAiApi.cancelRequest(requestId);
+      }
+    };
+    activeAIRequestRef.current = { abort: abortRequest, requestId, provider };
     
-    const payload = {
+    const systemInstruction = systemInstructionOverride || {
+      parts: [{ text: "You are an elite Virtual Sales Director. You have unparalleled skills in B2B sales strategy, psychology, negotiation, and high-conversion copywriting. Your advice is cutting-edge. CRITICAL RULE: Absolutely NO emojis under any circumstances." }]
+    };
+    const systemText = getAiSystemInstructionText(systemInstruction);
+    const directGeminiPayload = {
       contents: [{ parts: [{ text: promptText }] }],
-      systemInstruction: {
-        parts: [{ text: "You are an elite Virtual Sales Director. You have unparalleled skills in B2B sales strategy, psychology, negotiation, and high-conversion copywriting. Your advice is cutting-edge. CRITICAL RULE: Absolutely NO emojis under any circumstances." }]
+      systemInstruction,
+      generationConfig: {
+        temperature: generationProfile.temperature,
+        topP: generationProfile.topP,
+        maxOutputTokens: generationProfile.maxOutputTokens
       }
     };
 
     const proxyPayload = {
+      provider,
       promptText,
-      systemInstruction: payload.systemInstruction
+      systemInstruction,
+      generationProfile
     };
-
-    const headers = { 'Content-Type': 'application/json' };
-    if (usingProxy && config.proxySecret) {
-      headers['x-proxy-secret'] = config.proxySecret;
-    }
 
     let attemptsRemaining = maxAttempts;
     let delay = 1000;
@@ -3703,60 +4294,160 @@ No emojis.`;
         let didTimeout = false;
         const timeoutId = setTimeout(() => {
           didTimeout = true;
-          controller.abort();
+          abortRequest();
         }, requestTimeoutMs);
 
         try {
-          const response = await fetch(url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(usingProxy ? proxyPayload : payload),
-            signal: controller.signal
-          });
-          clearTimeout(timeoutId);
-          
-          if (!response.ok) {
-            const rawBody = await response.text().catch(() => '');
-            let failed = {};
-            if (rawBody) {
-              try {
-                failed = JSON.parse(rawBody);
-              } catch {
-                failed = { error: rawBody.trim() };
-              }
+          if (!usingProxy && desktopAiApi) {
+            const result = await desktopAiApi.generateText({
+              requestId,
+              provider,
+              apiKey,
+              promptText,
+              systemInstruction,
+              generationProfile
+            });
+            clearTimeout(timeoutId);
+
+            const text = String(result?.text || '').trim();
+            if (!text) {
+              throw new Error(`${providerLabel} returned no usable text.`);
             }
 
-            const providerError = new Error(
-              failed.error
-                || failed.message
-                || rawBody.trim()
-                || `AI request failed (${response.status}).`
-            );
-            providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
-            throw providerError;
+            return text;
           }
-          
-          const data = await response.json();
-          const text = (data.candidates || [])
-            .flatMap(candidate => candidate?.content?.parts || [])
-            .map(part => part?.text || '')
-            .join('\n')
-            .trim();
+
+          let text = '';
+
+          if (usingProxy) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (config.proxySecret) {
+              headers['x-proxy-secret'] = config.proxySecret;
+            }
+
+            const response = await fetch(`${proxyBaseUrl}/api/ai`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(proxyPayload),
+              signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+              const providerError = new Error(
+                await parseProviderErrorMessage(response, `${providerLabel} request failed`)
+              );
+              providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+              throw providerError;
+            }
+
+            const data = await response.json();
+            text = String(data?.text || '').trim();
+          } else if (provider === 'gemini') {
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${providerConfig.model}:generateContent?key=${apiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(directGeminiPayload),
+              signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+              const providerError = new Error(
+                await parseProviderErrorMessage(response, `${providerLabel} request failed`)
+              );
+              providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+              throw providerError;
+            }
+
+            const data = await response.json();
+            text = (data?.candidates || [])
+              .flatMap((candidate) => candidate?.content?.parts || [])
+              .map((part) => part?.text || '')
+              .join('\n')
+              .trim();
+          } else if (provider === 'anthropic') {
+            const response = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
+              },
+              body: JSON.stringify({
+                model: providerConfig.model,
+                temperature: generationProfile.temperature,
+                top_p: generationProfile.topP,
+                max_tokens: generationProfile.maxOutputTokens,
+                system: systemText || undefined,
+                messages: [
+                  {
+                    role: 'user',
+                    content: [{ type: 'text', text: promptText }]
+                  }
+                ]
+              }),
+              signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+              const providerError = new Error(
+                await parseProviderErrorMessage(response, `${providerLabel} request failed`)
+              );
+              providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+              throw providerError;
+            }
+
+            const data = await response.json();
+            text = flattenProviderText(data?.content || []).trim();
+          } else {
+            const response = await fetch(provider === 'xai' ? 'https://api.x.ai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${apiKey}`
+              },
+              body: JSON.stringify({
+                model: providerConfig.model,
+                temperature: generationProfile.temperature,
+                top_p: generationProfile.topP,
+                max_tokens: generationProfile.maxOutputTokens,
+                messages: [
+                  ...(systemText ? [{ role: 'system', content: systemText }] : []),
+                  { role: 'user', content: promptText }
+                ]
+              }),
+              signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+              const providerError = new Error(
+                await parseProviderErrorMessage(response, `${providerLabel} request failed`)
+              );
+              providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+              throw providerError;
+            }
+
+            const data = await response.json();
+            text = flattenProviderText(data?.choices?.[0]?.message?.content).trim();
+          }
 
           if (!text) {
-            const blockReason = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '';
+            const blockReason = provider === 'gemini' ? 'Check provider output or upstream block reason.' : '';
             throw new Error(blockReason
-              ? `Gemini returned no usable text (${blockReason}).`
-              : 'Gemini returned no usable text.');
+              ? `${providerLabel} returned no usable text (${blockReason}).`
+              : `${providerLabel} returned no usable text.`);
           }
 
           return text;
         } catch (error) {
           clearTimeout(timeoutId);
 
-          if (error?.name === 'AbortError') {
+          if (error?.name === 'AbortError' || (controller.signal.aborted && /abort|cancel/i.test(String(error?.message || '')))) {
             if (didTimeout) {
-              throw new Error('AI request timed out after 20 seconds. Check your Gemini key, proxy, or network and try again.');
+              throw new Error(`AI request timed out after 20 seconds. Check your ${providerLabel} key, proxy, or network and try again.`);
             }
             throw new Error("AI request cancelled.");
           }
@@ -3765,6 +4456,9 @@ No emojis.`;
           const shouldRetry = attemptsRemaining > 0 && (Boolean(error?.retryable) || error instanceof TypeError);
 
           if (!shouldRetry) {
+            if (!usingProxy && !desktopAiApi && error instanceof TypeError) {
+              throw new Error(`${providerLabel} browser direct request failed. This is usually a browser network or cross-origin restriction. If it persists, use the desktop app or proxy mode.`);
+            }
             if (error instanceof Error) {
               throw error;
             }
@@ -3776,19 +4470,14 @@ No emojis.`;
         }
       }
     } finally {
-      if (activeAIRequestRef.current === controller) {
+      if (activeAIRequestRef.current?.requestId === requestId) {
         activeAIRequestRef.current = null;
       }
     }
   };
 
-  const handleAIAction = async (actionType, options = {}) => {
-    if (loading) {
-      showNotification("Please wait for the current action to finish.", "error");
-      return;
-    }
-
-    setLoading(true);
+  const runAIAction = async (actionType, options = {}) => {
+    const setLoading = () => {};
     let prompt = "";
 
     try {
@@ -5086,6 +5775,15 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleAIAction = (actionType, options = {}) => {
+    const label = humanizeActionLabel(actionType);
+    void enqueueAiOperation(label, () => runAIAction(actionType, options), { notifyOnQueue: true }).catch((error) => {
+      if (error?.message !== 'AI queue cleared.') {
+        console.error('AI action queue failed:', error);
+      }
+    });
   };
 
   const handleHubSpotSync = async () => {
@@ -7399,7 +8097,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                           disabled={loading}
                           className="bg-rose-900 text-white px-4 py-1.5 rounded-md text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50 shadow-sm"
                         >
-                          {loading ? 'Working...' : 'Draft'}
+                          {aiQueueStatus.running ? 'Working...' : 'Draft'}
                         </button>
                       </div>
                     </div>
@@ -7500,6 +8198,19 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
     const graphModeEnabled =
       String(config.useGraphApi) === 'true' &&
       (config.oauth2Provider || 'microsoft') === 'microsoft';
+    const selectedAiProvider = getSelectedAiProvider();
+    const selectedAiRuntime = getAiProviderRuntime(selectedAiProvider);
+    const selectedAiLabel = selectedAiRuntime.label;
+    const selectedAiReady = selectedAiRuntime.ready;
+    const selectedAiUsesProxy = selectedAiRuntime.usingProxy;
+    const aiProviderStatuses = AI_PROVIDER_OPTIONS.map((option) => ({
+      ...getAiProviderRuntime(option.value),
+      testResult: aiProviderTestResults[option.value] || null
+    }));
+    const aiReadyCount = aiProviderStatuses.filter((provider) => provider.ready).length;
+    const aiSupportedCount = aiProviderStatuses.filter((provider) => provider.supported).length;
+    const aiLocalKeyCount = aiProviderStatuses.filter((provider) => provider.hasApiKey).length;
+    const aiPassedCount = aiProviderStatuses.filter((provider) => provider.testResult?.status === 'passed').length;
 
     const diagnostics = [
       {
@@ -7524,9 +8235,22 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         detail: getApiBaseUrl() ? `Routing via ${getApiBaseUrl()}` : 'Not configured (direct API mode)'
       },
       {
-        label: 'Gemini AI Access',
-        ok: Boolean(config.geminiKey) || Boolean(getApiBaseUrl()),
-        detail: getApiBaseUrl() ? 'Handled by proxy when configured server-side' : (config.geminiKey ? 'Key loaded for this session' : 'Missing key')
+        label: `${selectedAiLabel} AI Access`,
+        ok: selectedAiReady,
+        detail: selectedAiUsesProxy
+          ? `Handled by proxy (${selectedAiLabel}) when configured server-side`
+          : (selectedAiRuntime.hasApiKey
+            ? (selectedAiRuntime.supported
+              ? `Key loaded for this session via ${selectedAiRuntime.routeLabel}`
+              : selectedAiRuntime.supportDetail)
+            : `Missing ${selectedAiLabel} key`)
+      },
+      {
+        label: 'AI Queue',
+        ok: true,
+        detail: aiQueueStatus.running
+          ? `${aiQueueStatus.activeLabel || 'AI task'} running${aiQueueStatus.pendingCount ? `, ${aiQueueStatus.pendingCount} queued` : ''}`
+          : 'Idle'
       },
       {
         label: 'HubSpot Integration',
@@ -8270,6 +8994,59 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   </select>
                 </div>
               </div>
+              <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-zinc-900 dark:text-white">Shared Generation Profile</p>
+                    <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Applied across Gemini, OpenAI, Anthropic, and xAI to keep sampling behavior closer from provider to provider.</p>
+                  </div>
+                  <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{formatAiGenerationProfileSummary(aiGenerationProfile)}</span>
+                </div>
+                <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Temperature</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="1.5"
+                      name="aiTemperature"
+                      value={config.aiTemperature}
+                      onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    />
+                    {configErrors.aiTemperature && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.aiTemperature}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Top-p</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      max="1"
+                      name="aiTopP"
+                      value={config.aiTopP}
+                      onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    />
+                    {configErrors.aiTopP && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.aiTopP}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Max Output Tokens</label>
+                    <input
+                      type="number"
+                      step="64"
+                      min="256"
+                      max="4096"
+                      name="aiMaxOutputTokens"
+                      value={config.aiMaxOutputTokens}
+                      onChange={handleConfigChange}
+                      className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    />
+                    {configErrors.aiMaxOutputTokens && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.aiMaxOutputTokens}</p>}
+                  </div>
+                </div>
+              </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">These preferences will be automatically applied when you open the composer or draft a new sequence.</p>
             </div>
           </div>
@@ -8278,11 +9055,179 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
             <div className="flex items-center mb-4 text-black dark:text-white">
               <Key className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
-              <h3 className="text-lg font-bold">AI Provider API Keys</h3>
+              <h3 className="text-lg font-bold">AI Routing & Provider Keys</h3>
             </div>
             <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">
-              Gemini is active by default. Enter keys below to enable other routing providers for generation and analysis.
+              Choose the active AI provider, then add the matching API key below. Direct routing now supports Gemini, OpenAI, Anthropic, and xAI in browser mode, while the desktop app can still route the same providers through the preload bridge. Proxy mode can route server-side.
             </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <div>
+                <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Active AI Provider</label>
+                <select
+                  name="selectedAI"
+                  value={selectedAiProvider}
+                  onChange={handleAiProviderChange}
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                >
+                  {aiProviderStatuses.map((provider) => (
+                    <option key={provider.provider} value={provider.provider} disabled={!provider.supported}>{provider.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
+                  Current route: {selectedAiRuntime.routeLabel}
+                </p>
+                {aiStartupReadiness.key && (
+                  <div className={`mt-3 rounded-lg border p-3 text-xs ${aiStartupReadiness.level === 'error'
+                    ? 'border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-900/70 dark:bg-rose-950/40 dark:text-rose-200'
+                    : 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-200'}`}>
+                    <p className="font-bold">Startup self-check: {aiStartupReadiness.title}</p>
+                    <p className="mt-1">{aiStartupReadiness.message}</p>
+                  </div>
+                )}
+                {!selectedAiRuntime.supported && (
+                  <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-200">
+                    <p className="font-bold">Current selection is unavailable in this mode.</p>
+                    <p className="mt-1">{selectedAiRuntime.supportDetail}</p>
+                    <button
+                      onClick={switchToFirstSupportedAiProvider}
+                      className="mt-3 rounded-md bg-amber-900 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-amber-800 dark:bg-amber-200 dark:text-amber-950 dark:hover:bg-amber-100"
+                    >
+                      Use a supported provider
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 p-4 text-sm text-zinc-600 dark:text-zinc-300">
+                <p className="font-bold text-zinc-900 dark:text-white">Queue behavior</p>
+                <p className="mt-2">
+                  AI actions now run one at a time. If you click another AI button while one is running, it is queued instead of being dropped or cancelling the current job.
+                </p>
+                <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  Meta key storage remains available for future routing, but the active selector currently supports Gemini, OpenAI, Anthropic, and xAI.
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-6 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="text-sm font-bold text-zinc-900 dark:text-white">AI Readiness Report</p>
+                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    Live status, local configuration, supported runtime paths, and provider checks are summarized here before you hand real workflow actions to the selected AI.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => queueAiProviderHealthCheck(selectedAiProvider)}
+                    disabled={aiProviderTestBusy}
+                    className="rounded-md bg-black px-3 py-2 text-xs font-bold text-white transition hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+                  >
+                    {aiProviderTestBusy ? 'Testing...' : 'Test Active Provider'}
+                  </button>
+                  <button
+                    onClick={queueAllAiProviderHealthChecks}
+                    disabled={aiProviderTestBusy}
+                    className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-bold text-zinc-800 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                  >
+                    Test All Providers
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                {[
+                  { label: 'Ready To Call', value: `${aiReadyCount}/${aiProviderStatuses.length}` },
+                  { label: 'Supported Here', value: `${aiSupportedCount}/${aiProviderStatuses.length}` },
+                  { label: 'Local Keys Saved', value: `${aiLocalKeyCount}/${aiProviderStatuses.length}` },
+                  { label: 'Live Checks Passed', value: `${aiPassedCount}/${aiProviderStatuses.length}` }
+                ].map((item) => (
+                  <div key={item.label} className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{item.label}</p>
+                    <p className="mt-1 text-lg font-bold text-zinc-900 dark:text-white">{item.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-bold text-zinc-900 dark:text-white">Selected provider summary</p>
+                    <p className="mt-1">{selectedAiLabel}: {selectedAiRuntime.routeLabel}</p>
+                  </div>
+                  <div className="font-medium text-zinc-500 dark:text-zinc-400">
+                    Shared profile: {formatAiGenerationProfileSummary(aiGenerationProfile)}
+                  </div>
+                </div>
+                <p className="mt-2">Credential source: {selectedAiUsesProxy ? 'Proxy-managed on the server' : (selectedAiRuntime.hasApiKey ? 'Saved locally on this device' : 'Missing local key')}</p>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                {aiProviderStatuses.map((provider) => {
+                  const testResult = provider.testResult;
+                  const status = testResult?.status || (!provider.supported ? 'unsupported' : (provider.ready ? 'ready' : 'blocked'));
+                  const badgeClass = status === 'passed'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300'
+                    : status === 'running'
+                      ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
+                      : status === 'failed'
+                        ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300'
+                        : status === 'unsupported'
+                          ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-300'
+                          : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300';
+                  const statusLabel = status === 'passed'
+                    ? 'Passed'
+                    : status === 'running'
+                      ? 'Running'
+                      : status === 'failed'
+                        ? 'Failed'
+                        : status === 'unsupported'
+                          ? 'Unsupported here'
+                          : provider.ready
+                            ? 'Ready'
+                            : 'Needs setup';
+                  const detail = testResult?.message
+                    || (!provider.supported
+                      ? provider.supportDetail
+                      : (provider.ready
+                        ? `Ready via ${provider.routeLabel}.`
+                        : `Add the ${provider.label} key to verify direct mode.`));
+
+                  return (
+                    <div key={provider.provider} className="rounded-lg border border-zinc-200 bg-white p-4 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-bold text-zinc-900 dark:text-white">{provider.label}</p>
+                          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{provider.routeLabel}</p>
+                          <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">{provider.usingProxy ? 'Proxy-managed credentials' : (provider.hasApiKey ? 'Local key saved' : 'Local key missing')}</p>
+                        </div>
+                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ${badgeClass}`}>
+                          {statusLabel}
+                        </span>
+                      </div>
+                      <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-300">{detail}</p>
+                      {testResult?.checkedAt && (
+                        <p className="mt-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+                          Last check: {new Date(testResult.checkedAt).toLocaleTimeString()}
+                        </p>
+                      )}
+                      {testResult?.preview && status === 'passed' && (
+                        <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                          Response: {truncateAiPreview(testResult.preview)}
+                        </p>
+                      )}
+                      <button
+                        onClick={() => queueAiProviderHealthCheck(provider.provider)}
+                        disabled={aiProviderTestBusy || !provider.supported}
+                        className="mt-3 rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-bold text-zinc-800 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                      >
+                        Test {provider.label}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {[
