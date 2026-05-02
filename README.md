@@ -45,6 +45,8 @@ Open the app → go to **Settings** → configure sender profile, AI provider ke
 
 For full setup including proxy mode, environment configuration, and packaging, see [SETUP.md](SETUP.md).
 
+If you need to hand the app to a nontechnical Mac user, use [MACBOOK_HANDOFF.md](MACBOOK_HANDOFF.md).
+
 ---
 
 ## Desktop Installers
@@ -150,6 +152,7 @@ vite.config.mjs            → Vite build config (base: './' for Electron)
 |---|---|
 | [FEATURES.md](FEATURES.md) | Complete feature list and capabilities |
 | [SETUP.md](SETUP.md) | Installation, environment, and first-run configuration |
+| [MACBOOK_HANDOFF.md](MACBOOK_HANDOFF.md) | Plain-English handoff guide for a nontechnical Mac user |
 | [USER_MANUAL.md](USER_MANUAL.md) | Day-to-day workflows and feature usage |
 | [ONBOARDING.md](ONBOARDING.md) | 15–30 minute new user onboarding |
 | [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md) | Trainer handout and onboarding runbook |

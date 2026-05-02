@@ -4,6 +4,8 @@ This is the fastest path to get a new user productive in SalesDirector.
 
 If you are running a live onboarding session, use [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md) as the one-page trainer script.
 
+If the new user is nontechnical and installing on a MacBook, give them [MACBOOK_HANDOFF.md](MACBOOK_HANDOFF.md) first.
+
 ## Release Update: Local Storage Model
 
 - Local data persistence now uses desktop-only encrypted storage in Electron runtime.

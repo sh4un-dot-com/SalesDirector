@@ -8211,6 +8211,53 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
     const aiSupportedCount = aiProviderStatuses.filter((provider) => provider.supported).length;
     const aiLocalKeyCount = aiProviderStatuses.filter((provider) => provider.hasApiKey).length;
     const aiPassedCount = aiProviderStatuses.filter((provider) => provider.testResult?.status === 'passed').length;
+    const hasSenderProfile = Boolean(
+      String(config.senderName || '').trim()
+      && isValidEmail(String(config.replyTo || config.smtpUser || '').trim())
+    );
+    const hasContactsLoaded = normalizedContacts.length > 0;
+    const hasMailboxSetup = Boolean(
+      graphModeEnabled
+        ? (config.imapOAuth2ClientId && (config.imapUser || config.smtpUser))
+        : (config.smtpHost && config.smtpUser && (
+          (config.smtpAuthMethod || 'basic') === 'oauth2'
+            ? imapOAuth2Status.authenticated
+            : config.smtpPass
+        ))
+    );
+    const firstRunSetupItems = [
+      {
+        label: 'Create or unlock your local database',
+        ok: !IS_LOCAL_DEV_MODE || (localDbBackend === 'electron-encrypted-file' && localDbUnlocked),
+        detail: !IS_LOCAL_DEV_MODE
+          ? 'Cloud-backed mode is active, so local encrypted storage is optional.'
+          : 'In Settings, enter a passphrase and click Create and Unlock.'
+      },
+      {
+        label: 'Add your name and reply email',
+        ok: hasSenderProfile,
+        detail: 'Use Sender & Signature Details. Fill in Your Name and Reply-To Email Address.'
+      },
+      {
+        label: `Connect ${selectedAiLabel} AI`,
+        ok: selectedAiReady,
+        detail: selectedAiUsesProxy
+          ? 'Add the Proxy Base URL. If your proxy uses a secret, enter that too.'
+          : `Pick ${selectedAiLabel} and paste its API key in Settings.`
+      },
+      {
+        label: 'Load contacts',
+        ok: hasContactsLoaded,
+        detail: 'Open CRM & Contacts and either import a CSV or click Sync HubSpot.'
+      },
+      {
+        label: 'Optional: connect your mailbox',
+        ok: hasMailboxSetup,
+        detail: 'Only needed if you want Smart Inbox, IMAP, SMTP, or Graph mail sync.'
+      }
+    ];
+    const requiredFirstRunCount = firstRunSetupItems.slice(0, 4).filter((item) => item.ok).length;
+    const isFirstRunReady = requiredFirstRunCount === 4;
 
     const diagnostics = [
       {
@@ -8315,6 +8362,42 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           </h2>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div className="flex items-center text-black dark:text-white">
+                  <CheckSquare className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+                  <div>
+                    <h3 className="text-lg font-bold">First-Time Setup</h3>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">Use this checklist if you are setting up SalesDirector for the first time on this Mac.</p>
+                  </div>
+                </div>
+                <div className={`px-3 py-1.5 rounded-full text-xs font-bold ${isFirstRunReady ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-300'}`}>
+                  {requiredFirstRunCount}/4 required steps complete
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {firstRunSetupItems.map((item) => (
+                  <div key={item.label} className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex items-start">
+                    {item.ok ? (
+                      <CheckCircle className="w-4 h-4 mr-2 mt-0.5 text-emerald-600" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 mr-2 mt-0.5 text-amber-600" />
+                    )}
+                    <div>
+                      <p className="text-sm font-bold text-black dark:text-white">{item.label}</p>
+                      <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">{item.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
+                <p className="text-sm font-bold text-black dark:text-white">First success test</p>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1">When the first four steps are green, open CRM & Contacts, select one contact, click Draft Outreach, then generate one draft in AI Outreach.</p>
+              </div>
+            </div>
+
             {/* System Health */}
             <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
               <div className="flex items-center justify-between mb-4">

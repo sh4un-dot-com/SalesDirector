@@ -4,6 +4,7 @@ Complete local setup, environment configuration, and first-run walkthrough.
 
 > For day-to-day usage after setup, see [USER_MANUAL.md](USER_MANUAL.md).
 > For the full feature list, see [FEATURES.md](FEATURES.md).
+> For a nontechnical Mac handoff, start with [MACBOOK_HANDOFF.md](MACBOOK_HANDOFF.md).
 
 ---
 
