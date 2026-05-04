@@ -6143,7 +6143,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 onClick={() => handleAIAction('dailyRevenueBrief')}
-                disabled={loading}
                 className="flex items-center bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50 font-bold text-sm shadow-sm"
               >
                 <Sparkles className="w-4 h-4 mr-2" />
@@ -6151,7 +6150,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               </button>
               <button
                 onClick={() => handleAIAction('rescuePipeline')}
-                disabled={loading || atRiskPipelineContacts.length === 0}
+                disabled={atRiskPipelineContacts.length === 0}
                 className="flex items-center bg-amber-400 text-black px-4 py-2 rounded-lg hover:bg-amber-300 transition disabled:opacity-50 font-bold text-sm shadow-sm"
               >
                 <ShieldAlert className="w-4 h-4 mr-2" />
@@ -6159,7 +6158,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               </button>
               <button
                 onClick={() => handleAIAction('salesPatternTracker')}
-                disabled={loading || (salesPerformanceSnapshot.outboundCount === 0 && salesPerformanceSnapshot.stageTransitionCount === 0)}
+                disabled={salesPerformanceSnapshot.outboundCount === 0 && salesPerformanceSnapshot.stageTransitionCount === 0}
                 className="flex items-center bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-4 py-2 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
               >
                 <TrendingUp className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" />
@@ -6212,7 +6211,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => handleAIAction('aiContactPlan', { contact })}
-                            disabled={loading}
                             className="font-bold text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white transition disabled:opacity-50"
                           >
                             AI Plan
@@ -6250,7 +6248,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               />
               <button
                 onClick={() => handleAIAction('organizeIdea')}
-                disabled={loading || !ideaCaptureInput.trim()}
+                disabled={!ideaCaptureInput.trim()}
                 className="mt-4 w-full flex items-center justify-center bg-rose-900 text-white py-2.5 rounded-lg text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50"
               >
                 <Layers className="w-4 h-4 mr-2" /> Turn Into Plan
@@ -6381,7 +6379,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         <div className="flex space-x-3 flex-wrap">
           <button 
             onClick={() => handleAIAction('generateTasks')}
-            disabled={loading}
             className="flex items-center bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-4 py-2 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800 transition font-bold text-sm shadow-sm"
           >
             <Sparkles className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" />
@@ -6389,7 +6386,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           </button>
           <button 
             onClick={() => handleAIAction('prioritizeTasks')}
-            disabled={loading || tasks.filter(t => t.status === 'pending').length === 0}
+            disabled={tasks.filter(t => t.status === 'pending').length === 0}
             className="flex items-center bg-rose-900 text-white px-4 py-2 rounded-lg hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
           >
             <CalendarDays className="w-4 h-4 mr-2" />
@@ -6397,7 +6394,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           </button>
           <button 
             onClick={() => handleAIAction('planFocusDay')}
-            disabled={loading || filteredTasks.filter((task) => task.status !== 'completed').length === 0}
+            disabled={filteredTasks.filter((task) => task.status !== 'completed').length === 0}
             className="flex items-center bg-amber-400 text-black px-4 py-2 rounded-lg hover:bg-amber-300 transition disabled:opacity-50 font-bold text-sm shadow-sm"
           >
             <Clock className="w-4 h-4 mr-2" />
@@ -6724,7 +6721,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               </div>
               <button
                 onClick={() => handleAIAction('callPrep', { task: upcomingMeetingQueue[0]?.task, contact: upcomingMeetingQueue[0]?.contact })}
-                disabled={loading || upcomingMeetingQueue.length === 0}
+                disabled={upcomingMeetingQueue.length === 0}
                 className="text-xs bg-black dark:bg-white text-white dark:text-black px-3 py-2 rounded-lg font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50"
               >
                 Prep Next
@@ -6751,7 +6748,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => handleAIAction('callPrep', { task: item.task, contact: item.contact })}
-                        disabled={loading}
                         className="font-bold text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white transition disabled:opacity-50"
                       >
                         AI Call Prep
@@ -6897,7 +6893,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           </button>
           <button 
             onClick={() => handleAIAction('analyzeInbox')}
-            disabled={loading}
             className="flex items-center bg-rose-900 text-white px-4 py-2 rounded-lg hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
           >
             <Sparkles className="w-4 h-4 mr-2" />
@@ -7134,7 +7129,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     </button>
                     <button
                       onClick={() => handleAIAction('replyFromInbox', { inboxEmail: email })}
-                      disabled={loading || !canReplyToInboxEmail(email)}
+                      disabled={!canReplyToInboxEmail(email)}
                       className="text-xs bg-rose-900 text-white px-4 py-2 rounded font-bold hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50"
                       title={canReplyToInboxEmail(email) ? 'Generate an AI reply for this email and open it in Outreach' : 'This email does not include a valid sender address'}
                     >
@@ -7142,7 +7137,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     </button>
                     <button
                       onClick={() => handleAnalyzeInboxEmail(email)}
-                      disabled={loading}
                       className="text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-4 py-2 rounded font-medium hover:bg-zinc-200 dark:hover:bg-zinc-700 transition"
                       title="Analyze this email with sales and marketing psychology"
                     >
@@ -7220,7 +7214,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           </button>
           <button 
             onClick={() => handleAIAction('crmWorkspace')}
-            disabled={loading || normalizedContacts.length === 0}
+            disabled={normalizedContacts.length === 0}
             className="flex items-center bg-amber-400 text-black px-4 py-2 rounded-lg hover:bg-amber-300 transition disabled:opacity-50 font-bold text-sm shadow-sm"
           >
             <Sparkles className="w-4 h-4 mr-2" />
@@ -7505,11 +7499,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <button onClick={(e) => { e.stopPropagation(); createTaskForContact(contact); }} className="p-1.5 text-zinc-500 hover:text-amber-600 dark:text-zinc-400 dark:hover:text-amber-400 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Create follow-up task">
                         <CheckSquare className="w-4 h-4" />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); handleAIAction('aiContactPlan', { contact }); }} disabled={loading} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-400 bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Create AI contact plan">
+                      <button onClick={(e) => { e.stopPropagation(); handleAIAction('aiContactPlan', { contact }); }} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-400 bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Create AI contact plan">
                         <Sparkles className="w-4 h-4" />
                       </button>
                       {contact.stage === 'Proposal' && (
-                        <button onClick={(e) => { e.stopPropagation(); handleAIAction('proposalFollowUp', { contact }); }} disabled={loading} className="p-1.5 text-zinc-500 hover:text-black dark:text-zinc-400 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Draft proposal follow-up">
+                        <button onClick={(e) => { e.stopPropagation(); handleAIAction('proposalFollowUp', { contact }); }} className="p-1.5 text-zinc-500 hover:text-black dark:text-zinc-400 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Draft proposal follow-up">
                           <Send className="w-4 h-4" />
                         </button>
                       )}
@@ -7708,7 +7702,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="grid grid-cols-1 gap-2">
             <button 
               onClick={() => handleAIAction('coach')}
-              disabled={loading || (!composerState.recipientName && !composerState.threadHistory)}
+              disabled={!composerState.recipientName && !composerState.threadHistory}
               className="flex items-center justify-center w-full bg-rose-900 border border-rose-950 text-white px-4 py-2 rounded-lg hover:bg-rose-800 transition text-sm font-bold shadow-sm disabled:opacity-50"
             >
               <Briefcase className="w-4 h-4 mr-2" />
@@ -7730,7 +7724,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               />
               <button 
                 onClick={() => handleAIAction('objection')}
-                disabled={loading || !composerState.objection}
+                disabled={!composerState.objection}
                 className="flex items-center justify-center w-full bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition text-xs font-bold disabled:opacity-50"
               >
                 Crush Objection
@@ -7740,7 +7734,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             <div className="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800 transition-colors">
               <button 
                 onClick={() => handleAIAction('summarize')}
-                disabled={loading}
                 className="flex items-center justify-center w-full bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-4 py-2 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-700 transition text-xs font-medium"
               >
                 <ListChecks className="w-4 h-4 mr-1 text-zinc-500 dark:text-zinc-400" />
@@ -7748,7 +7741,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               </button>
               <button 
                 onClick={() => handleAIAction('analyze')}
-                disabled={loading || !composerState.body}
+                disabled={!composerState.body}
                 className="flex items-center justify-center w-full bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-4 py-2 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-700 transition text-xs font-medium disabled:opacity-50"
               >
                 <Activity className="w-4 h-4 mr-1 text-zinc-500 dark:text-zinc-400" />
@@ -7894,7 +7887,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 />
                 <button 
                   onClick={() => handleAIAction('suggestSubjects')}
-                  disabled={loading || !composerState.body}
+                  disabled={!composerState.body}
                   className="text-xs text-white hover:bg-rose-800 font-bold px-3 py-1.5 rounded bg-rose-900 disabled:opacity-50 transition"
                   title="Generate subject lines based on email body"
                 >
@@ -8071,7 +8064,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <div className="flex flex-wrap items-center gap-2">
                         <button 
                           onClick={() => handleAIAction('polish')}
-                          disabled={loading || !composerState.body}
+                          disabled={!composerState.body}
                           className="bg-zinc-800 text-zinc-100 px-3 py-1.5 rounded-md text-xs font-medium hover:bg-zinc-700 transition disabled:opacity-50 flex items-center border border-zinc-700"
                           title="Polish Draft"
                         >
@@ -8079,7 +8072,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         </button>
                         <button 
                           onClick={() => handleAIAction('meeting')}
-                          disabled={loading}
                           className="bg-zinc-800 text-zinc-100 px-3 py-1.5 rounded-md text-xs font-medium hover:bg-zinc-700 transition disabled:opacity-50 flex items-center border border-zinc-700"
                           title="Schedule Meeting Script"
                         >
@@ -8087,14 +8079,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         </button>
                         <button 
                           onClick={() => handleAIAction('sequence')}
-                          disabled={loading}
                           className="bg-black dark:bg-zinc-800 text-white px-3 py-1.5 rounded-md text-xs font-bold hover:bg-zinc-800 dark:hover:bg-zinc-700 transition disabled:opacity-50 shadow-sm flex items-center"
                         >
                           <Layers className="w-3 h-3 mr-1" /> Sequence
                         </button>
                         <button 
                           onClick={() => handleAIAction('write')}
-                          disabled={loading}
                           className="bg-rose-900 text-white px-4 py-1.5 rounded-md text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50 shadow-sm"
                         >
                           {aiQueueStatus.running ? 'Working...' : 'Draft'}
@@ -8149,7 +8139,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               <div className="flex items-center gap-2 flex-wrap">
                 <button 
                   onClick={() => handleAIAction('preSendCheck')}
-                  disabled={loading || !composerState.body}
+                  disabled={!composerState.body}
                   className="flex items-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white px-4 py-2 rounded-lg hover:bg-zinc-300 dark:hover:bg-zinc-700 transition font-bold text-sm disabled:opacity-50"
                   title="AI will analyze your email for tone, clarity, and effectiveness before sending"
                 >
@@ -9187,7 +9177,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   AI actions now run one at a time. If you click another AI button while one is running, it is queued instead of being dropped or cancelling the current job.
                 </p>
                 <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                  Meta key storage remains available for future routing, but the active selector currently supports Gemini, OpenAI, Anthropic, and xAI.
+                  Supported providers in this build are Gemini, OpenAI, Anthropic, and xAI.
                 </p>
               </div>
             </div>
@@ -9318,7 +9308,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 { label: 'OpenAI API Key (ChatGPT)', name: 'openaiKey' },
                 { label: 'Anthropic API Key (Claude)', name: 'anthropicKey' },
                 { label: 'xAI API Key (Grok)', name: 'xaiKey' },
-                { label: 'Meta API Key (Llama)', name: 'metaKey' },
               ].map((provider) => (
                 <div key={provider.name}>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">{provider.label}</label>
@@ -10097,28 +10086,24 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                    <div className="space-y-2">
                      <button
                        onClick={() => handleAIAction('callPrep', { contact: selectedContact })}
-                       disabled={loading}
                        className="w-full flex items-center justify-center bg-black dark:bg-white text-white dark:text-black py-2 rounded-lg text-sm font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition disabled:opacity-50"
                      >
                        <PhoneCall className="w-4 h-4 mr-2" /> Call Prep Brief
                      </button>
                      <button 
                        onClick={() => handleAIAction('researchContact', { contact: selectedContact })}
-                       disabled={loading}
                        className="w-full flex items-center justify-center bg-rose-900 text-white py-2 rounded-lg text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50"
                      >
                        <Zap className="w-4 h-4 mr-2" /> Research Contact
                      </button>
                      <button 
                        onClick={() => handleAIAction('suggestFollowUp', { contact: selectedContact })}
-                       disabled={loading}
                        className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition disabled:opacity-50"
                      >
                        <Target className="w-4 h-4 mr-2" /> Follow-Up Strategy
                      </button>
                      <button 
                        onClick={() => handleAIAction('aiContactPlan', { contact: selectedContact })}
-                       disabled={loading}
                        className="w-full flex items-center justify-center bg-amber-400 text-black py-2 rounded-lg text-sm font-bold hover:bg-amber-300 transition disabled:opacity-50"
                      >
                        <Sparkles className="w-4 h-4 mr-2" /> Build AI Action Plan
@@ -10126,7 +10111,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      {selectedContactAttention?.isStale && selectedContact.stage !== 'Proposal' && selectedContact.stage !== 'Customer' && (
                        <button
                          onClick={() => handleAIAction('reactivationDraft', { contact: selectedContact })}
-                         disabled={loading}
                          className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition disabled:opacity-50"
                        >
                          <RotateCcw className="w-4 h-4 mr-2" /> Reactivation Draft
@@ -10135,7 +10119,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      {selectedContact.stage === 'Customer' && (
                        <button
                          onClick={() => handleAIAction('customerCheckIn', { contact: selectedContact })}
-                         disabled={loading}
                          className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition disabled:opacity-50"
                        >
                          <Mail className="w-4 h-4 mr-2" /> Customer Check-In Draft
@@ -10144,7 +10127,6 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      {selectedContact.stage === 'Proposal' && (
                        <button
                          onClick={() => handleAIAction('proposalFollowUp', { contact: selectedContact })}
-                         disabled={loading}
                          className="w-full flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white py-2 rounded-lg text-sm font-bold hover:bg-zinc-300 dark:hover:bg-zinc-700 transition disabled:opacity-50"
                        >
                          <Send className="w-4 h-4 mr-2" /> Proposal Follow-Up Draft
