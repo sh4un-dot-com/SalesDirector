@@ -73,8 +73,11 @@ const AI_PROVIDER_CONFIG = {
 const AI_GENERATION_PROFILE_DEFAULTS = Object.freeze({
   temperature: 0.7,
   topP: 0.9,
-  maxOutputTokens: 1200
+  maxOutputTokens: 8192
 });
+const AI_MAX_OUTPUT_TOKENS_LIMIT = 8192;
+const AI_CONTINUATION_MAX_REQUESTS = 3;
+const AI_CONTINUATION_CONTEXT_CHARS = 4000;
 
 const rateLimitState = new Map();
 
@@ -257,7 +260,7 @@ const clampAiSetting = (value, min, max, fallback) => {
 const buildAiGenerationProfile = (input = {}) => ({
   temperature: clampAiSetting(input.temperature ?? input.aiTemperature, 0, 1.5, AI_GENERATION_PROFILE_DEFAULTS.temperature),
   topP: clampAiSetting(input.topP ?? input.aiTopP, 0, 1, AI_GENERATION_PROFILE_DEFAULTS.topP),
-  maxOutputTokens: Math.round(clampAiSetting(input.maxOutputTokens ?? input.aiMaxOutputTokens, 256, 4096, AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens))
+  maxOutputTokens: Math.round(clampAiSetting(input.maxOutputTokens ?? input.aiMaxOutputTokens, 256, AI_MAX_OUTPUT_TOKENS_LIMIT, AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens))
 });
 
 const buildGeminiGenerationConfig = (profile) => ({
@@ -349,6 +352,48 @@ const getProviderErrorMessage = async (response, fallbackMessage) => {
   }
 };
 
+const hasLengthLimitedAiResponse = (provider, finishReason) => {
+  const normalizedProvider = normalizeAiProvider(provider);
+  const normalizedReason = String(finishReason || '').trim().toLowerCase();
+  if (!normalizedReason) return false;
+  if (normalizedProvider === 'gemini' || normalizedProvider === 'anthropic') {
+    return normalizedReason === 'max_tokens';
+  }
+  return normalizedReason === 'length' || normalizedReason === 'max_tokens';
+};
+
+const buildAiContinuationPrompt = (originalPromptText, accumulatedText) => {
+  const prompt = String(originalPromptText || '').trim();
+  const continuationTail = String(accumulatedText || '').trim().slice(-AI_CONTINUATION_CONTEXT_CHARS);
+  return [
+    prompt,
+    'Continue the same response exactly where you stopped because the previous answer hit the output token limit.',
+    'Rules:',
+    '- Do not repeat or restart prior text.',
+    '- Do not add commentary about continuing.',
+    '- Output only the remaining continuation.',
+    'Recent tail of the previous response for context:',
+    continuationTail
+  ].filter(Boolean).join('\n\n').trim();
+};
+
+const stitchAiContinuationText = (existingText, nextText) => {
+  const base = String(existingText || '').trimEnd();
+  const addition = String(nextText || '').trim();
+  if (!base) return addition;
+  if (!addition) return base;
+  if (base.endsWith(addition)) return base;
+
+  const maxOverlap = Math.min(800, base.length, addition.length);
+  for (let overlap = maxOverlap; overlap >= 80; overlap -= 1) {
+    if (base.slice(-overlap) === addition.slice(0, overlap)) {
+      return `${base}${addition.slice(overlap)}`.trim();
+    }
+  }
+
+  return `${base}\n${addition}`.trim();
+};
+
 const validateAiGenerationProfile = (value) => {
   if (value === undefined) {
     return buildAiGenerationProfile();
@@ -374,8 +419,8 @@ const validateAiGenerationProfile = (value) => {
 
   if (value.maxOutputTokens !== undefined) {
     const parsed = Number(value.maxOutputTokens);
-    if (!Number.isInteger(parsed) || parsed < 256 || parsed > 4096) {
-      throw new HttpError(400, 'generationProfile.maxOutputTokens must be an integer between 256 and 4096.');
+    if (!Number.isInteger(parsed) || parsed < 256 || parsed > AI_MAX_OUTPUT_TOKENS_LIMIT) {
+      throw new HttpError(400, `generationProfile.maxOutputTokens must be an integer between 256 and ${AI_MAX_OUTPUT_TOKENS_LIMIT}.`);
     }
   }
 
@@ -525,50 +570,86 @@ const requestAiText = async ({ provider, promptText, systemInstruction, generati
     throw new HttpError(400, 'Meta proxy routing is not available yet.');
   }
 
-  if (provider === 'gemini') {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${providerConfig.model}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: promptText }] }],
-        systemInstruction,
-        generationConfig: buildGeminiGenerationConfig(sharedGenerationProfile)
-      })
-    });
+  const requestSingleText = async (requestPromptText) => {
+    if (provider === 'gemini') {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${providerConfig.model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: requestPromptText }] }],
+          systemInstruction,
+          generationConfig: buildGeminiGenerationConfig(sharedGenerationProfile)
+        })
+      });
 
-    if (!response.ok) {
-      throw new HttpError(response.status, await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+      if (!response.ok) {
+        throw new HttpError(response.status, await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+      }
+
+      const data = await response.json().catch(() => ({}));
+      const text = flattenProviderText((data?.candidates || []).map((candidate) => candidate?.content?.parts || []));
+      if (!String(text || '').trim()) {
+        const finishReason = String(data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '').trim();
+        throw new HttpError(502, finishReason
+          ? `${providerConfig.label} returned no usable text (${finishReason}).`
+          : `${providerConfig.label} returned no usable text.`);
+      }
+
+      return {
+        text: String(text).trim(),
+        shouldContinue: hasLengthLimitedAiResponse(provider, data?.candidates?.[0]?.finishReason)
+      };
     }
 
-    const data = await response.json().catch(() => ({}));
-    const text = flattenProviderText((data?.candidates || []).map((candidate) => candidate?.content?.parts || []));
-    if (!String(text || '').trim()) {
-      const finishReason = String(data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '').trim();
-      throw new HttpError(502, finishReason
-        ? `${providerConfig.label} returned no usable text (${finishReason}).`
-        : `${providerConfig.label} returned no usable text.`);
+    if (provider === 'anthropic') {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: providerConfig.model,
+          ...buildAnthropicGenerationConfig(sharedGenerationProfile),
+          system: systemText || undefined,
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'text', text: requestPromptText }]
+            }
+          ]
+        })
+      });
+
+      if (!response.ok) {
+        throw new HttpError(response.status, await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+      }
+
+      const data = await response.json().catch(() => ({}));
+      const text = flattenProviderText(data?.content || []);
+      if (!String(text || '').trim()) {
+        throw new HttpError(502, `${providerConfig.label} returned no usable text.`);
+      }
+
+      return {
+        text: String(text).trim(),
+        shouldContinue: hasLengthLimitedAiResponse(provider, data?.stop_reason)
+      };
     }
 
-    return String(text).trim();
-  }
-
-  if (provider === 'anthropic') {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch(provider === 'xai' ? 'https://api.x.ai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        Authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model: providerConfig.model,
-        ...buildAnthropicGenerationConfig(sharedGenerationProfile),
-        system: systemText || undefined,
+        ...buildOpenAiCompatibleGenerationConfig(sharedGenerationProfile),
         messages: [
-          {
-            role: 'user',
-            content: [{ type: 'text', text: promptText }]
-          }
+          ...(systemText ? [{ role: 'system', content: systemText }] : []),
+          { role: 'user', content: requestPromptText }
         ]
       })
     });
@@ -578,41 +659,41 @@ const requestAiText = async ({ provider, promptText, systemInstruction, generati
     }
 
     const data = await response.json().catch(() => ({}));
-    const text = flattenProviderText(data?.content || []);
+    const text = flattenProviderText(data?.choices?.[0]?.message?.content);
     if (!String(text || '').trim()) {
       throw new HttpError(502, `${providerConfig.label} returned no usable text.`);
     }
 
-    return String(text).trim();
+    return {
+      text: String(text).trim(),
+      shouldContinue: hasLengthLimitedAiResponse(provider, data?.choices?.[0]?.finish_reason)
+    };
+  };
+
+  let accumulatedText = '';
+  let currentPromptText = promptText;
+
+  for (let continuationIndex = 0; continuationIndex <= AI_CONTINUATION_MAX_REQUESTS; continuationIndex += 1) {
+    const nextResult = await requestSingleText(currentPromptText);
+    const stitchedText = stitchAiContinuationText(accumulatedText, nextResult.text);
+
+    if (stitchedText === accumulatedText && accumulatedText) {
+      break;
+    }
+
+    accumulatedText = stitchedText;
+    if (!nextResult.shouldContinue || continuationIndex === AI_CONTINUATION_MAX_REQUESTS) {
+      break;
+    }
+
+    currentPromptText = buildAiContinuationPrompt(promptText, accumulatedText);
   }
 
-  const response = await fetch(provider === 'xai' ? 'https://api.x.ai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: providerConfig.model,
-      ...buildOpenAiCompatibleGenerationConfig(sharedGenerationProfile),
-      messages: [
-        ...(systemText ? [{ role: 'system', content: systemText }] : []),
-        { role: 'user', content: promptText }
-      ]
-    })
-  });
-
-  if (!response.ok) {
-    throw new HttpError(response.status, await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
-  }
-
-  const data = await response.json().catch(() => ({}));
-  const text = flattenProviderText(data?.choices?.[0]?.message?.content);
-  if (!String(text || '').trim()) {
+  if (!String(accumulatedText || '').trim()) {
     throw new HttpError(502, `${providerConfig.label} returned no usable text.`);
   }
 
-  return String(text).trim();
+  return String(accumulatedText).trim();
 };
 
 const handleAi = async (req, res) => {

@@ -433,8 +433,12 @@ const AI_PROVIDER_CONFIG = AI_PROVIDER_OPTIONS.reduce((accumulator, option) => {
 const AI_GENERATION_PROFILE_DEFAULTS = Object.freeze({
   temperature: 0.7,
   topP: 0.9,
-  maxOutputTokens: 1200
+  maxOutputTokens: 8192
 });
+const AI_MAX_OUTPUT_TOKENS_LIMIT = 8192;
+const LEGACY_AI_MAX_OUTPUT_TOKENS_DEFAULTS = new Set([1200, 4096]);
+const AI_CONTINUATION_MAX_REQUESTS = 3;
+const AI_CONTINUATION_CONTEXT_CHARS = 4000;
 const AI_PROVIDER_HEALTHCHECK_PREFIX = 'SALESDIRECTOR_AI_OK';
 const AI_PROVIDER_HEALTHCHECK_SYSTEM_TEXT = 'You are an AI transport health-check harness. Return only the exact verification token requested by the user. Do not add punctuation, markdown, labels, or explanation.';
 
@@ -488,13 +492,19 @@ const sanitizePersistedConfig = (config = {}) => {
   if (Object.prototype.hasOwnProperty.call(nextConfig, 'useGraphApi')) {
     nextConfig.useGraphApi = String(nextConfig.useGraphApi || '').trim().toLowerCase() === 'true' ? 'true' : 'false';
   }
+  if (Object.prototype.hasOwnProperty.call(nextConfig, 'aiMaxOutputTokens')) {
+    const parsed = Number(nextConfig.aiMaxOutputTokens);
+    if (Number.isInteger(parsed) && LEGACY_AI_MAX_OUTPUT_TOKENS_DEFAULTS.has(parsed)) {
+      nextConfig.aiMaxOutputTokens = String(AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens);
+    }
+  }
   return nextConfig;
 };
 
 const buildAiGenerationProfile = (input = {}) => ({
   temperature: clampAiSetting(input.aiTemperature ?? input.temperature, 0, 1.5, AI_GENERATION_PROFILE_DEFAULTS.temperature),
   topP: clampAiSetting(input.aiTopP ?? input.topP, 0, 1, AI_GENERATION_PROFILE_DEFAULTS.topP),
-  maxOutputTokens: Math.round(clampAiSetting(input.aiMaxOutputTokens ?? input.maxOutputTokens, 256, 4096, AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens))
+  maxOutputTokens: Math.round(clampAiSetting(input.aiMaxOutputTokens ?? input.maxOutputTokens, 256, AI_MAX_OUTPUT_TOKENS_LIMIT, AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens))
 });
 
 const formatAiGenerationProfileSummary = (profile = AI_GENERATION_PROFILE_DEFAULTS) => (
@@ -554,6 +564,48 @@ const parseProviderErrorMessage = async (response, fallbackMessage) => {
   } catch {
     return rawBody.trim() || `${fallbackMessage} (${response.status}).`;
   }
+};
+
+const hasLengthLimitedAiResponse = (provider, finishReason) => {
+  const normalizedProvider = normalizeAiProvider(provider);
+  const normalizedReason = String(finishReason || '').trim().toLowerCase();
+  if (!normalizedReason) return false;
+  if (normalizedProvider === 'gemini' || normalizedProvider === 'anthropic') {
+    return normalizedReason === 'max_tokens';
+  }
+  return normalizedReason === 'length' || normalizedReason === 'max_tokens';
+};
+
+const buildAiContinuationPrompt = (originalPromptText, accumulatedText) => {
+  const prompt = String(originalPromptText || '').trim();
+  const continuationTail = String(accumulatedText || '').trim().slice(-AI_CONTINUATION_CONTEXT_CHARS);
+  return [
+    prompt,
+    'Continue the same response exactly where you stopped because the previous answer hit the output token limit.',
+    'Rules:',
+    '- Do not repeat or restart prior text.',
+    '- Do not add commentary about continuing.',
+    '- Output only the remaining continuation.',
+    'Recent tail of the previous response for context:',
+    continuationTail
+  ].filter(Boolean).join('\n\n').trim();
+};
+
+const stitchAiContinuationText = (existingText, nextText) => {
+  const base = String(existingText || '').trimEnd();
+  const addition = String(nextText || '').trim();
+  if (!base) return addition;
+  if (!addition) return base;
+  if (base.endsWith(addition)) return base;
+
+  const maxOverlap = Math.min(800, base.length, addition.length);
+  for (let overlap = maxOverlap; overlap >= 80; overlap -= 1) {
+    if (base.slice(-overlap) === addition.slice(0, overlap)) {
+      return `${base}${addition.slice(overlap)}`.trim();
+    }
+  }
+
+  return `${base}\n${addition}`.trim();
 };
 
 const getAiProviderRuntimeInfo = ({ provider, apiBaseUrl, hasDesktopAiApi, hasApiKey }) => {
@@ -2178,8 +2230,8 @@ export default function App() {
 
     if (name === 'aiMaxOutputTokens') {
       const parsed = Number(trimmed);
-      if (!Number.isInteger(parsed) || parsed < 256 || parsed > 4096) {
-        return 'Enter a whole number between 256 and 4096.';
+      if (!Number.isInteger(parsed) || parsed < 256 || parsed > AI_MAX_OUTPUT_TOKENS_LIMIT) {
+        return `Enter a whole number between 256 and ${AI_MAX_OUTPUT_TOKENS_LIMIT}.`;
       }
     }
 
@@ -4297,7 +4349,7 @@ No emojis.`;
     const providerConfig = getSelectedAiProviderConfig(provider);
     const generationProfile = aiGenerationProfile;
     const maxAttempts = 2;
-    const requestTimeoutMs = 20000;
+    const requestTimeoutMs = 90000;
     const blockMessage = getAiProviderBlockMessage(provider);
 
     if (blockMessage) {
@@ -4321,21 +4373,138 @@ No emojis.`;
       parts: [{ text: "You are an elite Virtual Sales Director. You have unparalleled skills in B2B sales strategy, psychology, negotiation, and high-conversion copywriting. Your advice is cutting-edge. CRITICAL RULE: Absolutely NO emojis under any circumstances." }]
     };
     const systemText = getAiSystemInstructionText(systemInstruction);
-    const directGeminiPayload = {
-      contents: [{ parts: [{ text: promptText }] }],
-      systemInstruction,
-      generationConfig: {
-        temperature: generationProfile.temperature,
-        topP: generationProfile.topP,
-        maxOutputTokens: generationProfile.maxOutputTokens
-      }
-    };
-
     const proxyPayload = {
       provider,
       promptText,
       systemInstruction,
       generationProfile
+    };
+    const requestDirectProviderText = async (requestPromptText) => {
+      if (provider === 'gemini') {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${providerConfig.model}:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: requestPromptText }] }],
+            systemInstruction,
+            generationConfig: {
+              temperature: generationProfile.temperature,
+              topP: generationProfile.topP,
+              maxOutputTokens: generationProfile.maxOutputTokens
+            }
+          }),
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          const providerError = new Error(
+            await parseProviderErrorMessage(response, `${providerLabel} request failed`)
+          );
+          providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+          throw providerError;
+        }
+
+        const data = await response.json();
+        const text = (data?.candidates || [])
+          .flatMap((candidate) => candidate?.content?.parts || [])
+          .map((part) => part?.text || '')
+          .join('\n')
+          .trim();
+
+        if (!text) {
+          const finishReason = String(data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '').trim();
+          throw new Error(finishReason
+            ? `${providerLabel} returned no usable text (${finishReason}).`
+            : `${providerLabel} returned no usable text.`);
+        }
+
+        return {
+          text,
+          shouldContinue: hasLengthLimitedAiResponse(provider, data?.candidates?.[0]?.finishReason)
+        };
+      }
+
+      if (provider === 'anthropic') {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01'
+          },
+          body: JSON.stringify({
+            model: providerConfig.model,
+            temperature: generationProfile.temperature,
+            top_p: generationProfile.topP,
+            max_tokens: generationProfile.maxOutputTokens,
+            system: systemText || undefined,
+            messages: [
+              {
+                role: 'user',
+                content: [{ type: 'text', text: requestPromptText }]
+              }
+            ]
+          }),
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          const providerError = new Error(
+            await parseProviderErrorMessage(response, `${providerLabel} request failed`)
+          );
+          providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+          throw providerError;
+        }
+
+        const data = await response.json();
+        const text = flattenProviderText(data?.content || []).trim();
+        if (!text) {
+          throw new Error(`${providerLabel} returned no usable text.`);
+        }
+
+        return {
+          text,
+          shouldContinue: hasLengthLimitedAiResponse(provider, data?.stop_reason)
+        };
+      }
+
+      const response = await fetch(provider === 'xai' ? 'https://api.x.ai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: providerConfig.model,
+          temperature: generationProfile.temperature,
+          top_p: generationProfile.topP,
+          max_tokens: generationProfile.maxOutputTokens,
+          messages: [
+            ...(systemText ? [{ role: 'system', content: systemText }] : []),
+            { role: 'user', content: requestPromptText }
+          ]
+        }),
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        const providerError = new Error(
+          await parseProviderErrorMessage(response, `${providerLabel} request failed`)
+        );
+        providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+        throw providerError;
+      }
+
+      const data = await response.json();
+      const text = flattenProviderText(data?.choices?.[0]?.message?.content).trim();
+      if (!text) {
+        throw new Error(`${providerLabel} returned no usable text.`);
+      }
+
+      return {
+        text,
+        shouldContinue: hasLengthLimitedAiResponse(provider, data?.choices?.[0]?.finish_reason)
+      };
     };
 
     let attemptsRemaining = maxAttempts;
@@ -4395,95 +4564,28 @@ No emojis.`;
 
             const data = await response.json();
             text = String(data?.text || '').trim();
-          } else if (provider === 'gemini') {
-            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${providerConfig.model}:generateContent?key=${apiKey}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(directGeminiPayload),
-              signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-              const providerError = new Error(
-                await parseProviderErrorMessage(response, `${providerLabel} request failed`)
-              );
-              providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
-              throw providerError;
-            }
-
-            const data = await response.json();
-            text = (data?.candidates || [])
-              .flatMap((candidate) => candidate?.content?.parts || [])
-              .map((part) => part?.text || '')
-              .join('\n')
-              .trim();
-          } else if (provider === 'anthropic') {
-            const response = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01'
-              },
-              body: JSON.stringify({
-                model: providerConfig.model,
-                temperature: generationProfile.temperature,
-                top_p: generationProfile.topP,
-                max_tokens: generationProfile.maxOutputTokens,
-                system: systemText || undefined,
-                messages: [
-                  {
-                    role: 'user',
-                    content: [{ type: 'text', text: promptText }]
-                  }
-                ]
-              }),
-              signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-              const providerError = new Error(
-                await parseProviderErrorMessage(response, `${providerLabel} request failed`)
-              );
-              providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
-              throw providerError;
-            }
-
-            const data = await response.json();
-            text = flattenProviderText(data?.content || []).trim();
           } else {
-            const response = await fetch(provider === 'xai' ? 'https://api.x.ai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${apiKey}`
-              },
-              body: JSON.stringify({
-                model: providerConfig.model,
-                temperature: generationProfile.temperature,
-                top_p: generationProfile.topP,
-                max_tokens: generationProfile.maxOutputTokens,
-                messages: [
-                  ...(systemText ? [{ role: 'system', content: systemText }] : []),
-                  { role: 'user', content: promptText }
-                ]
-              }),
-              signal: controller.signal
-            });
-            clearTimeout(timeoutId);
+            let accumulatedText = '';
+            let currentPromptText = promptText;
 
-            if (!response.ok) {
-              const providerError = new Error(
-                await parseProviderErrorMessage(response, `${providerLabel} request failed`)
-              );
-              providerError.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
-              throw providerError;
+            for (let continuationIndex = 0; continuationIndex <= AI_CONTINUATION_MAX_REQUESTS; continuationIndex += 1) {
+              const nextResult = await requestDirectProviderText(currentPromptText);
+              const stitchedText = stitchAiContinuationText(accumulatedText, nextResult.text);
+
+              if (stitchedText === accumulatedText && accumulatedText) {
+                break;
+              }
+
+              accumulatedText = stitchedText;
+              if (!nextResult.shouldContinue || continuationIndex === AI_CONTINUATION_MAX_REQUESTS) {
+                break;
+              }
+
+              currentPromptText = buildAiContinuationPrompt(promptText, accumulatedText);
             }
 
-            const data = await response.json();
-            text = flattenProviderText(data?.choices?.[0]?.message?.content).trim();
+            clearTimeout(timeoutId);
+            text = accumulatedText.trim();
           }
 
           if (!text) {
@@ -4499,7 +4601,7 @@ No emojis.`;
 
           if (error?.name === 'AbortError' || (controller.signal.aborted && /abort|cancel/i.test(String(error?.message || '')))) {
             if (didTimeout) {
-              throw new Error(`AI request timed out after 20 seconds. Check your ${providerLabel} key, proxy, or network and try again.`);
+              throw new Error(`AI request timed out after ${Math.round(requestTimeoutMs / 1000)} seconds. Check your ${providerLabel} key, proxy, or network and try again.`);
             }
             throw new Error("AI request cancelled.");
           }
@@ -7586,9 +7688,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   );
 
   const renderOutreach = () => (
-    <div className="flex flex-col md:flex-row h-full max-w-7xl mx-auto w-full">
+    <div className="flex min-h-full w-full max-w-7xl mx-auto flex-col xl:h-full xl:flex-row">
       {/* Thread/Context Sidebar */}
-      <div className="w-full md:w-[34%] xl:w-[30%] border-b md:border-b-0 md:border-r border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col overflow-y-auto transition-colors md:max-h-full max-h-[40vh]">
+      <div className="w-full xl:w-[34%] 2xl:w-[30%] border-b xl:border-b-0 xl:border-r border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex min-h-0 flex-col overflow-hidden transition-colors max-h-[45vh] xl:max-h-full">
         <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-between items-center transition-colors">
           <h3 className="font-semibold text-black dark:text-white flex items-center">
             <SlidersHorizontal className="w-4 h-4 mr-2 text-zinc-500 dark:text-zinc-400" />
@@ -7596,7 +7698,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           </h3>
         </div>
         
-        <div className="p-4 flex-1 space-y-6">
+        <div className="p-4 flex-1 min-h-0 overflow-y-auto space-y-6">
           <div className="space-y-4">
             <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 p-4">
               <div className="flex items-center justify-between gap-2 mb-3">
@@ -7816,9 +7918,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       </div>
 
       {/* Main Composer Area */}
-      <div className="w-full md:w-[66%] xl:w-[70%] flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors min-h-0 flex-1">
-        <div className="p-6 flex-1 flex flex-col">
-          <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 flex flex-col h-full overflow-hidden transition-colors">
+      <div className="w-full xl:w-[66%] 2xl:w-[70%] flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors min-h-0 flex-1">
+        <div className="p-6 flex-1 min-h-0 flex flex-col">
+          <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 flex flex-col min-h-0 xl:h-full overflow-hidden transition-colors">
             {selectedInboxEmail && (
               <div className="border-b border-zinc-200 dark:border-zinc-800 bg-amber-50/70 dark:bg-amber-950/20 px-4 py-3">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -8284,11 +8386,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         detail: 'Use Sender & Signature Details. Fill in Your Name and Reply-To Email Address.'
       },
       {
-        label: `Connect ${selectedAiLabel} AI`,
+        label: 'Connect AI',
         ok: selectedAiReady,
         detail: selectedAiUsesProxy
           ? 'Add the Proxy Base URL. If your proxy uses a secret, enter that too.'
-          : `Pick ${selectedAiLabel} and paste its API key in Settings.`
+          : 'Choose your AI provider and paste its API key in Settings.'
       },
       {
         label: 'Load contacts',
@@ -9165,7 +9267,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       type="number"
                       step="64"
                       min="256"
-                      max="4096"
+                      max={AI_MAX_OUTPUT_TOKENS_LIMIT}
                       name="aiMaxOutputTokens"
                       value={config.aiMaxOutputTokens}
                       onChange={handleConfigChange}
@@ -9495,15 +9597,15 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   };
 
   return (
-    <div className={`flex h-screen font-sans overflow-hidden transition-colors ${isDarkMode ? 'dark bg-zinc-950' : 'bg-white'}`}>
+    <div className={`flex min-h-screen xl:h-screen font-sans overflow-x-hidden xl:overflow-hidden transition-colors ${isDarkMode ? 'dark bg-zinc-950' : 'bg-white'}`}>
       
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
-        <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        <div className="fixed inset-0 bg-black/50 z-40 xl:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
       {/* Sidebar Navigation */}
-      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-black dark:bg-zinc-900 text-zinc-300 flex flex-col border-r border-zinc-800 transition-transform duration-200 lg:static lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <div className={`fixed inset-y-0 left-0 z-50 w-64 max-w-[85vw] bg-black dark:bg-zinc-900 text-zinc-300 flex min-h-0 flex-col border-r border-zinc-800 overflow-hidden shadow-2xl transition-transform duration-200 xl:static xl:translate-x-0 xl:w-64 xl:shadow-none ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
           <h1 className="text-xl font-bold text-white flex items-center">
             <div className="w-8 h-8 bg-blue-900 rounded-lg flex items-center justify-center mr-3 flex-shrink-0">
@@ -9511,12 +9613,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             </div>
             Sales Director
           </h1>
-          <button onClick={() => setSidebarOpen(false)} className="lg:hidden p-1 text-zinc-400 hover:text-white transition-colors">
+          <button onClick={() => setSidebarOpen(false)} className="xl:hidden p-1 text-zinc-400 hover:text-white transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
         
-        <nav className="flex-1 p-4 space-y-2">
+        <nav className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2">
           {[
             { id: 'dashboard', icon: Activity, label: 'Dashboard' },
             { id: 'inbox', icon: Inbox, label: 'Smart Inbox' },
@@ -9542,7 +9644,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           ))}
         </nav>
         
-        <div className="p-4 border-t border-zinc-800 text-xs text-zinc-500 text-center flex flex-col items-center">
+        <div className="shrink-0 p-4 border-t border-zinc-800 text-xs text-zinc-500 text-center flex flex-col items-center">
           <p className="mb-1 font-medium">Proudly built by</p>
           <a href={AKITA_CREDITS.website} target="_blank" rel="noopener noreferrer" className="text-blue-900 dark:text-blue-600 hover:text-blue-700 dark:hover:text-blue-400 font-bold text-sm mb-1 transition-colors">
             {AKITA_CREDITS.companyName}
@@ -9556,18 +9658,18 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col relative overflow-hidden bg-white dark:bg-zinc-950 transition-colors min-w-0">
+      <div className="flex-1 min-w-0 min-h-screen xl:min-h-0 flex flex-col relative overflow-hidden bg-white dark:bg-zinc-950 transition-colors">
         {/* Header bar */}
-        <header className="h-16 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between px-4 md:px-8 z-10 transition-colors">
+        <header className="min-h-16 xl:h-16 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-3 px-4 py-3 md:px-8 z-10 transition-colors">
           <div className="flex items-center gap-3 min-w-0">
-            <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 -ml-2 rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
+            <button onClick={() => setSidebarOpen(true)} className="xl:hidden p-2 -ml-2 rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
               <Menu className="w-5 h-5" />
             </button>
             <h2 className="text-lg font-bold text-black dark:text-white capitalize truncate">
               {activeTab.replace('-', ' ')}
             </h2>
           </div>
-          <div className="flex items-center space-x-2 md:space-x-4">
+          <div className="ml-auto flex items-center gap-2 md:gap-4 flex-wrap justify-end">
             <button 
               onClick={() => setIsDarkMode(!isDarkMode)}
               className="p-2 rounded-full text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
@@ -9582,10 +9684,10 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
                 placeholder="Search leads..." 
-                className="pl-9 pr-4 py-1.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-full text-sm outline-none focus:ring-2 focus:ring-blue-900 w-40 md:w-64 transition-all text-black dark:text-white"
+                className="pl-9 pr-4 py-1.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-full text-sm outline-none focus:ring-2 focus:ring-blue-900 w-32 sm:w-40 md:w-56 xl:w-64 transition-all text-black dark:text-white"
               />
               {globalSearchResults && globalSearchResults.length > 0 && (
-                <div className="absolute top-full mt-2 right-0 w-80 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+                <div className="absolute top-full mt-2 right-0 w-[min(20rem,calc(100vw-2rem))] sm:w-80 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden">
                   <div className="p-2 border-b border-zinc-100 dark:border-zinc-800">
                     <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 px-2">{globalSearchResults.length} result{globalSearchResults.length !== 1 ? 's' : ''}</span>
                   </div>
@@ -9607,7 +9709,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </div>
               )}
               {globalSearchResults && globalSearchResults.length === 0 && (
-                <div className="absolute top-full mt-2 right-0 w-64 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 p-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
+                <div className="absolute top-full mt-2 right-0 w-[min(16rem,calc(100vw-2rem))] sm:w-64 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 p-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
                   No contacts found.
                 </div>
               )}
@@ -9619,7 +9721,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </header>
 
         {/* Dynamic Content */}
-        <main className="flex-1 overflow-auto flex bg-white dark:bg-zinc-950 transition-colors">
+        <main className="flex min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-white dark:bg-zinc-950 transition-colors">
           {activeTab === 'dashboard' && renderDashboard()}
           {activeTab === 'inbox' && renderInbox()}
           {activeTab === 'tasks' && renderTasks()}

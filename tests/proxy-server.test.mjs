@@ -34,7 +34,9 @@ const startProxy = async (envOverrides = {}, options = {}) => {
     ...envOverrides
   };
 
-  const child = spawn('node', ['proxy-server.mjs'], {
+  const nodeArgs = [...(options.nodeArgs || []), 'proxy-server.mjs'];
+
+  const child = spawn('node', nodeArgs, {
     cwd: process.cwd(),
     env,
     stdio: ['ignore', 'pipe', 'pipe']
@@ -148,13 +150,40 @@ test('proxy validates AI generation profile values without upstream call', async
       body: JSON.stringify({
         provider: 'gemini',
         promptText: 'hello',
-        generationProfile: { temperature: 9 }
+        generationProfile: { maxOutputTokens: 8193 }
       })
     });
 
     const body = await response.json();
     assert.equal(response.status, 400);
-    assert.match(body.error, /generationProfile\.temperature/i);
+    assert.match(body.error, /generationProfile\.maxOutputTokens/i);
+    assert.match(body.error, /8192/i);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('proxy continues Gemini responses when the provider stops at max tokens', async () => {
+  const server = await startProxy(
+    { GEMINI_API_KEY: 'dummy-key' },
+    { nodeArgs: ['--import', './tests/fixtures/mock-ai-fetch.mjs'] }
+  );
+  try {
+    const response = await fetch(`${server.baseUrl}/api/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'gemini',
+        promptText: 'Write a long response.',
+        generationProfile: { maxOutputTokens: 8192 }
+      })
+    });
+
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.provider, 'gemini');
+    assert.match(body.text, /Alpha segment/);
+    assert.match(body.text, /Continuation tail/);
   } finally {
     await server.stop();
   }

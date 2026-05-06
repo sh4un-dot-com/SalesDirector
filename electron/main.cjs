@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, screen } = require('electron');
 const http = require('node:http');
 const path = require('node:path');
 const fs = require('node:fs/promises');
@@ -67,8 +67,11 @@ const AI_PROVIDER_CONFIG = {
 const AI_GENERATION_PROFILE_DEFAULTS = Object.freeze({
   temperature: 0.7,
   topP: 0.9,
-  maxOutputTokens: 1200
+  maxOutputTokens: 8192
 });
+const AI_MAX_OUTPUT_TOKENS_LIMIT = 8192;
+const AI_CONTINUATION_MAX_REQUESTS = 3;
+const AI_CONTINUATION_CONTEXT_CHARS = 4000;
 
 // In-memory token cache keyed by `${provider}|${clientId}|${user}`
 const oauth2TokenCache = new Map();
@@ -746,7 +749,7 @@ const clampAiSetting = (value, min, max, fallback) => {
 const buildAiGenerationProfile = (input = {}) => ({
   temperature: clampAiSetting(input.temperature ?? input.aiTemperature, 0, 1.5, AI_GENERATION_PROFILE_DEFAULTS.temperature),
   topP: clampAiSetting(input.topP ?? input.aiTopP, 0, 1, AI_GENERATION_PROFILE_DEFAULTS.topP),
-  maxOutputTokens: Math.round(clampAiSetting(input.maxOutputTokens ?? input.aiMaxOutputTokens, 256, 4096, AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens))
+  maxOutputTokens: Math.round(clampAiSetting(input.maxOutputTokens ?? input.aiMaxOutputTokens, 256, AI_MAX_OUTPUT_TOKENS_LIMIT, AI_GENERATION_PROFILE_DEFAULTS.maxOutputTokens))
 });
 
 const buildGeminiGenerationConfig = (profile) => ({
@@ -822,6 +825,48 @@ const flattenProviderText = (value) => {
   return '';
 };
 
+const hasLengthLimitedAiResponse = (provider, finishReason) => {
+  const normalizedProvider = normalizeAiProvider(provider);
+  const normalizedReason = String(finishReason || '').trim().toLowerCase();
+  if (!normalizedReason) return false;
+  if (normalizedProvider === 'gemini' || normalizedProvider === 'anthropic') {
+    return normalizedReason === 'max_tokens';
+  }
+  return normalizedReason === 'length' || normalizedReason === 'max_tokens';
+};
+
+const buildAiContinuationPrompt = (originalPromptText, accumulatedText) => {
+  const prompt = String(originalPromptText || '').trim();
+  const continuationTail = String(accumulatedText || '').trim().slice(-AI_CONTINUATION_CONTEXT_CHARS);
+  return [
+    prompt,
+    'Continue the same response exactly where you stopped because the previous answer hit the output token limit.',
+    'Rules:',
+    '- Do not repeat or restart prior text.',
+    '- Do not add commentary about continuing.',
+    '- Output only the remaining continuation.',
+    'Recent tail of the previous response for context:',
+    continuationTail
+  ].filter(Boolean).join('\n\n').trim();
+};
+
+const stitchAiContinuationText = (existingText, nextText) => {
+  const base = String(existingText || '').trimEnd();
+  const addition = String(nextText || '').trim();
+  if (!base) return addition;
+  if (!addition) return base;
+  if (base.endsWith(addition)) return base;
+
+  const maxOverlap = Math.min(800, base.length, addition.length);
+  for (let overlap = maxOverlap; overlap >= 80; overlap -= 1) {
+    if (base.slice(-overlap) === addition.slice(0, overlap)) {
+      return `${base}${addition.slice(overlap)}`.trim();
+    }
+  }
+
+  return `${base}\n${addition}`.trim();
+};
+
 const requestDesktopAiText = async ({ provider, apiKey, promptText, systemInstruction, generationProfile, signal }) => {
   const normalizedProvider = normalizeAiProvider(provider);
   const providerConfig = AI_PROVIDER_CONFIG[normalizedProvider] || AI_PROVIDER_CONFIG.gemini;
@@ -840,49 +885,89 @@ const requestDesktopAiText = async ({ provider, apiKey, promptText, systemInstru
     throw new Error('Meta direct routing is not available yet. Use Gemini, OpenAI, Anthropic, xAI, or proxy mode.');
   }
 
-  if (normalizedProvider === 'gemini') {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${providerConfig.model}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: promptText }] }],
-        systemInstruction: systemText ? { parts: [{ text: systemText }] } : undefined,
-        generationConfig: buildGeminiGenerationConfig(sharedGenerationProfile)
-      }),
-      signal
-    });
+  const requestSingleText = async (requestPromptText) => {
+    if (normalizedProvider === 'gemini') {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${providerConfig.model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: requestPromptText }] }],
+          systemInstruction: systemText ? { parts: [{ text: systemText }] } : undefined,
+          generationConfig: buildGeminiGenerationConfig(sharedGenerationProfile)
+        }),
+        signal
+      });
 
-    if (!response.ok) {
-      throw new Error(await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+      if (!response.ok) {
+        throw new Error(await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+      }
+
+      const data = await response.json();
+      const text = flattenProviderText(data?.candidates?.map((candidate) => candidate?.content?.parts || []));
+      if (!text.trim()) {
+        const finishReason = String(data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '').trim();
+        throw new Error(finishReason ? `${providerConfig.label} returned no usable text (${finishReason}).` : `${providerConfig.label} returned no usable text.`);
+      }
+
+      return {
+        text: text.trim(),
+        shouldContinue: hasLengthLimitedAiResponse(normalizedProvider, data?.candidates?.[0]?.finishReason)
+      };
     }
 
-    const data = await response.json();
-    const text = flattenProviderText(data?.candidates?.map((candidate) => candidate?.content?.parts || []));
-    if (!text.trim()) {
-      const finishReason = String(data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '').trim();
-      throw new Error(finishReason ? `${providerConfig.label} returned no usable text (${finishReason}).` : `${providerConfig.label} returned no usable text.`);
+    if (normalizedProvider === 'anthropic') {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: providerConfig.model,
+          ...buildAnthropicGenerationConfig(sharedGenerationProfile),
+          system: systemText || undefined,
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'text', text: requestPromptText }]
+            }
+          ]
+        }),
+        signal
+      });
+
+      if (!response.ok) {
+        throw new Error(await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
+      }
+
+      const data = await response.json();
+      const text = flattenProviderText(data?.content || []);
+      if (!text.trim()) {
+        throw new Error(`${providerConfig.label} returned no usable text.`);
+      }
+
+      return {
+        text: text.trim(),
+        shouldContinue: hasLengthLimitedAiResponse(normalizedProvider, data?.stop_reason)
+      };
     }
 
-    return text.trim();
-  }
-
-  if (normalizedProvider === 'anthropic') {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const openAiCompatibleUrl = normalizedProvider === 'xai'
+      ? 'https://api.x.ai/v1/chat/completions'
+      : 'https://api.openai.com/v1/chat/completions';
+    const response = await fetch(openAiCompatibleUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        Authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model: providerConfig.model,
-        ...buildAnthropicGenerationConfig(sharedGenerationProfile),
-        system: systemText || undefined,
+        ...buildOpenAiCompatibleGenerationConfig(sharedGenerationProfile),
         messages: [
-          {
-            role: 'user',
-            content: [{ type: 'text', text: promptText }]
-          }
+          ...(systemText ? [{ role: 'system', content: systemText }] : []),
+          { role: 'user', content: requestPromptText }
         ]
       }),
       signal
@@ -893,45 +978,41 @@ const requestDesktopAiText = async ({ provider, apiKey, promptText, systemInstru
     }
 
     const data = await response.json();
-    const text = flattenProviderText(data?.content || []);
+    const text = flattenProviderText(data?.choices?.[0]?.message?.content);
     if (!text.trim()) {
       throw new Error(`${providerConfig.label} returned no usable text.`);
     }
 
-    return text.trim();
+    return {
+      text: text.trim(),
+      shouldContinue: hasLengthLimitedAiResponse(normalizedProvider, data?.choices?.[0]?.finish_reason)
+    };
+  };
+
+  let accumulatedText = '';
+  let currentPromptText = promptText;
+
+  for (let continuationIndex = 0; continuationIndex <= AI_CONTINUATION_MAX_REQUESTS; continuationIndex += 1) {
+    const nextResult = await requestSingleText(currentPromptText);
+    const stitchedText = stitchAiContinuationText(accumulatedText, nextResult.text);
+
+    if (stitchedText === accumulatedText && accumulatedText) {
+      break;
+    }
+
+    accumulatedText = stitchedText;
+    if (!nextResult.shouldContinue || continuationIndex === AI_CONTINUATION_MAX_REQUESTS) {
+      break;
+    }
+
+    currentPromptText = buildAiContinuationPrompt(promptText, accumulatedText);
   }
 
-  const openAiCompatibleUrl = normalizedProvider === 'xai'
-    ? 'https://api.x.ai/v1/chat/completions'
-    : 'https://api.openai.com/v1/chat/completions';
-  const response = await fetch(openAiCompatibleUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: providerConfig.model,
-      ...buildOpenAiCompatibleGenerationConfig(sharedGenerationProfile),
-      messages: [
-        ...(systemText ? [{ role: 'system', content: systemText }] : []),
-        { role: 'user', content: promptText }
-      ]
-    }),
-    signal
-  });
-
-  if (!response.ok) {
-    throw new Error(await getProviderErrorMessage(response, `${providerConfig.label} request failed`));
-  }
-
-  const data = await response.json();
-  const text = flattenProviderText(data?.choices?.[0]?.message?.content);
-  if (!text.trim()) {
+  if (!accumulatedText.trim()) {
     throw new Error(`${providerConfig.label} returned no usable text.`);
   }
 
-  return text.trim();
+  return accumulatedText.trim();
 };
 
 const registerLocalDbIpcHandlers = () => {
@@ -1529,11 +1610,17 @@ const attachSmokeTestHandlers = (window) => {
 };
 
 const createWindow = () => {
+  const { width: workAreaWidth, height: workAreaHeight } = screen.getPrimaryDisplay().workAreaSize;
+  const minWidth = Math.min(960, workAreaWidth);
+  const minHeight = Math.min(640, workAreaHeight);
+  const width = Math.max(minWidth, Math.min(1440, workAreaWidth - 48));
+  const height = Math.max(minHeight, Math.min(900, workAreaHeight - 48));
+
   const window = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1100,
-    minHeight: 700,
+    width,
+    height,
+    minWidth,
+    minHeight,
     autoHideMenuBar: true,
     title: 'SalesDirector',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
