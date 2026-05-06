@@ -449,6 +449,48 @@ const normalizeAiProvider = (value = '') => {
   return AI_PROVIDER_CONFIG[provider] ? provider : 'gemini';
 };
 
+const normalizeOAuthProvider = (value = '') => {
+  const provider = String(value || 'microsoft').trim().toLowerCase();
+  return provider === 'google' ? 'google' : 'microsoft';
+};
+
+const normalizeMailAuthMethod = (value = '') => {
+  const method = String(value || 'basic').trim().toLowerCase();
+  return method === 'oauth2' ? 'oauth2' : 'basic';
+};
+
+const normalizeSmtpSecureMode = (value = '') => {
+  const mode = String(value || 'tls').trim().toLowerCase();
+  if (mode === 'none' || mode === 'ssl') {
+    return mode;
+  }
+  return 'tls';
+};
+
+const sanitizePersistedConfig = (config = {}) => {
+  if (!config || typeof config !== 'object') {
+    return {};
+  }
+
+  const nextConfig = { ...config };
+  if (Object.prototype.hasOwnProperty.call(nextConfig, 'oauth2Provider')) {
+    nextConfig.oauth2Provider = normalizeOAuthProvider(nextConfig.oauth2Provider);
+  }
+  if (Object.prototype.hasOwnProperty.call(nextConfig, 'imapAuthMethod')) {
+    nextConfig.imapAuthMethod = normalizeMailAuthMethod(nextConfig.imapAuthMethod);
+  }
+  if (Object.prototype.hasOwnProperty.call(nextConfig, 'smtpAuthMethod')) {
+    nextConfig.smtpAuthMethod = normalizeMailAuthMethod(nextConfig.smtpAuthMethod);
+  }
+  if (Object.prototype.hasOwnProperty.call(nextConfig, 'smtpSecure')) {
+    nextConfig.smtpSecure = normalizeSmtpSecureMode(nextConfig.smtpSecure);
+  }
+  if (Object.prototype.hasOwnProperty.call(nextConfig, 'useGraphApi')) {
+    nextConfig.useGraphApi = String(nextConfig.useGraphApi || '').trim().toLowerCase() === 'true' ? 'true' : 'false';
+  }
+  return nextConfig;
+};
+
 const buildAiGenerationProfile = (input = {}) => ({
   temperature: clampAiSetting(input.aiTemperature ?? input.temperature, 0, 1.5, AI_GENERATION_PROFILE_DEFAULTS.temperature),
   topP: clampAiSetting(input.aiTopP ?? input.topP, 0, 1, AI_GENERATION_PROFILE_DEFAULTS.topP),
@@ -1049,7 +1091,7 @@ export default function App() {
             safeConfig[key] = parsed[key];
           }
         });
-        setConfig(prev => ({ ...prev, ...safeConfig }));
+        setConfig(prev => ({ ...prev, ...sanitizePersistedConfig(safeConfig) }));
       }
     } catch {
       // Ignore malformed local storage data and continue with defaults.
@@ -1066,7 +1108,8 @@ export default function App() {
       PERSISTED_CONFIG_KEYS.forEach((key) => {
         safeConfig[key] = config[key];
       });
-      window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(safeConfig));
+      const normalizedConfig = sanitizePersistedConfig(safeConfig);
+      window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(normalizedConfig));
       // Show save confirmation only after user-initiated changes (skip first cycle from localStorage load)
       if (configChangeCountRef.current > 1) {
         setConfigSaveStatus('saved');
@@ -2151,7 +2194,16 @@ export default function App() {
 
   const handleConfigChange = (e) => {
     const { name, value, type, checked } = e.target;
-    const nextValue = type === 'checkbox' ? checked : value;
+    let nextValue = type === 'checkbox' ? checked : value;
+    if (name === 'oauth2Provider') {
+      nextValue = normalizeOAuthProvider(nextValue);
+    } else if (name === 'imapAuthMethod' || name === 'smtpAuthMethod') {
+      nextValue = normalizeMailAuthMethod(nextValue);
+    } else if (name === 'smtpSecure') {
+      nextValue = normalizeSmtpSecureMode(nextValue);
+    } else if (name === 'useGraphApi') {
+      nextValue = String(nextValue || '').trim().toLowerCase() === 'true' ? 'true' : 'false';
+    }
     if (['apiBaseUrl', 'proxySecret', 'selectedAI', 'geminiKey', 'openaiKey', 'anthropicKey', 'xaiKey', 'aiTemperature', 'aiTopP', 'aiMaxOutputTokens'].includes(name)) {
       setAiProviderTestResults({});
     }
@@ -3015,7 +3067,7 @@ No emojis.`;
   const getImapActionConfig = () => {
     const user = (config.imapUser || config.smtpUser || '').trim();
     const password = String(config.imapPass || config.smtpPass || '');
-    const provider = config.oauth2Provider || 'microsoft';
+    const provider = normalizeOAuthProvider(config.oauth2Provider);
     const isGoogle = provider === 'google';
     return {
       host: config.imapHost,
@@ -3025,7 +3077,7 @@ No emojis.`;
       password,
       folder: config.imapFolder || 'INBOX',
       archiveFolder: config.imapArchiveFolder || 'Archive',
-      authMethod: config.imapAuthMethod || 'basic',
+      authMethod: normalizeMailAuthMethod(config.imapAuthMethod),
       oauth2Provider: provider,
       oauth2ClientId: isGoogle ? (config.googleOAuth2ClientId || '') : (config.imapOAuth2ClientId || ''),
       oauth2TenantId: config.imapOAuth2TenantId || '',
@@ -3034,15 +3086,15 @@ No emojis.`;
   };
 
   const getSmtpSendConfig = () => {
-    const provider = config.oauth2Provider || 'microsoft';
+    const provider = normalizeOAuthProvider(config.oauth2Provider);
     const isGoogle = provider === 'google';
     return {
       smtpHost: config.smtpHost,
       smtpPort: Number(config.smtpPort),
-      smtpSecure: config.smtpSecure || 'tls',
+      smtpSecure: normalizeSmtpSecureMode(config.smtpSecure),
       smtpUser: config.smtpUser || '',
       smtpPass: config.smtpPass || '',
-      smtpAuthMethod: config.smtpAuthMethod || 'basic',
+      smtpAuthMethod: normalizeMailAuthMethod(config.smtpAuthMethod),
       oauth2Provider: provider,
       oauth2ClientId: isGoogle ? (config.googleOAuth2ClientId || '') : (config.imapOAuth2ClientId || ''),
       oauth2TenantId: config.imapOAuth2TenantId || '',
@@ -3051,7 +3103,7 @@ No emojis.`;
   };
 
   const getOAuth2LoginParams = () => {
-    const provider = config.oauth2Provider || 'microsoft';
+    const provider = normalizeOAuthProvider(config.oauth2Provider);
     const isGoogle = provider === 'google';
     return {
       provider,
@@ -3079,7 +3131,7 @@ No emojis.`;
     }
     try {
       setLoading(true);
-      const scopeSet = String(config.useGraphApi) === 'true' ? 'graph' : 'imap';
+      const scopeSet = String(config.useGraphApi) === 'true' && params.provider === 'microsoft' ? 'graph' : 'imap';
       const result = await desktopImapApi.oauth2Login({ ...params, scopeSet });
       if (result?.ok) {
         setImapOAuth2Status({ authenticated: true, user: result.user || params.loginHint, name: result.name || '', expired: false });
@@ -3128,7 +3180,7 @@ No emojis.`;
   };
 
   useEffect(() => {
-    if (config.imapAuthMethod !== 'oauth2') {
+    if (normalizeMailAuthMethod(config.imapAuthMethod) !== 'oauth2') {
       setImapOAuth2Status({ authenticated: false, user: '', name: '', expired: false });
       return;
     }
@@ -3676,12 +3728,12 @@ No emojis.`;
       return;
     }
 
+    const provider = normalizeOAuthProvider(config.oauth2Provider);
     const useGraph =
       String(config.useGraphApi) === 'true' &&
-      (config.oauth2Provider || 'microsoft') === 'microsoft';
+      provider === 'microsoft';
     const imapUser = (config.imapUser || config.smtpUser || '').trim();
-    const isOAuth2 = config.imapAuthMethod === 'oauth2';
-    const provider = config.oauth2Provider || 'microsoft';
+    const isOAuth2 = normalizeMailAuthMethod(config.imapAuthMethod) === 'oauth2';
     const isGoogle = provider === 'google';
     const oauthClientId = isGoogle ? (config.googleOAuth2ClientId || '').trim() : (config.imapOAuth2ClientId || '').trim();
 
@@ -3777,7 +3829,7 @@ No emojis.`;
         secure: true,
         user: imapUser,
         password: isOAuth2 ? '' : imapPassword,
-        authMethod: config.imapAuthMethod || 'basic',
+        authMethod: normalizeMailAuthMethod(config.imapAuthMethod),
         oauth2Provider: provider,
         oauth2ClientId: oauthClientId,
         oauth2TenantId: config.imapOAuth2TenantId || '',
@@ -5929,7 +5981,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       // --- Attempt actual email delivery via SMTP or Graph ---
       const useGraph =
         String(config.useGraphApi) === 'true' &&
-        (config.oauth2Provider || 'microsoft') === 'microsoft';
+        normalizeOAuthProvider(config.oauth2Provider) === 'microsoft';
       const desktopApi = window.salesDirectorDesktop;
 
       if (useGraph && desktopApi?.graph?.sendEmail) {
@@ -6133,7 +6185,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h3 className="text-lg font-semibold text-black dark:text-white flex items-center">
-                <Wand2 className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-500" />
+                <Wand2 className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-500" />
                 AI Operating Partner
               </h3>
               <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400 max-w-3xl">
@@ -6161,7 +6213,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 disabled={salesPerformanceSnapshot.outboundCount === 0 && salesPerformanceSnapshot.stageTransitionCount === 0}
                 className="flex items-center bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-4 py-2 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
               >
-                <TrendingUp className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" />
+                <TrendingUp className="w-4 h-4 mr-2 text-blue-900 dark:text-blue-500" />
                 Win/Loss Tracker
               </button>
             </div>
@@ -6211,13 +6263,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => handleAIAction('aiContactPlan', { contact })}
-                            className="font-bold text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white transition disabled:opacity-50"
+                            className="font-bold text-blue-900 dark:text-blue-500 hover:text-black dark:hover:text-white transition disabled:opacity-50"
                           >
                             AI Plan
                           </button>
                           <button
                             onClick={() => openDossier(contact)}
-                            className="font-bold text-black dark:text-white hover:text-rose-900 dark:hover:text-rose-400 transition"
+                            className="font-bold text-black dark:text-white hover:text-blue-900 dark:hover:text-blue-400 transition"
                           >
                             Open
                           </button>
@@ -6244,12 +6296,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 onChange={(event) => setIdeaCaptureInput(event.target.value)}
                 rows="8"
                 placeholder="Example: HVAC prospects keep asking about quote turnaround. We should tighten follow-up and build a simple speed-to-quote pitch for operators."
-                className="mt-4 w-full border border-zinc-300 dark:border-zinc-700 rounded-xl p-3 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"
+                className="mt-4 w-full border border-zinc-300 dark:border-zinc-700 rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"
               />
               <button
                 onClick={() => handleAIAction('organizeIdea')}
                 disabled={!ideaCaptureInput.trim()}
-                className="mt-4 w-full flex items-center justify-center bg-rose-900 text-white py-2.5 rounded-lg text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50"
+                className="mt-4 w-full flex items-center justify-center bg-blue-900 text-white py-2.5 rounded-lg text-sm font-bold hover:bg-blue-800 transition disabled:opacity-50"
               >
                 <Layers className="w-4 h-4 mr-2" /> Turn Into Plan
               </button>
@@ -6276,7 +6328,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </div>
                 <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 px-3 py-2">
                   <p className="text-zinc-500 dark:text-zinc-400">Losses</p>
-                  <p className="mt-1 font-bold text-rose-900 dark:text-rose-400">{salesPerformanceSnapshot.lostCount}</p>
+                  <p className="mt-1 font-bold text-blue-900 dark:text-blue-400">{salesPerformanceSnapshot.lostCount}</p>
                 </div>
                 <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 px-3 py-2">
                   <p className="text-zinc-500 dark:text-zinc-400">Stalled Proposals</p>
@@ -6301,7 +6353,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="md:col-span-2 bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm flex flex-col transition-colors">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-semibold text-black dark:text-white flex items-center">
-                <Calendar className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-700" />
+                <Calendar className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-700" />
                 Smart Action Plan
               </h3>
               <button
@@ -6316,7 +6368,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <div key={task.id} className="flex items-center justify-between p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
                   <div className="flex flex-col">
                     <span className="text-sm font-bold text-black dark:text-white">{task.contact} <span className="text-zinc-500 dark:text-zinc-400 font-normal">({task.company})</span></span>
-                    <span className="text-xs text-rose-900 dark:text-rose-500 font-medium mt-1">{task.title || task.type}</span>
+                    <span className="text-xs text-blue-900 dark:text-blue-500 font-medium mt-1">{task.title || task.type}</span>
                   </div>
                   <button
                     onClick={() => {
@@ -6350,7 +6402,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 return (
                   <div key={`${activity.date || 'activity'}-${idx}`} className="flex items-center justify-between py-3 border-b border-zinc-100 dark:border-zinc-800 last:border-0">
                     <div className="flex items-center">
-                      <div className="w-2 h-2 bg-rose-900 dark:bg-rose-700 rounded-full mr-3"></div>
+                      <div className="w-2 h-2 bg-blue-900 dark:bg-blue-700 rounded-full mr-3"></div>
                       <span className="text-sm text-zinc-600 dark:text-zinc-400">
                         Sent <strong className="text-black dark:text-white">{activity.subject || 'No subject'}</strong> to {activity.to || 'recipient'}
                       </span>
@@ -6381,13 +6433,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             onClick={() => handleAIAction('generateTasks')}
             className="flex items-center bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-black dark:text-white px-4 py-2 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800 transition font-bold text-sm shadow-sm"
           >
-            <Sparkles className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" />
+            <Sparkles className="w-4 h-4 mr-2 text-blue-900 dark:text-blue-500" />
             Generate from CRM
           </button>
           <button 
             onClick={() => handleAIAction('prioritizeTasks')}
             disabled={tasks.filter(t => t.status === 'pending').length === 0}
-            className="flex items-center bg-rose-900 text-white px-4 py-2 rounded-lg hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+            className="flex items-center bg-blue-900 text-white px-4 py-2 rounded-lg hover:bg-blue-950 dark:hover:bg-blue-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
           >
             <CalendarDays className="w-4 h-4 mr-2" />
             AI Auto-Schedule
@@ -6406,7 +6458,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6 text-xs">
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
           <p className="text-zinc-500 dark:text-zinc-400">Overdue</p>
-          <p className="mt-2 text-xl font-bold text-rose-900 dark:text-rose-400">{taskSummary.overdueCount}</p>
+          <p className="mt-2 text-xl font-bold text-blue-900 dark:text-blue-400">{taskSummary.overdueCount}</p>
         </div>
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
           <p className="text-zinc-500 dark:text-zinc-400">Due Today</p>
@@ -6527,7 +6579,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 value={newTaskInput}
                 onChange={(e) => setNewTaskInput(e.target.value)}
                 placeholder="Add a quick task..." 
-                className="w-full pl-4 pr-12 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-rose-900 text-black dark:text-white transition-colors"
+                className="w-full pl-4 pr-12 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-900 text-black dark:text-white transition-colors"
               />
               <button type="submit" className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 bg-black dark:bg-white text-white dark:text-black rounded hover:bg-zinc-800 dark:hover:bg-zinc-200 transition">
                 <Plus className="w-4 h-4" />
@@ -6541,7 +6593,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   value={taskSearchQuery}
                   onChange={(e) => setTaskSearchQuery(e.target.value)}
                   placeholder="Search tasks, contacts, notes..."
-                  className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-rose-900 text-black dark:text-white transition-colors"
+                  className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-900 text-black dark:text-white transition-colors"
                 />
               </div>
               <div className="flex rounded-lg border border-zinc-200 dark:border-zinc-700 overflow-hidden text-xs font-bold">
@@ -6574,7 +6626,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               <div key={task.id} className={`flex items-start p-4 rounded-lg border transition-colors ${isCompleted ? 'bg-zinc-50 dark:bg-zinc-950/30 border-transparent opacity-60' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 shadow-sm hover:border-zinc-300 dark:hover:border-zinc-700'}`}>
                 <button 
                   onClick={() => toggleTaskStatus(task.id)}
-                  className={`mt-1 flex-shrink-0 w-5 h-5 rounded flex items-center justify-center border transition-colors ${isCompleted ? 'bg-rose-900 border-rose-900 text-white' : 'border-zinc-300 dark:border-zinc-600 hover:border-rose-900 dark:hover:border-rose-500 text-transparent'}`}
+                  className={`mt-1 flex-shrink-0 w-5 h-5 rounded flex items-center justify-center border transition-colors ${isCompleted ? 'bg-blue-900 border-blue-900 text-white' : 'border-zinc-300 dark:border-zinc-600 hover:border-blue-900 dark:hover:border-blue-500 text-transparent'}`}
                 >
                   <Check className="w-3 h-3" />
                 </button>
@@ -6587,7 +6639,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       </h4>
                       <div className="flex items-center gap-2 mt-1 flex-wrap text-[10px] font-bold uppercase tracking-wide">
                         <span className="px-2 py-0.5 rounded-full border bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300">{task.type}</span>
-                        <span className={`px-2 py-0.5 rounded-full border ${taskBucket === 'overdue' ? 'bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-900 dark:text-rose-400' : taskBucket === 'selected' ? 'bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-400' : 'bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300'}`}>
+                        <span className={`px-2 py-0.5 rounded-full border ${taskBucket === 'overdue' ? 'bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-900 dark:text-blue-400' : taskBucket === 'selected' ? 'bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-400' : 'bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300'}`}>
                           {taskBucket === 'selected' ? 'Focus Day' : taskBucket}
                         </span>
                         <span className="px-2 py-0.5 rounded-full border bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-900 dark:text-blue-400">{task.status}</span>
@@ -6601,7 +6653,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       )}
                       {task.priority && !isCompleted && (
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
-                          task.priority >= 80 ? 'bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-900 dark:text-rose-400' : 
+                          task.priority >= 80 ? 'bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-900 dark:text-blue-400' : 
                           task.priority >= 50 ? 'bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-400' : 
                           'bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-400'
                         }`}>
@@ -6614,7 +6666,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         </span>
                       )}
                       {!isCompleted && scheduleState.hasConflict && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-900 dark:text-rose-400">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold border bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-900 dark:text-blue-400">
                           {scheduleState.hasOverlap ? 'Overlap' : 'Needs Buffer'}
                         </span>
                       )}
@@ -6626,7 +6678,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <button onClick={() => openEditTask(task)} className="text-zinc-400 hover:text-black dark:hover:text-white transition" title="Edit Task">
                         <Edit3 className="w-4 h-4" />
                       </button>
-                      <button onClick={() => deleteTask(task.id)} className="text-zinc-400 hover:text-rose-900 dark:hover:text-rose-500 transition">
+                      <button onClick={() => deleteTask(task.id)} className="text-zinc-400 hover:text-blue-900 dark:hover:text-blue-500 transition">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -6641,7 +6693,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                            setComposerState(prev => ({ ...prev, recipientName: task.contact, companyName: task.company, to: matchedContact.email || task.contactEmail || '', sequenceSteps: [] }));
                            setActiveTab('outreach');
                          }}
-                         className="ml-3 text-rose-900 dark:text-rose-500 hover:underline font-bold flex items-center"
+                         className="ml-3 text-blue-900 dark:text-blue-500 hover:underline font-bold flex items-center"
                        >
                          Execute <ChevronRight className="w-3 h-3 ml-0.5" />
                        </button>
@@ -6651,7 +6703,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   {!isCompleted && (scheduleState.hasConflict || scheduleState.outsideActiveHours || scheduleState.invalidTime) && (
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
                       {scheduleState.hasConflict && (
-                        <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">
+                        <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-1 font-bold text-blue-900 dark:border-blue-900 dark:bg-blue-900/20 dark:text-blue-300">
                           {scheduleState.hasOverlap
                             ? `Overlaps with ${scheduleState.overlapIssues.length} scheduled task${scheduleState.overlapIssues.length === 1 ? '' : 's'}`
                             : `Needs ${scheduleBufferMinutes} minutes of buffer before the next booking`}
@@ -6663,7 +6715,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         </span>
                       )}
                       {scheduleState.invalidTime && (
-                        <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">
+                        <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-1 font-bold text-blue-900 dark:border-blue-900 dark:bg-blue-900/20 dark:text-blue-300">
                           Invalid start time format
                         </span>
                       )}
@@ -6697,7 +6749,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
                   {(task.rationale || task.notes) && !isCompleted && (
                     <div className="mt-3 p-2 bg-zinc-50 dark:bg-zinc-950/50 rounded border border-zinc-100 dark:border-zinc-800 flex items-start">
-                       <Sparkles className="w-3 h-3 text-rose-900 dark:text-rose-600 mr-2 mt-0.5 shrink-0" />
+                       <Sparkles className="w-3 h-3 text-blue-900 dark:text-blue-600 mr-2 mt-0.5 shrink-0" />
                        <span className="text-xs text-zinc-700 dark:text-zinc-300 leading-relaxed">{task.rationale || task.notes}</span>
                     </div>
                   )}
@@ -6748,7 +6800,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => handleAIAction('callPrep', { task: item.task, contact: item.contact })}
-                        className="font-bold text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white transition disabled:opacity-50"
+                        className="font-bold text-blue-900 dark:text-blue-500 hover:text-black dark:hover:text-white transition disabled:opacity-50"
                       >
                         AI Call Prep
                       </button>
@@ -6764,7 +6816,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   </div>
                   {(scheduleState.hasConflict || scheduleState.outsideActiveHours) && (
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-                      {scheduleState.hasConflict && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">{scheduleState.hasOverlap ? 'Conflict on calendar' : `Needs ${scheduleBufferMinutes}m buffer`}</span>}
+                      {scheduleState.hasConflict && <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-1 font-bold text-blue-900 dark:border-blue-900 dark:bg-blue-900/20 dark:text-blue-300">{scheduleState.hasOverlap ? 'Conflict on calendar' : `Needs ${scheduleBufferMinutes}m buffer`}</span>}
                       {scheduleState.outsideActiveHours && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 font-bold text-amber-900 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300">Outside active hours</span>}
                     </div>
                   )}
@@ -6803,7 +6855,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <button
                     key={day.key}
                     onClick={() => setSelectedCalendarDate(day.dateKey)}
-                    className={`h-9 w-9 mx-auto flex flex-col items-center justify-center rounded-xl text-xs font-bold transition-colors cursor-pointer border ${day.isSelected ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white shadow-md' : day.isToday ? 'bg-rose-900 text-white border-rose-900 shadow-md' : 'text-zinc-700 dark:text-zinc-300 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
+                    className={`h-9 w-9 mx-auto flex flex-col items-center justify-center rounded-xl text-xs font-bold transition-colors cursor-pointer border ${day.isSelected ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white shadow-md' : day.isToday ? 'bg-blue-900 text-white border-blue-900 shadow-md' : 'text-zinc-700 dark:text-zinc-300 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
                   >
                     <span>{day.dayNumber}</span>
                     {day.taskCount > 0 && <span className={`mt-0.5 h-1.5 w-1.5 rounded-full ${day.urgentCount > 0 ? 'bg-amber-300' : day.completedCount === day.taskCount ? 'bg-emerald-300' : 'bg-zinc-400'}`}></span>}
@@ -6817,12 +6869,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="flex flex-col bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden min-h-[240px]">
             <div className="p-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-between items-center">
               <h3 className="font-bold text-black dark:text-white flex items-center text-sm">
-                 <Clock className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" /> {selectedCalendarDateLabel}
+                 <Clock className="w-4 h-4 mr-2 text-blue-900 dark:text-blue-500" /> {selectedCalendarDateLabel}
               </h3>
               <div className="flex items-center gap-2 text-xs font-bold text-zinc-500 dark:text-zinc-400">
                 <span>{selectedDayOpenTasks.length} task{selectedDayOpenTasks.length === 1 ? '' : 's'}</span>
                 {selectedDayScheduleIssueCount > 0 && (
-                  <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">
+                  <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-1 text-blue-900 dark:border-blue-900 dark:bg-blue-900/20 dark:text-blue-300">
                     {selectedDayScheduleIssueCount} schedule issue{selectedDayScheduleIssueCount === 1 ? '' : 's'}
                   </span>
                 )}
@@ -6834,14 +6886,14 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   const scheduleState = getTaskScheduleState(task);
                   return (
                   <div key={idx} className="relative pl-5">
-                    <div className="absolute -left-[7px] top-1 w-3.5 h-3.5 rounded-full bg-rose-900 dark:bg-rose-600 border-[3px] border-white dark:border-zinc-900"></div>
-                    <h4 className="text-xs font-bold text-rose-900 dark:text-rose-500 mb-1">{formatTaskTimeRangeLabel(task)}</h4>
+                    <div className="absolute -left-[7px] top-1 w-3.5 h-3.5 rounded-full bg-blue-900 dark:bg-blue-600 border-[3px] border-white dark:border-zinc-900"></div>
+                    <h4 className="text-xs font-bold text-blue-900 dark:text-blue-500 mb-1">{formatTaskTimeRangeLabel(task)}</h4>
                     <div className="bg-zinc-50 dark:bg-zinc-950/50 p-2.5 rounded-lg border border-zinc-200 dark:border-zinc-800 shadow-sm">
                       <p className="text-sm font-bold text-black dark:text-white leading-snug">{task.title}</p>
                       <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{task.contact}</p>
                       {(scheduleState.hasConflict || scheduleState.outsideActiveHours) && (
                         <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-                          {scheduleState.hasConflict && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 font-bold text-rose-900 dark:border-rose-900 dark:bg-rose-900/20 dark:text-rose-300">{scheduleState.hasOverlap ? 'Overlapping booking' : `Needs ${scheduleBufferMinutes}m buffer`}</span>}
+                          {scheduleState.hasConflict && <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-1 font-bold text-blue-900 dark:border-blue-900 dark:bg-blue-900/20 dark:text-blue-300">{scheduleState.hasOverlap ? 'Overlapping booking' : `Needs ${scheduleBufferMinutes}m buffer`}</span>}
                           {scheduleState.outsideActiveHours && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 font-bold text-amber-900 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300">Outside active hours</span>}
                         </div>
                       )}
@@ -6893,7 +6945,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           </button>
           <button 
             onClick={() => handleAIAction('analyzeInbox')}
-            className="flex items-center bg-rose-900 text-white px-4 py-2 rounded-lg hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
+            className="flex items-center bg-blue-900 text-white px-4 py-2 rounded-lg hover:bg-blue-950 dark:hover:bg-blue-800 transition disabled:opacity-50 font-bold text-sm shadow-sm"
           >
             <Sparkles className="w-4 h-4 mr-2" />
             Analyze & Score Inbox
@@ -6913,7 +6965,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               : 'No IMAP sync yet.'}
           </p>
           {inboxSyncStatus.imap.error && (
-            <p className="text-rose-700 dark:text-rose-400 mt-1">{inboxSyncStatus.imap.error}</p>
+            <p className="text-blue-700 dark:text-blue-400 mt-1">{inboxSyncStatus.imap.error}</p>
           )}
         </div>
         <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/50">
@@ -6924,7 +6976,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               : 'No HubSpot inbox sync yet.'}
           </p>
           {inboxSyncStatus.hubspot.error && (
-            <p className="text-rose-700 dark:text-rose-400 mt-1">{inboxSyncStatus.hubspot.error}</p>
+            <p className="text-blue-700 dark:text-blue-400 mt-1">{inboxSyncStatus.hubspot.error}</p>
           )}
         </div>
       </div>
@@ -6937,7 +6989,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               Work the hottest replies first, convert the best opportunities into follow-up tasks, and clear low-priority noise without losing context.
             </p>
             <div className="mt-3 flex items-center gap-2 flex-wrap text-[11px]">
-              <span className="px-2.5 py-1 rounded-full border bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-800 dark:text-rose-300 font-bold">
+              <span className="px-2.5 py-1 rounded-full border bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300 font-bold">
                 Hot Leads: {urgentInboxCandidates.length}
               </span>
               <span className="px-2.5 py-1 rounded-full border bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-800 dark:text-amber-300 font-bold">
@@ -6989,7 +7041,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             value={inboxSearch}
             onChange={(e) => setInboxSearch(e.target.value)}
             placeholder="Search by sender, subject, or company..."
-            className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-rose-900 text-black dark:text-white transition-colors"
+            className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-900 text-black dark:text-white transition-colors"
           />
         </div>
         <div className="flex rounded-lg border border-zinc-200 dark:border-zinc-700 overflow-hidden">
@@ -7037,19 +7089,19 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               <div className="flex justify-between items-start mb-2">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    {!email.isRead && <span className="w-2 h-2 bg-rose-900 dark:bg-rose-500 rounded-full flex-shrink-0"></span>}
+                    {!email.isRead && <span className="w-2 h-2 bg-blue-900 dark:bg-blue-500 rounded-full flex-shrink-0"></span>}
                     <h4 className="text-sm font-bold text-black dark:text-white truncate">{email.fromName} <span className="text-zinc-500 font-normal">({email.company})</span></h4>
                     <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wide ${getInboxSourceBadgeClasses(email.source)}`}>
                       {email.source || 'manual'}
                     </span>
                   </div>
-                  <h5 className="text-md font-bold text-rose-900 dark:text-rose-500 mt-1">{email.subject}</h5>
+                  <h5 className="text-md font-bold text-blue-900 dark:text-blue-500 mt-1">{email.subject}</h5>
                 </div>
                 <div className="flex flex-col items-end ml-4">
                   <span className="text-xs text-zinc-500 dark:text-zinc-400 mb-2">{email.date}</span>
                   {email.aiScore !== null && (
                     <div className={`px-3 py-1 rounded-full text-xs font-bold border ${
-                      email.aiScore >= 80 ? 'bg-rose-100 border-rose-200 text-rose-900 dark:bg-rose-900/30 dark:border-rose-900 dark:text-rose-400' : 
+                      email.aiScore >= 80 ? 'bg-blue-100 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-900 dark:text-blue-400' : 
                       email.aiScore >= 40 ? 'bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/30 dark:border-amber-900 dark:text-amber-400' : 
                       'bg-zinc-100 border-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-400'
                     }`}>
@@ -7062,7 +7114,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               
               {email.aiSummary && (
                 <div className="mb-4 p-3 bg-zinc-50 dark:bg-zinc-950/50 border border-zinc-200 dark:border-zinc-800 rounded-lg flex items-start">
-                  <Sparkles className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-600 shrink-0 mt-0.5" />
+                  <Sparkles className="w-4 h-4 mr-2 text-blue-900 dark:text-blue-600 shrink-0 mt-0.5" />
                   <span className="text-sm text-zinc-800 dark:text-zinc-200 font-medium">AI Summary: {email.aiSummary}</span>
                 </div>
               )}
@@ -7130,7 +7182,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     <button
                       onClick={() => handleAIAction('replyFromInbox', { inboxEmail: email })}
                       disabled={!canReplyToInboxEmail(email)}
-                      className="text-xs bg-rose-900 text-white px-4 py-2 rounded font-bold hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50"
+                      className="text-xs bg-blue-900 text-white px-4 py-2 rounded font-bold hover:bg-blue-950 dark:hover:bg-blue-800 transition disabled:opacity-50"
                       title={canReplyToInboxEmail(email) ? 'Generate an AI reply for this email and open it in Outreach' : 'This email does not include a valid sender address'}
                     >
                       AI Reply
@@ -7166,7 +7218,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </button>
                 <button
                   onClick={() => deleteInboxEmail(email.id)}
-                  className="text-xs text-zinc-400 hover:text-rose-900 dark:hover:text-rose-500 px-2 py-2 rounded transition"
+                  className="text-xs text-zinc-400 hover:text-blue-900 dark:hover:text-blue-500 px-2 py-2 rounded transition"
                   title="Delete"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -7207,7 +7259,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <button 
             onClick={handleHubSpotSync}
             disabled={loading}
-            className="flex items-center bg-rose-900 text-white px-4 py-2 rounded-lg hover:bg-rose-950 dark:hover:bg-rose-800 transition disabled:opacity-50 font-medium text-sm shadow-sm"
+            className="flex items-center bg-blue-900 text-white px-4 py-2 rounded-lg hover:bg-blue-950 dark:hover:bg-blue-800 transition disabled:opacity-50 font-medium text-sm shadow-sm"
           >
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Sync from HubSpot
@@ -7234,7 +7286,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
           <p className="text-zinc-500 dark:text-zinc-400">Hot Contacts</p>
-          <p className="mt-2 text-xl font-bold text-rose-900 dark:text-rose-400">{crmOverview.hotContactsCount}</p>
+          <p className="mt-2 text-xl font-bold text-blue-900 dark:text-blue-400">{crmOverview.hotContactsCount}</p>
         </div>
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
           <p className="text-zinc-500 dark:text-zinc-400">Open Pipeline</p>
@@ -7323,7 +7375,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                             event.stopPropagation();
                             openDossier(contact);
                           }}
-                          className="font-bold text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white transition"
+                          className="font-bold text-blue-900 dark:text-blue-500 hover:text-black dark:hover:text-white transition"
                         >
                           Open
                         </button>
@@ -7414,7 +7466,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             value={contactSearchQuery}
             onChange={(e) => setContactSearchQuery(e.target.value)}
             placeholder="Search company, owner, next step..."
-            className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-rose-900 text-black dark:text-white transition-colors"
+            className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-900 text-black dark:text-white transition-colors"
           />
         </div>
         {contactStageFilter !== 'all' && (
@@ -7444,7 +7496,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <div className="font-bold text-black dark:text-white">{contact.name}</div>
                   <div className="mt-1 flex items-center gap-2 flex-wrap text-[10px] uppercase tracking-wide font-bold">
                     <span className="px-2 py-0.5 rounded-full bg-black dark:bg-white text-white dark:text-black">{contact.stage}</span>
-                    <span className={`px-2 py-0.5 rounded-full ${contact.leadTemperature === 'Hot' ? 'bg-rose-100 text-rose-900 dark:bg-rose-900/30 dark:text-rose-300' : contact.leadTemperature === 'Warm' ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'}`}>{contact.leadTemperature}</span>
+                    <span className={`px-2 py-0.5 rounded-full ${contact.leadTemperature === 'Hot' ? 'bg-blue-100 text-blue-900 dark:bg-blue-900/30 dark:text-blue-300' : contact.leadTemperature === 'Warm' ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'}`}>{contact.leadTemperature}</span>
                     {contact.source && <span className="px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">{contact.source}</span>}
                   </div>
                 </td>
@@ -7493,13 +7545,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <button onClick={(e) => openEditContact(contact, e)} className="p-1.5 text-zinc-500 hover:text-black dark:text-zinc-400 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Edit Contact">
                         <Edit3 className="w-4 h-4" />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); setContactToDelete(contact); }} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-500 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Delete Contact">
+                      <button onClick={(e) => { e.stopPropagation(); setContactToDelete(contact); }} className="p-1.5 text-zinc-500 hover:text-blue-900 dark:text-zinc-400 dark:hover:text-blue-500 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Delete Contact">
                         <Trash2 className="w-4 h-4" />
                       </button>
                       <button onClick={(e) => { e.stopPropagation(); createTaskForContact(contact); }} className="p-1.5 text-zinc-500 hover:text-amber-600 dark:text-zinc-400 dark:hover:text-amber-400 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Create follow-up task">
                         <CheckSquare className="w-4 h-4" />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); handleAIAction('aiContactPlan', { contact }); }} className="p-1.5 text-zinc-500 hover:text-rose-900 dark:text-zinc-400 dark:hover:text-rose-400 bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Create AI contact plan">
+                      <button onClick={(e) => { e.stopPropagation(); handleAIAction('aiContactPlan', { contact }); }} className="p-1.5 text-zinc-500 hover:text-blue-900 dark:text-zinc-400 dark:hover:text-blue-400 bg-zinc-100 dark:bg-zinc-800 rounded transition disabled:opacity-50" title="Create AI contact plan">
                         <Sparkles className="w-4 h-4" />
                       </button>
                       {contact.stage === 'Proposal' && (
@@ -7508,7 +7560,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         </button>
                       )}
                       {showViewButton && (
-                        <button onClick={(e) => { e.stopPropagation(); openDossier(contact); }} className="text-rose-900 dark:text-rose-500 hover:text-black dark:hover:text-white font-bold text-sm flex items-center ml-2 transition-colors">
+                        <button onClick={(e) => { e.stopPropagation(); openDossier(contact); }} className="text-blue-900 dark:text-blue-500 hover:text-black dark:hover:text-white font-bold text-sm flex items-center ml-2 transition-colors">
                           View <ChevronRight className="w-4 h-4 ml-0.5" />
                         </button>
                       )}
@@ -7526,7 +7578,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
       {crmWorkspaceInsight && (
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-sm">
-          <h3 className="text-sm font-bold text-black dark:text-white flex items-center"><Sparkles className="w-4 h-4 mr-2 text-rose-900 dark:text-rose-500" /> AI CRM Guidance</h3>
+          <h3 className="text-sm font-bold text-black dark:text-white flex items-center"><Sparkles className="w-4 h-4 mr-2 text-blue-900 dark:text-blue-500" /> AI CRM Guidance</h3>
           <p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">{crmWorkspaceInsight}</p>
         </div>
       )}
@@ -7563,7 +7615,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   const email = inboxEmails.find(item => item.id === e.target.value);
                   if (email) selectInboxEmailForOutreach(email);
                 }}
-                className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-900 focus:border-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
               >
                 <option value="">Choose a recent inbox email...</option>
                 {inboxEmails.filter(item => !item.isArchived && canReplyToInboxEmail(item)).slice(0, 8).map((email) => (
@@ -7593,7 +7645,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         selectedPlaybookId: recommendedOutreachStrategy.playbookId,
                         sequenceCadenceId: recommendedOutreachStrategy.cadenceId || prev.sequenceCadenceId || DEFAULT_SEQUENCE_CADENCE_ID
                       }))}
-                      className="text-[11px] font-bold text-rose-900 dark:text-rose-400 hover:underline"
+                      className="text-[11px] font-bold text-blue-900 dark:text-blue-400 hover:underline"
                     >
                       Use Recommended
                     </button>
@@ -7603,7 +7655,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   name="selectedPlaybookId"
                   value={composerState.selectedPlaybookId}
                   onChange={handleComposerChange}
-                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-900 focus:border-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 >
                   <option value="">Auto-select based on CRM stage</option>
                   {OUTREACH_PLAYBOOKS.map((playbook) => (
@@ -7624,7 +7676,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     name="sequenceCadenceId"
                     value={composerState.sequenceCadenceId}
                     onChange={handleComposerChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-900 focus:border-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   >
                     {SEQUENCE_CADENCE_OPTIONS.map((cadence) => (
                       <option key={cadence.id} value={cadence.id}>{cadence.label}</option>
@@ -7637,7 +7689,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     name="sequenceStepCount"
                     value={composerState.sequenceStepCount}
                     onChange={handleComposerChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-900 focus:border-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   >
                     {[2, 3, 4, 5].map((count) => (
                       <option key={count} value={count}>{count} steps</option>
@@ -7662,7 +7714,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   name="tone"
                   value={composerState.tone}
                   onChange={handleComposerChange}
-                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-900 focus:border-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 >
                   <option value="Professional">Professional</option>
                   <option value="Persuasive">Persuasive</option>
@@ -7677,7 +7729,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   name="length"
                   value={composerState.length}
                   onChange={handleComposerChange}
-                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 focus:border-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-900 focus:border-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 >
                   <option value="Concise">Concise (Short)</option>
                   <option value="Standard">Standard</option>
@@ -7694,7 +7746,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               value={composerState.threadHistory}
               onChange={handleComposerChange}
               rows="4"
-              className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-3 text-sm focus:ring-2 focus:ring-rose-900 bg-zinc-50 dark:bg-zinc-950/50 outline-none text-zinc-800 dark:text-zinc-200 transition-colors"
+              className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-900 bg-zinc-50 dark:bg-zinc-950/50 outline-none text-zinc-800 dark:text-zinc-200 transition-colors"
               placeholder="Paste previous emails here to provide context..."
             ></textarea>
           </div>
@@ -7703,7 +7755,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             <button 
               onClick={() => handleAIAction('coach')}
               disabled={!composerState.recipientName && !composerState.threadHistory}
-              className="flex items-center justify-center w-full bg-rose-900 border border-rose-950 text-white px-4 py-2 rounded-lg hover:bg-rose-800 transition text-sm font-bold shadow-sm disabled:opacity-50"
+              className="flex items-center justify-center w-full bg-blue-900 border border-blue-950 text-white px-4 py-2 rounded-lg hover:bg-blue-800 transition text-sm font-bold shadow-sm disabled:opacity-50"
             >
               <Briefcase className="w-4 h-4 mr-2" />
               Ask Director For Strategy
@@ -7711,7 +7763,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             
             {/* Objection Crusher */}
             <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800 transition-colors">
-              <label className="block text-xs font-bold text-rose-900 dark:text-rose-500 uppercase tracking-wider mb-2 flex items-center">
+              <label className="block text-xs font-bold text-blue-900 dark:text-blue-500 uppercase tracking-wider mb-2 flex items-center">
                 <ShieldAlert className="w-3 h-3 mr-1" /> Objection Crusher
               </label>
               <input 
@@ -7720,7 +7772,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 value={composerState.objection}
                 onChange={handleComposerChange}
                 placeholder="E.g., It's too expensive..."
-                className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 mb-2 transition-colors"
+                className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 mb-2 transition-colors"
               />
               <button 
                 onClick={() => handleAIAction('objection')}
@@ -7753,7 +7805,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           {composerState.aiContext && (
             <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg shadow-sm mt-4 transition-colors">
               <h4 className="text-xs font-bold text-black dark:text-white uppercase mb-2 flex items-center">
-                <TrendingUp className="w-4 h-4 mr-1 text-rose-900 dark:text-rose-600" /> Director's Insight
+                <TrendingUp className="w-4 h-4 mr-1 text-blue-900 dark:text-blue-600" /> Director's Insight
               </h4>
               <p className="text-sm text-zinc-800 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">
                 {composerState.aiContext}
@@ -7799,7 +7851,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       {selectedInboxEmail.date} · {selectedInboxEmail.company || formatCompanyFromEmail(selectedInboxEmail.fromEmail)}
                     </p>
                     {!selectedInboxMatchesComposer && (
-                      <p className="mt-2 text-xs text-rose-700 dark:text-rose-400">
+                      <p className="mt-2 text-xs text-blue-700 dark:text-blue-400">
                         The current recipient no longer matches the selected inbox source. Open the source again before using Send & Mark Handled.
                       </p>
                     )}
@@ -7838,7 +7890,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     type="checkbox"
                     checked={archiveSelectedInboxAfterSend}
                     onChange={(e) => setArchiveSelectedInboxAfterSend(e.target.checked)}
-                    className="h-4 w-4 rounded border-zinc-300 text-rose-900 focus:ring-rose-900"
+                    className="h-4 w-4 rounded border-zinc-300 text-blue-900 focus:ring-blue-900"
                   />
                   Archive original after send
                 </label>
@@ -7874,7 +7926,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     className="w-full outline-none text-sm text-black dark:text-white bg-transparent" 
                     placeholder="recipient@example.com"
                   />
-                  {composerErrors.to && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{composerErrors.to}</p>}
+                  {composerErrors.to && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{composerErrors.to}</p>}
                 </div>
               </div>
 
@@ -7888,7 +7940,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <button 
                   onClick={() => handleAIAction('suggestSubjects')}
                   disabled={!composerState.body}
-                  className="text-xs text-white hover:bg-rose-800 font-bold px-3 py-1.5 rounded bg-rose-900 disabled:opacity-50 transition"
+                  className="text-xs text-white hover:bg-blue-800 font-bold px-3 py-1.5 rounded bg-blue-900 disabled:opacity-50 transition"
                   title="Generate subject lines based on email body"
                 >
                   Suggest Subjects
@@ -7943,7 +7995,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         {step.goal && (
                           <p className="mt-2 text-[11px] text-zinc-600 dark:text-zinc-300 leading-relaxed">Goal: {step.goal}</p>
                         )}
-                        <p className="mt-2 text-xs font-medium text-rose-900 dark:text-rose-400 line-clamp-2">{step.subject}</p>
+                        <p className="mt-2 text-xs font-medium text-blue-900 dark:text-blue-400 line-clamp-2">{step.subject}</p>
                         <button
                           onClick={() => loadSequenceStepToComposer(step)}
                           className="mt-3 text-xs bg-black dark:bg-zinc-800 text-white px-3 py-1.5 rounded-md font-bold hover:bg-zinc-800 dark:hover:bg-zinc-700 transition"
@@ -7975,7 +8027,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <div className="p-3 flex flex-col gap-3 flex-1 min-h-0">
                     <div className="flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-wide text-zinc-400">
                       <div className="flex items-center gap-2">
-                        <Wand2 className="w-4 h-4 text-rose-900 dark:text-rose-600" />
+                        <Wand2 className="w-4 h-4 text-blue-900 dark:text-blue-600" />
                         <span>AI Context Workspace</span>
                       </div>
                       <span className="text-[11px] font-medium normal-case tracking-normal text-zinc-500">CRM research, follow-up strategy, and AI notes stay visible here while you draft.</span>
@@ -8037,7 +8089,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                               </span>
                             )}
                             {activeOutreachRelationshipState.attention?.isStale && (
-                              <span className="rounded-full border border-rose-800 bg-rose-950/40 px-2 py-1 font-bold text-rose-300">
+                              <span className="rounded-full border border-blue-800 bg-blue-950/40 px-2 py-1 font-bold text-blue-300">
                                 Relationship is stale
                               </span>
                             )}
@@ -8085,7 +8137,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                         </button>
                         <button 
                           onClick={() => handleAIAction('write')}
-                          className="bg-rose-900 text-white px-4 py-1.5 rounded-md text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50 shadow-sm"
+                          className="bg-blue-900 text-white px-4 py-1.5 rounded-md text-sm font-bold hover:bg-blue-800 transition disabled:opacity-50 shadow-sm"
                         >
                           {aiQueueStatus.running ? 'Working...' : 'Draft'}
                         </button>
@@ -8150,7 +8202,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <button
                     onClick={() => handleSendEmail({ markHandled: true, archiveOriginal: archiveSelectedInboxAfterSend })}
                     disabled={sendDisabled || !selectedInboxMatchesComposer}
-                    className="flex items-center bg-rose-900 text-white px-4 py-2 rounded-lg hover:bg-rose-800 transition font-bold text-sm disabled:opacity-50 shadow-sm"
+                    className="flex items-center bg-blue-900 text-white px-4 py-2 rounded-lg hover:bg-blue-800 transition font-bold text-sm disabled:opacity-50 shadow-sm"
                     title={selectedInboxMatchesComposer ? 'Send this reply and mark the source email handled' : 'Re-open the source email before marking it handled'}
                   >
                     <CheckCircle className="w-4 h-4 mr-2" />
@@ -8185,9 +8237,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   );
 
   const renderSettings = () => {
+    const normalizedOAuthProvider = normalizeOAuthProvider(config.oauth2Provider);
+    const normalizedImapAuthMethod = normalizeMailAuthMethod(config.imapAuthMethod);
+    const normalizedSmtpAuthMethod = normalizeMailAuthMethod(config.smtpAuthMethod);
     const graphModeEnabled =
       String(config.useGraphApi) === 'true' &&
-      (config.oauth2Provider || 'microsoft') === 'microsoft';
+      normalizedOAuthProvider === 'microsoft';
     const selectedAiProvider = getSelectedAiProvider();
     const selectedAiRuntime = getAiProviderRuntime(selectedAiProvider);
     const selectedAiLabel = selectedAiRuntime.label;
@@ -8210,7 +8265,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       graphModeEnabled
         ? (config.imapOAuth2ClientId && (config.imapUser || config.smtpUser))
         : (config.smtpHost && config.smtpUser && (
-          (config.smtpAuthMethod || 'basic') === 'oauth2'
+          normalizedSmtpAuthMethod === 'oauth2'
             ? imapOAuth2Status.authenticated
             : config.smtpPass
         ))
@@ -8297,16 +8352,16 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       {
         label: 'SMTP Readiness',
         ok: Boolean(config.smtpHost && config.smtpUser && (
-          (config.smtpAuthMethod || 'basic') === 'oauth2'
-            ? (config.imapAuthMethod === 'oauth2' && (
-                (config.oauth2Provider || 'microsoft') === 'google' ? config.googleOAuth2ClientId : config.imapOAuth2ClientId
+          normalizedSmtpAuthMethod === 'oauth2'
+            ? (normalizedImapAuthMethod === 'oauth2' && (
+                normalizedOAuthProvider === 'google' ? config.googleOAuth2ClientId : config.imapOAuth2ClientId
               ))
             : (config.smtpPass)
         )) || (graphModeEnabled && config.imapOAuth2ClientId),
         detail: graphModeEnabled
           ? (config.imapOAuth2ClientId ? 'Sending via Graph API' : 'Graph API — Client ID missing')
           : (config.smtpHost && config.smtpUser
-            ? ((config.smtpAuthMethod || 'basic') === 'oauth2'
+            ? (normalizedSmtpAuthMethod === 'oauth2'
               ? 'SMTP sending via OAuth2 token'
               : (config.smtpPass ? 'Host/user/password present' : 'Password missing'))
             : 'Missing required fields')
@@ -8317,8 +8372,8 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           graphModeEnabled
             ? (config.imapOAuth2ClientId && (config.imapUser || config.smtpUser))
             : (config.imapHost && config.imapPort && (config.imapUser || config.smtpUser) && (
-              config.imapAuthMethod === 'oauth2'
-                ? ((config.oauth2Provider || 'microsoft') === 'google' ? config.googleOAuth2ClientId : config.imapOAuth2ClientId)
+              normalizedImapAuthMethod === 'oauth2'
+                ? (normalizedOAuthProvider === 'google' ? config.googleOAuth2ClientId : config.imapOAuth2ClientId)
                 : (config.imapPass || config.smtpPass)
             ))
         ),
@@ -8328,8 +8383,8 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             : 'Graph API — Client ID missing')
           : (config.imapHost && config.imapPort
             ? ((config.imapUser || config.smtpUser)
-              ? (config.imapAuthMethod === 'oauth2'
-                ? (((config.oauth2Provider || 'microsoft') === 'google' ? config.googleOAuth2ClientId : config.imapOAuth2ClientId)
+              ? (normalizedImapAuthMethod === 'oauth2'
+                ? ((normalizedOAuthProvider === 'google' ? config.googleOAuth2ClientId : config.imapOAuth2ClientId)
                   ? (imapOAuth2Status.authenticated ? `OAuth2 — signed in as ${imapOAuth2Status.user}` : 'OAuth2 configured — sign in required')
                   : 'OAuth2 selected — Client ID missing')
                 : ((config.imapPass || config.smtpPass) ? 'Host, port, and credentials present' : 'Host/port set, password missing'))
@@ -8355,7 +8410,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
               <div className="flex items-start justify-between gap-4 mb-4">
                 <div className="flex items-center text-black dark:text-white">
-                  <CheckSquare className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+                  <CheckSquare className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
                   <div>
                     <h3 className="text-lg font-bold">First-Time Setup</h3>
                     <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">Use this checklist if you are setting up SalesDirector for the first time on this Mac.</p>
@@ -8392,7 +8447,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center text-black dark:text-white">
-                  <Activity className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+                  <Activity className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
                   <h3 className="text-lg font-bold">System Health</h3>
                 </div>
                 <button
@@ -8425,7 +8480,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 {IS_LOCAL_DEV_MODE && (
                   <div className="mb-4 pb-4 border-b border-zinc-200 dark:border-zinc-800">
                     <h4 className="text-sm font-bold text-black dark:text-white mb-2 flex items-center">
-                      <Lock className="w-4 h-4 mr-1 text-rose-900 dark:text-rose-600" />
+                      <Lock className="w-4 h-4 mr-1 text-blue-900 dark:text-blue-600" />
                       Encrypted Local Database
                     </h4>
                     <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
@@ -8464,7 +8519,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <button
                         onClick={resetLocalEncryptedDatabase}
                         disabled={localDbBackend !== 'electron-encrypted-file'}
-                        className="text-xs bg-white dark:bg-zinc-900 border border-rose-900 text-rose-900 dark:text-rose-500 px-3 py-1.5 rounded-md hover:bg-rose-50 dark:hover:bg-zinc-800 transition disabled:opacity-50"
+                        className="text-xs bg-white dark:bg-zinc-900 border border-blue-900 text-blue-900 dark:text-blue-500 px-3 py-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-zinc-800 transition disabled:opacity-50"
                       >
                         Reset Encrypted Database
                       </button>
@@ -8491,7 +8546,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                       placeholder="http://localhost:8787"
                     />
-                    {configErrors.apiBaseUrl && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.apiBaseUrl}</p>}
+                    {configErrors.apiBaseUrl && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.apiBaseUrl}</p>}
                   </div>
                   <div>
                     <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Proxy Shared Secret (Optional)</label>
@@ -8511,7 +8566,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           {/* Company Profile Config */}
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
             <div className="flex items-center mb-4 text-black dark:text-white">
-              <Globe className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+              <Globe className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
               <h3 className="text-lg font-bold">Company Profile</h3>
             </div>
             <div>
@@ -8521,10 +8576,10 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 name="companyUrl"
                 value={config.companyUrl}
                 onChange={handleConfigChange}
-                className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 placeholder="https://yourcompany.com"
               />
-              {configErrors.companyUrl && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.companyUrl}</p>}
+              {configErrors.companyUrl && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.companyUrl}</p>}
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Providing your website helps the AI model understand your company, products, and value proposition for better email generation.</p>
             </div>
           </div>
@@ -8532,7 +8587,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           {/* Sender Profile Config */}
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
             <div className="flex items-center mb-4 text-black dark:text-white">
-              <User className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+              <User className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
               <h3 className="text-lg font-bold">Sender & Signature Details</h3>
             </div>
             <div className="grid grid-cols-1 gap-4">
@@ -8544,7 +8599,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     name="senderName"
                     value={config.senderName}
                     onChange={handleConfigChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     placeholder="e.g., Jane Smith"
                   />
                 </div>
@@ -8555,10 +8610,10 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     name="replyTo"
                     value={config.replyTo}
                     onChange={handleConfigChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     placeholder="e.g., jane@yourcompany.com"
                   />
-                  {configErrors.replyTo && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.replyTo}</p>}
+                  {configErrors.replyTo && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.replyTo}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Auto-BCC (CRM)</label>
@@ -8567,10 +8622,10 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     name="autoBcc"
                     value={config.autoBcc}
                     onChange={handleConfigChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     placeholder="bcc@hubspot.com"
                   />
-                  {configErrors.autoBcc && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.autoBcc}</p>}
+                  {configErrors.autoBcc && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.autoBcc}</p>}
                 </div>
               </div>
               <div>
@@ -8580,7 +8635,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                    value={config.signature}
                    onChange={handleConfigChange}
                    rows="4"
-                   className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"
+                   className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"
                    placeholder="Your signature block..."
                  ></textarea>
                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">This signature will be automatically appended to the bottom of your generated drafts.</p>
@@ -8591,7 +8646,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           {/* CRM Config */}
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
             <div className="flex items-center mb-4 text-black dark:text-white">
-              <Database className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+              <Database className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
               <h3 className="text-lg font-bold">HubSpot CRM</h3>
             </div>
             <div className="space-y-4">
@@ -8602,7 +8657,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   name="hubspotToken"
                   value={config.hubspotToken}
                   onChange={handleConfigChange}
-                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   placeholder="pat-na1-..."
                 />
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Required to sync contacts and log emails.</p>
@@ -8613,7 +8668,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           {/* Email Server Config */}
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
             <div className="flex items-center mb-4 text-black dark:text-white">
-              <Server className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+              <Server className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
               <h3 className="text-lg font-bold">Email Server & Security (IMAP/SMTP)</h3>
             </div>
             <div className="space-y-4">
@@ -8652,12 +8707,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     type="text" name="smtpUser" value={config.smtpUser} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" placeholder="user@example.com"
                   />
-                  {configErrors.smtpUser && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.smtpUser}</p>}
+                  {configErrors.smtpUser && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.smtpUser}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">SMTP Auth Method</label>
                   <select
-                    name="smtpAuthMethod" value={config.smtpAuthMethod || 'basic'} onChange={handleConfigChange}
+                    name="smtpAuthMethod" value={normalizeMailAuthMethod(config.smtpAuthMethod)} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   >
                     <option value="basic">Password / App Password</option>
@@ -8666,7 +8721,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">OAuth2 reuses the IMAP OAuth2 credentials above for SMTP sending.</p>
                 </div>
               </div>
-              {(config.smtpAuthMethod || 'basic') === 'basic' && (
+              {normalizeMailAuthMethod(config.smtpAuthMethod) === 'basic' && (
                 <div className="mt-2">
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">SMTP Password</label>
                   <input 
@@ -8691,12 +8746,12 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   Test IMAP Connection
                 </button>
                 {connectionTestResult.smtp && (
-                  <span className={`text-xs font-medium ${connectionTestResult.smtp.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                  <span className={`text-xs font-medium ${connectionTestResult.smtp.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-600 dark:text-blue-400'}`}>
                     {connectionTestResult.smtp.message}
                   </span>
                 )}
                 {connectionTestResult.imap && (
-                  <span className={`text-xs font-medium ${connectionTestResult.imap.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                  <span className={`text-xs font-medium ${connectionTestResult.imap.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-600 dark:text-blue-400'}`}>
                     {connectionTestResult.imap.message}
                   </span>
                 )}
@@ -8717,7 +8772,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       type="text" name="imapPort" value={config.imapPort} onChange={handleConfigChange}
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     />
-                    {configErrors.imapPort && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.imapPort}</p>}
+                    {configErrors.imapPort && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.imapPort}</p>}
                   </div>
                 </div>
 
@@ -8741,19 +8796,19 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <option value="oauth2">OAuth2 (Microsoft or Google)</option>
                     </select>
                     <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                      {config.imapAuthMethod === 'oauth2'
+                      {normalizeMailAuthMethod(config.imapAuthMethod) === 'oauth2'
                         ? 'Required for Office 365 / Gmail tenants that have disabled Basic Auth.'
                         : 'Works with most IMAP servers. Office 365 / Gmail may require OAuth2.'}
                     </p>
                   </div>
                 </div>
 
-                {config.imapAuthMethod === 'oauth2' ? (
+                {normalizeMailAuthMethod(config.imapAuthMethod) === 'oauth2' ? (
                   <div className="mt-3 p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
                     <div className="mb-3">
                       <label className="block text-sm font-bold text-blue-800 dark:text-blue-300 mb-1">OAuth2 Provider</label>
                       <select
-                        name="oauth2Provider" value={config.oauth2Provider || 'microsoft'} onChange={handleConfigChange}
+                        name="oauth2Provider" value={normalizeOAuthProvider(config.oauth2Provider)} onChange={handleConfigChange}
                         className="w-full border border-blue-200 dark:border-blue-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                       >
                         <option value="microsoft">Microsoft (Office 365 / Outlook)</option>
@@ -8761,7 +8816,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       </select>
                     </div>
 
-                    {(config.oauth2Provider || 'microsoft') === 'microsoft' ? (
+                    {normalizeOAuthProvider(config.oauth2Provider) === 'microsoft' ? (
                       <>
                         <p className="text-xs text-blue-700 dark:text-blue-400 mb-3">
                           Register an app in <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer" className="underline font-semibold">Microsoft Entra (Azure AD)</a> with redirect URI <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">http://localhost</code> and IMAP.AccessAsUser.All + SMTP.Send permissions.
@@ -8833,7 +8888,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                           </span>
                           <button
                             type="button" onClick={handleOAuth2Logout}
-                            className="px-3 py-1.5 text-xs font-bold text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-700 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950 transition-colors"
+                            className="px-3 py-1.5 text-xs font-bold text-blue-700 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors"
                           >
                             Disconnect
                           </button>
@@ -8850,7 +8905,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                           className="px-4 py-2 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors flex items-center gap-2"
                         >
                           <Mail className="w-4 h-4" />
-                          Sign in with {(config.oauth2Provider || 'microsoft') === 'google' ? 'Google' : 'Microsoft'}
+                          Sign in with {normalizeOAuthProvider(config.oauth2Provider) === 'google' ? 'Google' : 'Microsoft'}
                         </button>
                       )}
                     </div>
@@ -8884,7 +8939,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       type="number" name="imapLookbackDays" value={config.imapLookbackDays} onChange={handleConfigChange}
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     />
-                    {configErrors.imapLookbackDays && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.imapLookbackDays}</p>}
+                    {configErrors.imapLookbackDays && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.imapLookbackDays}</p>}
                   </div>
                   <div>
                     <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Fetch Limit</label>
@@ -8892,7 +8947,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       type="number" name="imapSyncLimit" value={config.imapSyncLimit} onChange={handleConfigChange}
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     />
-                    {configErrors.imapSyncLimit && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.imapSyncLimit}</p>}
+                    {configErrors.imapSyncLimit && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.imapSyncLimit}</p>}
                   </div>
                 </div>
 
@@ -8921,7 +8976,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       type="number" name="imapAutoSyncMinutes" value={config.imapAutoSyncMinutes} onChange={handleConfigChange}
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     />
-                    {configErrors.imapAutoSyncMinutes && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.imapAutoSyncMinutes}</p>}
+                    {configErrors.imapAutoSyncMinutes && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.imapAutoSyncMinutes}</p>}
                   </div>
                 </div>
 
@@ -8968,7 +9023,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           {/* Sending Limits & Safety */}
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
             <div className="flex items-center mb-4 text-black dark:text-white">
-              <Shield className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+              <Shield className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
               <h3 className="text-lg font-bold">Sending Safety & Limits</h3>
             </div>
             <div className="space-y-4">
@@ -8979,7 +9034,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     type="number" name="maxDailyEmails" value={config.maxDailyEmails} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
-                  {configErrors.maxDailyEmails && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.maxDailyEmails}</p>}
+                  {configErrors.maxDailyEmails && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.maxDailyEmails}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Send Delay (sec)</label>
@@ -8987,7 +9042,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     type="number" name="sendDelay" value={config.sendDelay} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
-                  {configErrors.sendDelay && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.sendDelay}</p>}
+                  {configErrors.sendDelay && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.sendDelay}</p>}
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-2">
@@ -8997,7 +9052,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     type="time" name="activeHoursStart" value={config.activeHoursStart} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
-                  {configErrors.activeHoursStart && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.activeHoursStart}</p>}
+                  {configErrors.activeHoursStart && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.activeHoursStart}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">End Time</label>
@@ -9005,7 +9060,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     type="time" name="activeHoursEnd" value={config.activeHoursEnd} onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
-                  {configErrors.activeHoursEnd && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.activeHoursEnd}</p>}
+                  {configErrors.activeHoursEnd && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.activeHoursEnd}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Timezone</label>
@@ -9028,7 +9083,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   min="0" max="120"
                   className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 />
-                {configErrors.scheduleBufferMinutes && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.scheduleBufferMinutes}</p>}
+                {configErrors.scheduleBufferMinutes && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.scheduleBufferMinutes}</p>}
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Protect travel, prep, and follow-up time by requiring a minimum gap between timed bookings.</p>
               </div>
             </div>
@@ -9037,7 +9092,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           {/* Global AI Preferences */}
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
             <div className="flex items-center mb-4 text-black dark:text-white">
-              <SlidersHorizontal className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+              <SlidersHorizontal className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
               <h3 className="text-lg font-bold">AI Defaults</h3>
             </div>
             <div className="space-y-4">
@@ -9088,7 +9143,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       onChange={handleConfigChange}
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     />
-                    {configErrors.aiTemperature && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.aiTemperature}</p>}
+                    {configErrors.aiTemperature && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.aiTemperature}</p>}
                   </div>
                   <div>
                     <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Top-p</label>
@@ -9102,7 +9157,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       onChange={handleConfigChange}
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     />
-                    {configErrors.aiTopP && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.aiTopP}</p>}
+                    {configErrors.aiTopP && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.aiTopP}</p>}
                   </div>
                   <div>
                     <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Max Output Tokens</label>
@@ -9116,7 +9171,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       onChange={handleConfigChange}
                       className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     />
-                    {configErrors.aiMaxOutputTokens && <p className="text-xs text-rose-700 dark:text-rose-400 mt-1">{configErrors.aiMaxOutputTokens}</p>}
+                    {configErrors.aiMaxOutputTokens && <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">{configErrors.aiMaxOutputTokens}</p>}
                   </div>
                 </div>
               </div>
@@ -9127,7 +9182,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           {/* AI Providers Config */}
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm md:col-span-2 transition-colors">
             <div className="flex items-center mb-4 text-black dark:text-white">
-              <Key className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+              <Key className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
               <h3 className="text-lg font-bold">AI Routing & Provider Keys</h3>
             </div>
             <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">
@@ -9141,7 +9196,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   name="selectedAI"
                   value={selectedAiProvider}
                   onChange={handleAiProviderChange}
-                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 >
                   {aiProviderStatuses.map((provider) => (
                     <option key={provider.provider} value={provider.provider} disabled={!provider.supported}>{provider.label}</option>
@@ -9152,7 +9207,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </p>
                 {aiStartupReadiness.key && (
                   <div className={`mt-3 rounded-lg border p-3 text-xs ${aiStartupReadiness.level === 'error'
-                    ? 'border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-900/70 dark:bg-rose-950/40 dark:text-rose-200'
+                    ? 'border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-900/70 dark:bg-blue-950/40 dark:text-blue-200'
                     : 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-200'}`}>
                     <p className="font-bold">Startup self-check: {aiStartupReadiness.title}</p>
                     <p className="mt-1">{aiStartupReadiness.message}</p>
@@ -9244,7 +9299,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     : status === 'running'
                       ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
                       : status === 'failed'
-                        ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300'
+                        ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
                         : status === 'unsupported'
                           ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-300'
                           : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300';
@@ -9316,7 +9371,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     name={provider.name}
                     value={config[provider.name]}
                     onChange={handleConfigChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                     placeholder="sk-..."
                   />
                 </div>
@@ -9359,7 +9414,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       <div className="p-4 md:p-8 max-w-5xl mx-auto w-full space-y-8">
         <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.22em] text-rose-900 dark:text-rose-500 mb-2">About & Diagnostics</p>
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-blue-900 dark:text-blue-500 mb-2">About & Diagnostics</p>
             <h2 className="text-3xl font-bold text-black dark:text-white">SalesDirector Desktop</h2>
             <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-2 max-w-2xl">
               Build details, runtime diagnostics, and support information for this installation.
@@ -9375,7 +9430,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         <div className="grid grid-cols-1 xl:grid-cols-[1.3fr_1fr] gap-8">
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
             <div className="flex items-center text-black dark:text-white mb-5">
-              <Activity className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" />
+              <Activity className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" />
               <h3 className="text-lg font-bold">Runtime Diagnostics</h3>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -9390,7 +9445,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
           <div className="bg-black dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-800 shadow-sm transition-colors text-zinc-100">
             <div className="flex items-center mb-5">
-              <Briefcase className="w-5 h-5 mr-2 text-rose-500" />
+              <Briefcase className="w-5 h-5 mr-2 text-blue-500" />
               <h3 className="text-lg font-bold text-white">Credits & Support</h3>
             </div>
 
@@ -9408,9 +9463,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     href={`mailto:${AKITA_CREDITS.supportEmail}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="mt-1 inline-flex items-center text-sm font-semibold text-white hover:text-rose-400 transition-colors"
+                    className="mt-1 inline-flex items-center text-sm font-semibold text-white hover:text-blue-400 transition-colors"
                   >
-                    <Mail className="w-4 h-4 mr-2 text-rose-500" />
+                    <Mail className="w-4 h-4 mr-2 text-blue-500" />
                     {AKITA_CREDITS.supportEmail}
                   </a>
                 </div>
@@ -9420,9 +9475,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     href={AKITA_CREDITS.website}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="mt-1 inline-flex items-center text-sm font-semibold text-white hover:text-rose-400 transition-colors"
+                    className="mt-1 inline-flex items-center text-sm font-semibold text-white hover:text-blue-400 transition-colors"
                   >
-                    <Globe className="w-4 h-4 mr-2 text-rose-500" />
+                    <Globe className="w-4 h-4 mr-2 text-blue-500" />
                     {AKITA_CREDITS.websiteLabel}
                   </a>
                 </div>
@@ -9451,7 +9506,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-black dark:bg-zinc-900 text-zinc-300 flex flex-col border-r border-zinc-800 transition-transform duration-200 lg:static lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
           <h1 className="text-xl font-bold text-white flex items-center">
-            <div className="w-8 h-8 bg-rose-900 rounded-lg flex items-center justify-center mr-3 flex-shrink-0">
+            <div className="w-8 h-8 bg-blue-900 rounded-lg flex items-center justify-center mr-3 flex-shrink-0">
               <Mail className="w-5 h-5 text-white" />
             </div>
             Sales Director
@@ -9480,7 +9535,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   : 'hover:bg-zinc-900 dark:hover:bg-zinc-800 hover:text-white font-bold'
               }`}
             >
-              <item.icon className={`w-5 h-5 mr-3 ${activeTab === item.id ? 'text-rose-900 dark:text-rose-500' : 'text-zinc-400'}`} />
+              <item.icon className={`w-5 h-5 mr-3 ${activeTab === item.id ? 'text-blue-900 dark:text-blue-500' : 'text-zinc-400'}`} />
               {item.label}
               {activeTab === item.id && <ChevronRight className="w-4 h-4 ml-auto opacity-50" />}
             </button>
@@ -9489,7 +9544,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         
         <div className="p-4 border-t border-zinc-800 text-xs text-zinc-500 text-center flex flex-col items-center">
           <p className="mb-1 font-medium">Proudly built by</p>
-          <a href={AKITA_CREDITS.website} target="_blank" rel="noopener noreferrer" className="text-rose-900 dark:text-rose-600 hover:text-rose-700 dark:hover:text-rose-400 font-bold text-sm mb-1 transition-colors">
+          <a href={AKITA_CREDITS.website} target="_blank" rel="noopener noreferrer" className="text-blue-900 dark:text-blue-600 hover:text-blue-700 dark:hover:text-blue-400 font-bold text-sm mb-1 transition-colors">
             {AKITA_CREDITS.companyName}
           </a>
           <a href={`mailto:${AKITA_CREDITS.supportEmail}`} target="_blank" rel="noopener noreferrer" className="text-zinc-400 hover:text-zinc-200 font-medium text-[10px] transition-colors">
@@ -9527,7 +9582,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
                 placeholder="Search leads..." 
-                className="pl-9 pr-4 py-1.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-full text-sm outline-none focus:ring-2 focus:ring-rose-900 w-40 md:w-64 transition-all text-black dark:text-white"
+                className="pl-9 pr-4 py-1.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-full text-sm outline-none focus:ring-2 focus:ring-blue-900 w-40 md:w-64 transition-all text-black dark:text-white"
               />
               {globalSearchResults && globalSearchResults.length > 0 && (
                 <div className="absolute top-full mt-2 right-0 w-80 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden">
@@ -9540,7 +9595,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       onClick={() => { openDossier(c); setGlobalSearch(''); }}
                       className="w-full flex items-center p-3 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-left transition-colors"
                     >
-                      <div className="w-8 h-8 rounded-full bg-rose-900/10 dark:bg-rose-900/30 text-rose-900 dark:text-rose-400 flex items-center justify-center font-bold text-xs mr-3 flex-shrink-0">
+                      <div className="w-8 h-8 rounded-full bg-blue-900/10 dark:bg-blue-900/30 text-blue-900 dark:text-blue-400 flex items-center justify-center font-bold text-xs mr-3 flex-shrink-0">
                         {(c.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
                       </div>
                       <div className="min-w-0">
@@ -9557,7 +9612,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </div>
               )}
             </div>
-            <div className="w-8 h-8 rounded-full bg-rose-900 text-white flex items-center justify-center font-bold text-sm shadow-sm" title={config.senderName || 'User'}>
+            <div className="w-8 h-8 rounded-full bg-blue-900 text-white flex items-center justify-center font-bold text-sm shadow-sm" title={config.senderName || 'User'}>
               {(config.senderName || 'SD').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
             </div>
           </div>
@@ -9579,11 +9634,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           <div className="fixed bottom-6 right-6 z-[100] animate-fade-in-up">
             <div className={`flex items-center px-4 py-3 rounded-lg shadow-lg border ${
               notification.type === 'error' 
-                ? 'bg-white dark:bg-zinc-900 border-rose-900 text-rose-900 dark:text-rose-500 font-bold'
+                ? 'bg-white dark:bg-zinc-900 border-blue-900 text-blue-900 dark:text-blue-500 font-bold'
                 : 'bg-black dark:bg-white border-zinc-800 dark:border-zinc-200 text-white dark:text-black font-bold'
             }`}>
               {notification.type === 'error' 
-                ? <AlertCircle className="w-5 h-5 mr-3 text-rose-900 dark:text-rose-500" />
+                ? <AlertCircle className="w-5 h-5 mr-3 text-blue-900 dark:text-blue-500" />
                 : <CheckCircle className="w-5 h-5 mr-3 text-white dark:text-black" />
               }
               <span className="text-sm">{notification.message}</span>
@@ -9650,33 +9705,33 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Full Name</label>
-                  <input type="text" name="name" value={editingContact.name} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="text" name="name" value={editingContact.name} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                   {editingContactInsights?.missingName && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">A clear contact name makes outreach prompts and CRM search more reliable.</p>}
                 </div>
                 <div>
-                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Email <span className="text-rose-900">*</span></label>
-                  <input type="email" name="email" disabled={!editingContact._isNew} value={editingContact.email} onChange={handleContactFormChange} className={`w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white transition-colors ${!editingContact._isNew ? 'bg-zinc-100 dark:bg-zinc-950 opacity-70' : 'bg-white dark:bg-zinc-800'}`} />
-                  {editingContact.email && !editingContactInsights?.hasValidEmail && <p className="mt-1 text-xs text-rose-700 dark:text-rose-400">Enter a valid email so this record can link Inbox, CRM, and Outreach automatically.</p>}
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Email <span className="text-blue-900">*</span></label>
+                  <input type="email" name="email" disabled={!editingContact._isNew} value={editingContact.email} onChange={handleContactFormChange} className={`w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white transition-colors ${!editingContact._isNew ? 'bg-zinc-100 dark:bg-zinc-950 opacity-70' : 'bg-white dark:bg-zinc-800'}`} />
+                  {editingContact.email && !editingContactInsights?.hasValidEmail && <p className="mt-1 text-xs text-blue-700 dark:text-blue-400">Enter a valid email so this record can link Inbox, CRM, and Outreach automatically.</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Company</label>
-                  <input type="text" name="company" value={editingContact.company} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="text" name="company" value={editingContact.company} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Job Title</label>
-                  <input type="text" name="jobTitle" value={editingContact.jobTitle} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="text" name="jobTitle" value={editingContact.jobTitle} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Phone</label>
-                  <input type="text" name="phone" value={editingContact.phone} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="text" name="phone" value={editingContact.phone} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Website</label>
-                  <input type="url" name="website" value={editingContact.website || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="url" name="website" value={editingContact.website || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Stage</label>
-                  <select name="stage" value={editingContact.stage} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors">
+                  <select name="stage" value={editingContact.stage} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors">
                     {CONTACT_STAGE_OPTIONS.map((stageOption) => (
                       <option key={stageOption} value={stageOption}>{stageOption}</option>
                     ))}
@@ -9684,7 +9739,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Lead Temperature</label>
-                  <select name="leadTemperature" value={editingContact.leadTemperature || 'Cold'} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors">
+                  <select name="leadTemperature" value={editingContact.leadTemperature || 'Cold'} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors">
                     {CONTACT_TEMPERATURE_OPTIONS.map((temperature) => (
                       <option key={temperature} value={temperature}>{temperature}</option>
                     ))}
@@ -9692,11 +9747,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Owner</label>
-                  <input type="text" name="owner" value={editingContact.owner || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="text" name="owner" value={editingContact.owner || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Source</label>
-                  <select name="source" value={editingContact.source || 'Manual'} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors">
+                  <select name="source" value={editingContact.source || 'Manual'} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors">
                     {CONTACT_SOURCE_OPTIONS.map((sourceOption) => (
                       <option key={sourceOption} value={sourceOption}>{sourceOption}</option>
                     ))}
@@ -9704,28 +9759,28 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Estimated Deal Value</label>
-                  <input type="number" name="estimatedValue" value={editingContact.estimatedValue || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="number" name="estimatedValue" value={editingContact.estimatedValue || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Priority Score</label>
-                  <input type="number" name="priorityScore" min="1" max="100" value={editingContact.priorityScore || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="number" name="priorityScore" min="1" max="100" value={editingContact.priorityScore || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Next Follow-Up Date</label>
-                  <input type="date" name="nextFollowUpAt" value={editingContact.nextFollowUpAt || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="date" name="nextFollowUpAt" value={editingContact.nextFollowUpAt || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Last Contacted</label>
-                  <input type="date" name="lastContactedAt" value={editingContact.lastContactedAt || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                  <input type="date" name="lastContactedAt" value={editingContact.lastContactedAt || ''} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
                 </div>
               </div>
               <div>
                 <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">LinkedIn URL</label>
-                <input type="url" name="linkedin" value={editingContact.linkedin} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
+                <input type="url" name="linkedin" value={editingContact.linkedin} onChange={handleContactFormChange} className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors" />
               </div>
               <div>
                 <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Next Step</label>
-                <textarea name="nextStep" value={editingContact.nextStep || ''} onChange={handleContactFormChange} rows="2" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
+                <textarea name="nextStep" value={editingContact.nextStep || ''} onChange={handleContactFormChange} rows="2" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
                 {editingContactInsights?.actionPlan?.suggestedNextStep && !editingContact.nextStep && (
                   <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Suggested: {editingContactInsights.actionPlan.suggestedNextStep}</p>
                 )}
@@ -9733,16 +9788,16 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">AI Summary</label>
-                  <textarea name="aiSummary" value={editingContact.aiSummary || ''} onChange={handleContactFormChange} rows="3" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
+                  <textarea name="aiSummary" value={editingContact.aiSummary || ''} onChange={handleContactFormChange} rows="3" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Pain Points</label>
-                  <textarea name="painPoints" value={editingContact.painPoints || ''} onChange={handleContactFormChange} rows="3" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
+                  <textarea name="painPoints" value={editingContact.painPoints || ''} onChange={handleContactFormChange} rows="3" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
                 </div>
               </div>
               <div>
                 <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Notes</label>
-                <textarea name="notes" value={editingContact.notes} onChange={handleContactFormChange} rows="4" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
+                <textarea name="notes" value={editingContact.notes} onChange={handleContactFormChange} rows="4" className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors resize-none"></textarea>
               </div>
             </div>
             <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex justify-end space-x-3">
@@ -9769,14 +9824,14 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Task</label>
                 <input 
                   type="text" name="title" value={editingTask.title || editingTask.text || ''} onChange={handleTaskFormChange}
-                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Type</label>
                   <select name="type" value={editingTask.type || 'follow-up'} onChange={handleTaskFormChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   >
                     {TASK_TYPE_OPTIONS.map((typeOption) => (
                       <option key={typeOption} value={typeOption}>{typeOption}</option>
@@ -9788,7 +9843,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <input 
                     type="number" name="priority" value={editingTask.priority || 50} onChange={handleTaskFormChange}
                     min="1" max="100"
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
                 </div>
               </div>
@@ -9797,14 +9852,14 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Due Date</label>
                   <input 
                     type="date" name="dueDate" value={editingTask.dueDate || ''} onChange={handleTaskFormChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Planner Day</label>
                   <input 
                     type="date" name="scheduledDate" value={editingTask.scheduledDate || ''} onChange={handleTaskFormChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
                 </div>
               </div>
@@ -9814,7 +9869,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <input 
                     type="text" name="contact" value={editingTask.contact || ''} onChange={handleTaskFormChange}
                     placeholder="Contact name"
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
                 </div>
                 <div>
@@ -9822,7 +9877,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <input 
                     type="email" name="contactEmail" value={editingTask.contactEmail || ''} onChange={handleTaskFormChange}
                     placeholder="contact@example.com"
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
                 </div>
               </div>
@@ -9832,7 +9887,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <input 
                     type="text" name="time" value={editingTask.time || ''} onChange={handleTaskFormChange}
                     placeholder="09:00 AM"
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
                 </div>
                 <div>
@@ -9840,13 +9895,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <input 
                     type="number" name="durationMinutes" value={editingTask.durationMinutes || 30} onChange={handleTaskFormChange}
                     min="5" max="480"
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Focus</label>
                   <select name="focus" value={editingTask.focus || 'sales'} onChange={handleTaskFormChange}
-                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   >
                     {TASK_FOCUS_OPTIONS.map((focusOption) => (
                       <option key={focusOption} value={focusOption}>{focusOption}</option>
@@ -9855,13 +9910,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </div>
               </div>
               {editingTaskScheduleState && (editingTaskScheduleState.invalidTime || editingTaskScheduleState.hasConflict || editingTaskScheduleState.outsideActiveHours) && (
-                <div className={`rounded-lg border p-3 ${editingTaskScheduleState.invalidTime || editingTaskScheduleState.hasConflict ? 'border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-900/20' : 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-900/20'}`}>
+                <div className={`rounded-lg border p-3 ${editingTaskScheduleState.invalidTime || editingTaskScheduleState.hasConflict ? 'border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-900/20' : 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-900/20'}`}>
                   <div className="flex items-start gap-2">
-                    <AlertCircle className={`w-4 h-4 mt-0.5 ${editingTaskScheduleState.invalidTime || editingTaskScheduleState.hasConflict ? 'text-rose-700 dark:text-rose-400' : 'text-amber-700 dark:text-amber-400'}`} />
+                    <AlertCircle className={`w-4 h-4 mt-0.5 ${editingTaskScheduleState.invalidTime || editingTaskScheduleState.hasConflict ? 'text-blue-700 dark:text-blue-400' : 'text-amber-700 dark:text-amber-400'}`} />
                     <div className="space-y-1 text-xs">
-                      {editingTaskScheduleState.invalidTime && <p className="font-bold text-rose-900 dark:text-rose-300">Use a start time like 09:00 AM or 14:30.</p>}
+                      {editingTaskScheduleState.invalidTime && <p className="font-bold text-blue-900 dark:text-blue-300">Use a start time like 09:00 AM or 14:30.</p>}
                       {editingTaskScheduleState.hasConflict && (
-                        <p className="font-bold text-rose-900 dark:text-rose-300">
+                        <p className="font-bold text-blue-900 dark:text-blue-300">
                           {editingTaskScheduleState.hasOverlap
                             ? `This booking overlaps with ${editingTaskScheduleState.conflictingTasks.map((task) => task.title).join(', ')}.`
                             : `This booking needs at least ${scheduleBufferMinutes} minutes of buffer before or after the surrounding task.`}
@@ -9880,7 +9935,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Rationale</label>
                 <textarea 
                   name="rationale" value={editingTask.rationale || ''} onChange={handleTaskFormChange} rows="2"
-                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   placeholder="Why this task matters..."
                 ></textarea>
               </div>
@@ -9888,14 +9943,14 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Notes</label>
                 <textarea 
                   name="notes" value={editingTask.notes || ''} onChange={handleTaskFormChange} rows="2"
-                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   placeholder="Internal execution notes..."
                 ></textarea>
               </div>
               <div>
                 <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider mb-1">Status</label>
                 <select name="status" value={editingTask.status || 'pending'} onChange={handleTaskFormChange}
-                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-rose-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                 >
                   {TASK_STATUS_OPTIONS.map((statusOption) => (
                     <option key={statusOption} value={statusOption}>{statusOption}</option>
@@ -9918,7 +9973,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
              <p className="text-zinc-600 dark:text-zinc-400 text-sm mb-6">Are you sure you want to permanently delete <strong className="text-black dark:text-white">{contactToDelete.name}</strong>? This action cannot be undone.</p>
              <div className="flex justify-end space-x-3">
                <button onClick={() => setContactToDelete(null)} className="px-4 py-2 text-sm font-bold text-zinc-600 dark:text-zinc-400 hover:text-black dark:hover:text-white transition">Cancel</button>
-               <button onClick={deleteContact} disabled={loading} className="px-6 py-2 bg-rose-900 text-white rounded-lg text-sm font-bold hover:bg-rose-950 transition disabled:opacity-50">Delete</button>
+               <button onClick={deleteContact} disabled={loading} className="px-6 py-2 bg-blue-900 text-white rounded-lg text-sm font-bold hover:bg-blue-950 transition disabled:opacity-50">Delete</button>
              </div>
           </div>
         </div>
@@ -9935,7 +9990,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 <h2 className="text-2xl font-bold text-black dark:text-white flex items-center">
                   {selectedContact.name}
                   <span className={`ml-3 px-2 py-0.5 rounded-full text-xs font-bold ${
-                      selectedContact.status === 'Warm' || selectedContact.stage === 'Opportunity' ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-900 dark:text-rose-400' :
+                      selectedContact.status === 'Warm' || selectedContact.stage === 'Opportunity' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-900 dark:text-blue-400' :
                       selectedContact.status === 'Cold' ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-300' :
                       'bg-black dark:bg-white text-white dark:text-black'
                     }`}>
@@ -9959,7 +10014,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   <div className="space-y-3">
                     <div className="flex items-center text-sm">
                       <Mail className="w-4 h-4 mr-2 text-zinc-400" />
-                      <a href={`mailto:${selectedContact.email}`} className="text-rose-900 dark:text-rose-500 hover:underline">{selectedContact.email}</a>
+                      <a href={`mailto:${selectedContact.email}`} className="text-blue-900 dark:text-blue-500 hover:underline">{selectedContact.email}</a>
                     </div>
                     {selectedContact.phone && (
                       <div className="flex items-center text-sm text-zinc-700 dark:text-zinc-300">
@@ -9970,13 +10025,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     {selectedContact.linkedin && (
                       <div className="flex items-center text-sm text-zinc-700 dark:text-zinc-300">
                         <Linkedin className="w-4 h-4 mr-2 text-zinc-400" />
-                        <a href={selectedContact.linkedin} target="_blank" rel="noopener noreferrer" className="hover:underline hover:text-rose-900 dark:hover:text-rose-500 truncate">LinkedIn Profile</a>
+                        <a href={selectedContact.linkedin} target="_blank" rel="noopener noreferrer" className="hover:underline hover:text-blue-900 dark:hover:text-blue-500 truncate">LinkedIn Profile</a>
                       </div>
                     )}
                     {selectedContact.website && (
                       <div className="flex items-center text-sm text-zinc-700 dark:text-zinc-300">
                         <Globe className="w-4 h-4 mr-2 text-zinc-400" />
-                        <a href={selectedContact.website} target="_blank" rel="noopener noreferrer" className="hover:underline hover:text-rose-900 dark:hover:text-rose-500 truncate">Company Website</a>
+                        <a href={selectedContact.website} target="_blank" rel="noopener noreferrer" className="hover:underline hover:text-blue-900 dark:hover:text-blue-500 truncate">Company Website</a>
                       </div>
                     )}
                   </div>
@@ -10040,7 +10095,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                          loadContactIntoOutreach(selectedContact);
                          setSelectedContact(null);
                        }}
-                       className="w-full flex items-center justify-center bg-rose-900 text-white py-2 rounded-lg text-sm font-bold hover:bg-rose-800 transition"
+                       className="w-full flex items-center justify-center bg-blue-900 text-white py-2 rounded-lg text-sm font-bold hover:bg-blue-800 transition"
                      >
                        <Edit3 className="w-4 h-4 mr-2" /> Draft Outreach
                      </button>
@@ -10082,7 +10137,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
                 {/* AI Intelligence */}
                 <div className="bg-zinc-50 dark:bg-zinc-950/50 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800">
-                   <h3 className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-4 flex items-center"><Sparkles className="w-3 h-3 mr-1 text-rose-900 dark:text-rose-500" /> AI Intelligence</h3>
+                   <h3 className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-4 flex items-center"><Sparkles className="w-3 h-3 mr-1 text-blue-900 dark:text-blue-500" /> AI Intelligence</h3>
                    <div className="space-y-2">
                      <button
                        onClick={() => handleAIAction('callPrep', { contact: selectedContact })}
@@ -10092,7 +10147,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                      </button>
                      <button 
                        onClick={() => handleAIAction('researchContact', { contact: selectedContact })}
-                       className="w-full flex items-center justify-center bg-rose-900 text-white py-2 rounded-lg text-sm font-bold hover:bg-rose-800 transition disabled:opacity-50"
+                       className="w-full flex items-center justify-center bg-blue-900 text-white py-2 rounded-lg text-sm font-bold hover:bg-blue-800 transition disabled:opacity-50"
                      >
                        <Zap className="w-4 h-4 mr-2" /> Research Contact
                      </button>
@@ -10139,7 +10194,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               {/* Right Column: Timeline */}
               <div className="w-full md:w-2/3">
                  <h3 className="text-lg font-bold text-black dark:text-white mb-4 flex items-center">
-                    <Activity className="w-5 h-5 mr-2 text-rose-900 dark:text-rose-600" /> Interaction Timeline
+                    <Activity className="w-5 h-5 mr-2 text-blue-900 dark:text-blue-600" /> Interaction Timeline
                  </h3>
 
                  <div className="mb-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 p-4">
@@ -10181,7 +10236,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                            <div className="flex items-center">
                              <span className={`text-xs font-bold px-2 py-1 rounded mr-3 ${
                                msg.type === 'call' ? 'bg-green-100 dark:bg-green-900/30 text-green-900 dark:text-green-400' :
-                               msg.direction === 'outbound' ? 'bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white' : 'bg-rose-100 dark:bg-rose-900/30 text-rose-900 dark:text-rose-400'}`}>
+                               msg.direction === 'outbound' ? 'bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white' : 'bg-blue-100 dark:bg-blue-900/30 text-blue-900 dark:text-blue-400'}`}>
                                 {msg.type === 'call' ? 'Call' : msg.direction === 'outbound' ? 'You Sent' : 'They Replied'}
                              </span>
                              <h4 className="text-sm font-bold text-black dark:text-white truncate max-w-xs">{msg.subject || 'No Subject'}</h4>
@@ -10190,7 +10245,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                              <span className="text-xs mr-3">{new Date(msg.date).toLocaleString()}</span>
                              <button 
                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); deleteThreadMessage(selectedContact.email, idx); }}
-                               className="p-1 text-zinc-400 hover:text-rose-900 dark:hover:text-rose-500 rounded transition mr-2"
+                               className="p-1 text-zinc-400 hover:text-blue-900 dark:hover:text-blue-500 rounded transition mr-2"
                                title="Delete message"
                              >
                                <Trash2 className="w-3.5 h-3.5" />

@@ -91,6 +91,29 @@ const getMsalClient = (clientId, tenantId) => {
 
 const buildOAuth2CacheKey = (provider, clientId, user) => `${provider}|${clientId}|${user.toLowerCase()}`;
 
+const normalizeOAuthProvider = (value = '') => {
+  const provider = String(value || 'microsoft').trim().toLowerCase();
+  return provider === 'google' ? 'google' : 'microsoft';
+};
+
+const normalizeMailAuthMethod = (value = '') => {
+  const method = String(value || 'basic').trim().toLowerCase();
+  return method === 'oauth2' ? 'oauth2' : 'basic';
+};
+
+const normalizeSmtpSecureMode = (value = '') => {
+  const mode = String(value || 'tls').trim().toLowerCase();
+  if (mode === 'none' || mode === 'ssl') {
+    return mode;
+  }
+  return 'tls';
+};
+
+const normalizeScopeSet = (value = '') => {
+  const scopeSet = String(value || 'imap').trim().toLowerCase();
+  return scopeSet === 'graph' ? 'graph' : 'imap';
+};
+
 // --- Microsoft OAuth2 ---
 const acquireMsOAuth2Interactive = async (clientId, tenantId, loginHint, scopeSet = 'imap') => {
   const pca = getMsalClient(clientId, tenantId);
@@ -435,11 +458,12 @@ const getGoogleAccessToken = async (clientId, clientSecret, user) => {
 
 // --- Unified OAuth2 accessor ---
 const getOAuth2AccessToken = async (provider, clientId, opts = {}) => {
-  if (provider === 'google') {
+  const normalizedProvider = normalizeOAuthProvider(provider);
+  if (normalizedProvider === 'google') {
     return getGoogleAccessToken(clientId, opts.clientSecret || '', opts.user || '');
   }
   // Default: microsoft
-  return getMsAccessToken(clientId, opts.tenantId || '', opts.user || '', opts.scopeSet || 'imap');
+  return getMsAccessToken(clientId, opts.tenantId || '', opts.user || '', normalizeScopeSet(opts.scopeSet));
 };
 
 const getLocalDbPath = () => path.join(app.getPath('userData'), LOCAL_DB_FILE);
@@ -464,8 +488,8 @@ const parseImapConnection = (payload = {}) => {
   const port = clampInt(payload.port, 1, 65535, secure ? 993 : 143);
   const folder = String(payload.folder || 'INBOX').trim() || 'INBOX';
   const archiveFolder = String(payload.archiveFolder || 'Archive').trim() || 'Archive';
-  const authMethod = String(payload.authMethod || 'basic').trim();
-  const oauth2Provider = String(payload.oauth2Provider || 'microsoft').trim();
+  const authMethod = normalizeMailAuthMethod(payload.authMethod);
+  const oauth2Provider = normalizeOAuthProvider(payload.oauth2Provider);
   const oauth2ClientId = String(payload.oauth2ClientId || '').trim();
   const oauth2TenantId = String(payload.oauth2TenantId || '').trim();
   const oauth2ClientSecret = String(payload.oauth2ClientSecret || '').trim();
@@ -519,9 +543,9 @@ const parseSmtpConnection = (payload = {}) => {
   const user = String(payload.smtpUser || '').trim();
   const password = String(payload.smtpPass || '');
   const portRaw = clampInt(payload.smtpPort, 1, 65535, 587);
-  const secureMode = String(payload.smtpSecure || 'tls').trim();
-  const authMethod = String(payload.smtpAuthMethod || 'basic').trim();
-  const oauth2Provider = String(payload.oauth2Provider || 'microsoft').trim();
+  const secureMode = normalizeSmtpSecureMode(payload.smtpSecure);
+  const authMethod = normalizeMailAuthMethod(payload.smtpAuthMethod);
+  const oauth2Provider = normalizeOAuthProvider(payload.oauth2Provider);
   const oauth2ClientId = String(payload.oauth2ClientId || '').trim();
   const oauth2TenantId = String(payload.oauth2TenantId || '').trim();
   const oauth2ClientSecret = String(payload.oauth2ClientSecret || '').trim();
@@ -1142,12 +1166,12 @@ const registerLocalDbIpcHandlers = () => {
 
   // --- OAuth2 IPC handlers ---
   ipcMain.handle('imap:oauth2Login', async (_event, payload = {}) => {
-    const provider = String(payload.provider || 'microsoft').trim();
+    const provider = normalizeOAuthProvider(payload.provider);
     const clientId = String(payload.clientId || '').trim();
     const tenantId = String(payload.tenantId || '').trim();
     const clientSecret = String(payload.clientSecret || '').trim();
     const loginHint = String(payload.loginHint || '').trim();
-    const scopeSet = String(payload.scopeSet || 'imap').trim();
+    const scopeSet = normalizeScopeSet(payload.scopeSet);
 
     if (!clientId) throw new Error('OAuth2 Client ID (Application ID) is required.');
 
@@ -1159,7 +1183,7 @@ const registerLocalDbIpcHandlers = () => {
   });
 
   ipcMain.handle('imap:oauth2Status', async (_event, payload = {}) => {
-    const provider = String(payload.provider || 'microsoft').trim();
+    const provider = normalizeOAuthProvider(payload.provider);
     const clientId = String(payload.clientId || '').trim();
     const user = String(payload.user || '').trim();
 
@@ -1182,7 +1206,7 @@ const registerLocalDbIpcHandlers = () => {
   });
 
   ipcMain.handle('imap:oauth2Logout', async (_event, payload = {}) => {
-    const provider = String(payload.provider || 'microsoft').trim();
+    const provider = normalizeOAuthProvider(payload.provider);
     const clientId = String(payload.clientId || '').trim();
     const user = String(payload.user || '').trim();
 
