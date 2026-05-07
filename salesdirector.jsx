@@ -71,9 +71,13 @@ import {
   getTaskScheduledStart,
   getTaskScheduledEnd,
   formatDateKey,
+  formatDateKeyInTimeZone,
+  formatDateTimeInTimeZone,
   dateKeyToDate,
   formatMonthKey,
+  normalizePlanningTimeZone,
   parseTimeToMinutes,
+  TIMEZONE_PRESET_OPTIONS,
   TASK_TYPE_OPTIONS,
   TASK_STATUS_OPTIONS,
   TASK_FOCUS_OPTIONS,
@@ -183,6 +187,18 @@ const SYSTEM_TIMEZONE_LABEL = typeof Intl !== 'undefined'
   ? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local system time')
   : 'Local system time';
 const SYSTEM_TIMEZONE_VALUE = 'system';
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const getPlanningTimeZoneLabel = (value = SYSTEM_TIMEZONE_VALUE) => {
+  if (value === SYSTEM_TIMEZONE_VALUE) {
+    return `System (${SYSTEM_TIMEZONE_LABEL})`;
+  }
+  return TIMEZONE_PRESET_OPTIONS.find((option) => option.value === value)?.label || value;
+};
+
+const formatFuturePlanningDateKey = (offsetDays = 0, timeZone = SYSTEM_TIMEZONE_VALUE) => (
+  formatDateKeyInTimeZone(new Date(Date.now() + (offsetDays * DAY_MS)), timeZone)
+);
 
 const normalizeInboxDate = (value) => {
   const date = new Date(value || Date.now());
@@ -492,6 +508,9 @@ const sanitizePersistedConfig = (config = {}) => {
   if (Object.prototype.hasOwnProperty.call(nextConfig, 'useGraphApi')) {
     nextConfig.useGraphApi = String(nextConfig.useGraphApi || '').trim().toLowerCase() === 'true' ? 'true' : 'false';
   }
+  if (Object.prototype.hasOwnProperty.call(nextConfig, 'timezone')) {
+    nextConfig.timezone = normalizePlanningTimeZone(nextConfig.timezone);
+  }
   if (Object.prototype.hasOwnProperty.call(nextConfig, 'aiMaxOutputTokens')) {
     const parsed = Number(nextConfig.aiMaxOutputTokens);
     if (Number.isInteger(parsed) && LEGACY_AI_MAX_OUTPUT_TOKENS_DEFAULTS.has(parsed)) {
@@ -714,8 +733,8 @@ export default function App() {
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [taskSearchQuery, setTaskSearchQuery] = useState('');
   const [taskStatusFilter, setTaskStatusFilter] = useState('active');
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => formatDateKey(new Date()));
-  const [activeCalendarMonth, setActiveCalendarMonth] = useState(() => formatMonthKey(new Date()));
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => formatDateKeyInTimeZone(new Date(), SYSTEM_TIMEZONE_VALUE));
+  const [activeCalendarMonth, setActiveCalendarMonth] = useState(() => formatDateKeyInTimeZone(new Date(), SYSTEM_TIMEZONE_VALUE).slice(0, 7));
   const [taskPlannerInsight, setTaskPlannerInsight] = useState('');
 
   // Inbox Filters
@@ -733,6 +752,7 @@ export default function App() {
   const [threads, setThreads] = useState({});
   const [tasks, setTasks] = useState(() => DEFAULT_TASKS.map((task) => ({ ...task })));
   const [newTaskInput, setNewTaskInput] = useState('');
+  const [clockTick, setClockTick] = useState(() => Date.now());
 
   const [inboxEmails, setInboxEmails] = useState(() => DEFAULT_INBOX_EMAILS.map((email) => ({ ...email })));
   const [inboxSyncStatus, setInboxSyncStatus] = useState({
@@ -858,6 +878,11 @@ export default function App() {
   const imapStartupSyncTriggeredRef = useRef(false);
   const [imapOAuth2Status, setImapOAuth2Status] = useState({ authenticated: false, user: '', name: '', expired: false });
   const [hasHydratedConfig, setHasHydratedConfig] = useState(false);
+
+  useEffect(() => {
+    const timerId = window.setInterval(() => setClockTick(Date.now()), 60000);
+    return () => window.clearInterval(timerId);
+  }, []);
   const [aiProviderTestBusy, setAiProviderTestBusy] = useState(false);
   const [aiProviderTestResults, setAiProviderTestResults] = useState({});
   const [aiStartupReadiness, setAiStartupReadiness] = useState({ level: 'ok', title: '', message: '', key: '' });
@@ -1968,7 +1993,18 @@ export default function App() {
       };
     });
   }, [recommendedOutreachStrategy.cadenceId, recommendedOutreachStrategy.playbookId]);
-  const taskSummary = useMemo(() => buildTaskSummary(normalizedTasks, selectedCalendarDate), [normalizedTasks, selectedCalendarDate]);
+  const planningTimeZoneValue = useMemo(() => normalizePlanningTimeZone(config.timezone), [config.timezone]);
+  const planningTimeZoneLabel = useMemo(() => getPlanningTimeZoneLabel(planningTimeZoneValue), [planningTimeZoneValue]);
+  const currentPlanningDateKey = useMemo(() => formatDateKeyInTimeZone(clockTick, planningTimeZoneValue), [clockTick, planningTimeZoneValue]);
+  const currentPlanningDateTimeLabel = useMemo(
+    () => formatDateTimeInTimeZone(clockTick, planningTimeZoneValue, { dateStyle: 'full', timeStyle: 'short' }),
+    [clockTick, planningTimeZoneValue]
+  );
+  const planningReferenceDate = useMemo(() => dateKeyToDate(currentPlanningDateKey) || new Date(clockTick), [currentPlanningDateKey, clockTick]);
+  const taskSummary = useMemo(
+    () => buildTaskSummary(normalizedTasks, selectedCalendarDate, planningReferenceDate),
+    [normalizedTasks, selectedCalendarDate, planningReferenceDate]
+  );
   const scheduleBufferMinutes = useMemo(() => {
     const parsed = Number(config.scheduleBufferMinutes || 0);
     if (!Number.isFinite(parsed)) return 0;
@@ -1991,8 +2027,14 @@ export default function App() {
       isValid: startMinutes != null && endMinutes != null && endMinutes > startMinutes
     };
   }, [config.activeHoursEnd, config.activeHoursStart]);
-  const calendarDays = useMemo(() => buildCalendarMonth(normalizedTasks, activeCalendarMonth, selectedCalendarDate), [normalizedTasks, activeCalendarMonth, selectedCalendarDate]);
-  const selectedDayTasks = useMemo(() => getTasksForDate(normalizedTasks, selectedCalendarDate), [normalizedTasks, selectedCalendarDate]);
+  const calendarDays = useMemo(
+    () => buildCalendarMonth(normalizedTasks, activeCalendarMonth, selectedCalendarDate, planningReferenceDate),
+    [normalizedTasks, activeCalendarMonth, selectedCalendarDate, planningReferenceDate]
+  );
+  const selectedDayTasks = useMemo(
+    () => getTasksForDate(normalizedTasks, selectedCalendarDate, planningReferenceDate),
+    [normalizedTasks, selectedCalendarDate, planningReferenceDate]
+  );
   const selectedDayOpenTasks = useMemo(() => selectedDayTasks.filter((task) => task.status !== 'completed'), [selectedDayTasks]);
   const selectedDayScheduleIssueCount = useMemo(
     () => selectedDayOpenTasks.filter((task) => (taskScheduleIssueMap.get(task.id) || []).length > 0).length,
@@ -2104,8 +2146,8 @@ export default function App() {
 
   const filteredTasks = useMemo(() => {
     const term = taskSearchQuery.trim().toLowerCase();
-    return sortTasksForPlanner(normalizedTasks, selectedCalendarDate).filter((task) => {
-      const bucket = getTaskBucket(task, selectedCalendarDate);
+    return sortTasksForPlanner(normalizedTasks, selectedCalendarDate, planningReferenceDate).filter((task) => {
+      const bucket = getTaskBucket(task, selectedCalendarDate, planningReferenceDate);
 
       if (taskStatusFilter === 'active' && task.status === 'completed') return false;
       if (taskStatusFilter === 'focus-day' && bucket !== 'selected') return false;
@@ -2118,7 +2160,7 @@ export default function App() {
       return [task.title, task.contact, task.company, task.notes, task.rationale, task.owner]
         .some((value) => String(value || '').toLowerCase().includes(term));
     });
-  }, [normalizedTasks, selectedCalendarDate, taskSearchQuery, taskStatusFilter]);
+  }, [normalizedTasks, planningReferenceDate, selectedCalendarDate, taskSearchQuery, taskStatusFilter]);
 
   const filteredContacts = useMemo(() => {
     const term = contactSearchQuery.trim().toLowerCase();
@@ -2253,6 +2295,8 @@ export default function App() {
       nextValue = normalizeMailAuthMethod(nextValue);
     } else if (name === 'smtpSecure') {
       nextValue = normalizeSmtpSecureMode(nextValue);
+    } else if (name === 'timezone') {
+      nextValue = normalizePlanningTimeZone(nextValue);
     } else if (name === 'useGraphApi') {
       nextValue = String(nextValue || '').trim().toLowerCase() === 'true' ? 'true' : 'false';
     }
@@ -2490,7 +2534,7 @@ export default function App() {
     }
 
     const sequenceTasks = createSequenceTasksFromSteps(composerState.sequenceSteps, {
-      baseDateKey: selectedCalendarDate || formatDateKey(new Date()),
+      baseDateKey: selectedCalendarDate || currentPlanningDateKey,
       recipientName: composerState.recipientName || activeOutreachRelationshipState?.matchedContact?.name || '',
       companyName: composerState.companyName || activeOutreachRelationshipState?.matchedContact?.company || '',
       recipientEmail: composerState.to,
@@ -2743,14 +2787,14 @@ No emojis.`;
 
   const appendTaskLocally = (taskInput) => {
     const nextTask = normalizeTaskRecord(taskInput);
-    setTasks((prev) => sortTasksForPlanner([nextTask, ...prev], selectedCalendarDate));
+    setTasks((prev) => sortTasksForPlanner([nextTask, ...prev], selectedCalendarDate, planningReferenceDate));
     return nextTask;
   };
 
   const appendTaskBatchLocally = (taskInputs = []) => {
     const nextTasks = taskInputs.map((task) => normalizeTaskRecord(task));
     if (nextTasks.length === 0) return [];
-    setTasks((prev) => sortTasksForPlanner([...nextTasks, ...prev], selectedCalendarDate));
+    setTasks((prev) => sortTasksForPlanner([...nextTasks, ...prev], selectedCalendarDate, planningReferenceDate));
     return nextTasks;
   };
 
@@ -2761,7 +2805,8 @@ No emojis.`;
         const nextTask = typeof updater === 'function' ? updater(normalizeTaskRecord(task)) : { ...normalizeTaskRecord(task), ...updater };
         return normalizeTaskRecord(nextTask);
       }),
-      selectedCalendarDate
+      selectedCalendarDate,
+      planningReferenceDate
     ));
   };
 
@@ -3104,7 +3149,7 @@ No emojis.`;
       return;
     }
 
-    setTasks(prev => sortTasksForPlanner(prev.map((task) => task.id === editingTask.id ? nextTask : normalizeTaskRecord(task)), selectedCalendarDate));
+    setTasks(prev => sortTasksForPlanner(prev.map((task) => task.id === editingTask.id ? nextTask : normalizeTaskRecord(task)), selectedCalendarDate, planningReferenceDate));
     setIsTaskModalOpen(false);
     setEditingTask(null);
     showNotification('Task updated.');
@@ -4667,7 +4712,7 @@ No emojis.`;
               rationale: matchedContact?.aiSummary || ''
             });
           });
-          setTasks(prev => sortTasksForPlanner([...newTasks, ...prev], selectedCalendarDate));
+          setTasks(prev => sortTasksForPlanner([...newTasks, ...prev], selectedCalendarDate, planningReferenceDate));
           showNotification("Smart Action Plan generated!");
         } else {
           throw new Error("Failed to parse task format.");
@@ -4681,10 +4726,11 @@ No emojis.`;
           showNotification("No pending tasks to prioritize.", "error"); setLoading(false); return;
         }
         const taskString = pendingTasks.map(t => `ID: ${t.id} | Contact: ${t.contact} | Task: ${t.type}`).join('\n');
-        const planningTimeZone = config.timezone === SYSTEM_TIMEZONE_VALUE ? `System (${SYSTEM_TIMEZONE_LABEL})` : config.timezone;
+        const planningNowLabel = formatDateTimeInTimeZone(new Date(), planningTimeZoneValue, { dateStyle: 'full', timeStyle: 'short' });
         prompt = `Act as an elite Virtual Sales Director. Review these sales tasks and organize my schedule.
         Assign a Priority Score (1-100), a suggested time block (e.g., '09:00 AM' or '02:30 PM'), and a 1-sentence rationale for the priority.
-        Respect the operator's planning window of ${config.activeHoursStart}-${config.activeHoursEnd} (${planningTimeZone}). The current system timezone is ${SYSTEM_TIMEZONE_LABEL}.
+        Respect the operator's planning window of ${config.activeHoursStart}-${config.activeHoursEnd} (${planningTimeZoneLabel}).
+        Current planning date/time: ${planningNowLabel}.
         Format EACH line EXACTLY as follows with no extra characters:
         [ID] || [Score] || [Time] || [Rationale]
         
@@ -4697,7 +4743,7 @@ No emojis.`;
         const lines = result.split('\n').filter(l => l.includes('||'));
         
         if (lines.length > 0) {
-          setTasks(prev => sortTasksForPlanner(applyTaskPrioritization(lines, prev), selectedCalendarDate));
+          setTasks(prev => sortTasksForPlanner(applyTaskPrioritization(lines, prev), selectedCalendarDate, planningReferenceDate));
           showNotification("Tasks successfully prioritized and scheduled!");
         } else {
           showNotification("Failed to parse AI schedule.", "error");
@@ -4706,7 +4752,7 @@ No emojis.`;
       }
 
       if (actionType === 'planFocusDay') {
-        const selectedTasks = sortTasksForPlanner(normalizedTasks, selectedCalendarDate)
+        const selectedTasks = sortTasksForPlanner(normalizedTasks, selectedCalendarDate, planningReferenceDate)
           .filter((task) => task.status !== 'completed')
           .slice(0, 8);
 
@@ -4717,10 +4763,11 @@ No emojis.`;
         }
 
         const taskLines = selectedTasks.map((task) => `ID: ${task.id} | Task: ${task.title} | Priority: ${task.priority || 50} | Contact: ${task.contact || 'General'} | Current Time: ${task.time || 'Unscheduled'}`).join('\n');
-        const planningTimeZone = config.timezone === SYSTEM_TIMEZONE_VALUE ? `System (${SYSTEM_TIMEZONE_LABEL})` : config.timezone;
+        const planningNowLabel = formatDateTimeInTimeZone(new Date(), planningTimeZoneValue, { dateStyle: 'full', timeStyle: 'short' });
         prompt = `Act as a world-class small-business operating chief. Build a focused workday plan for ${selectedCalendarDateLabel}.
 For each task below, choose the best start time, an estimated duration in minutes, and one short reason.
-      Keep the schedule inside ${config.activeHoursStart}-${config.activeHoursEnd} (${planningTimeZone}). The current system timezone is ${SYSTEM_TIMEZONE_LABEL}.
+      Keep the schedule inside ${config.activeHoursStart}-${config.activeHoursEnd} (${planningTimeZoneLabel}).
+      Current planning date/time: ${planningNowLabel}.
 Format EACH line EXACTLY like this:
 [ID] || [Start Time] || [Duration Minutes] || [Reason]
 
@@ -4780,14 +4827,15 @@ Be concise, practical, and specific. No emojis.`;
       }
 
       if (actionType === 'dailyRevenueBrief') {
-        const todayKey = formatDateKey(new Date());
+        const todayKey = currentPlanningDateKey;
+        const planningNowLabel = formatDateTimeInTimeZone(new Date(), planningTimeZoneValue, { dateStyle: 'full', timeStyle: 'short' });
         const outboundTodayCount = Object.values(threads).flatMap((thread) => thread?.messages || [])
           .filter((message) => message.direction === 'outbound')
           .filter((message) => {
             const sentAt = new Date(message.date);
-            return !Number.isNaN(sentAt.getTime()) && formatDateKey(sentAt) === todayKey;
+            return !Number.isNaN(sentAt.getTime()) && formatDateKeyInTimeZone(sentAt, planningTimeZoneValue) === todayKey;
           }).length;
-        const topTaskLines = sortTasksForPlanner(normalizedTasks, selectedCalendarDate)
+        const topTaskLines = sortTasksForPlanner(normalizedTasks, selectedCalendarDate, planningReferenceDate)
           .filter((task) => task.status !== 'completed')
           .slice(0, 5)
           .map((task) => `${task.title} | ${task.contact || 'Internal'} | Priority ${task.priority || 50} | Due ${task.dueDate || 'Unscheduled'}`)
@@ -4809,6 +4857,8 @@ Be concise, practical, and specific. No emojis.`;
 5. PRIORITY MOVES: Exactly 3 numbered actions for today.
 
 Snapshot:
+Planning Time: ${planningNowLabel}
+Planning Time Zone: ${planningTimeZoneLabel}
 Pipeline Value: ${crmOverview.pipelineValue}
 Weighted Forecast: ${pipelineOverview.weightedForecast}
 Follow-Ups Due: ${crmOverview.followUpsDueCount}
@@ -5156,7 +5206,7 @@ The email should be short, commercial, and lightly urgent without sounding despe
           throw new Error('Failed to parse the proposal follow-up draft.');
         }
 
-        const followUpDate = draft.followUpDate || proposalContact.nextFollowUpAt || formatDateKey(new Date(Date.now() + (2 * 24 * 60 * 60 * 1000)));
+        const followUpDate = draft.followUpDate || proposalContact.nextFollowUpAt || formatFuturePlanningDateKey(2, planningTimeZoneValue);
         let nextBody = draft.body;
         if (config.signature && !nextBody.includes(config.signature.substring(0, 10))) {
           nextBody = `${nextBody}\n\n${config.signature}`;
@@ -5277,7 +5327,7 @@ Make the email respectful, fresh, and low-friction. Acknowledge the gap without 
           throw new Error('Failed to parse the reactivation draft.');
         }
 
-        const followUpDate = draft.followUpDate || reactivationContact.nextFollowUpAt || formatDateKey(new Date(Date.now() + (4 * 24 * 60 * 60 * 1000)));
+        const followUpDate = draft.followUpDate || reactivationContact.nextFollowUpAt || formatFuturePlanningDateKey(4, planningTimeZoneValue);
         let nextBody = draft.body;
         if (config.signature && !nextBody.includes(config.signature.substring(0, 10))) {
           nextBody = `${nextBody}\n\n${config.signature}`;
@@ -5400,7 +5450,7 @@ Make the email warm, concise, and commercially aware. Reinforce delivered value,
           throw new Error('Failed to parse the customer check-in draft.');
         }
 
-        const followUpDate = draft.followUpDate || customerContact.nextFollowUpAt || formatDateKey(new Date(Date.now() + (14 * 24 * 60 * 60 * 1000)));
+        const followUpDate = draft.followUpDate || customerContact.nextFollowUpAt || formatFuturePlanningDateKey(14, planningTimeZoneValue);
         let nextBody = draft.body;
         if (config.signature && !nextBody.includes(config.signature.substring(0, 10))) {
           nextBody = `${nextBody}\n\n${config.signature}`;
@@ -6238,7 +6288,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
   // --- Views ---
 
   const renderDashboard = () => {
-    const todayKey = formatDateKey(new Date());
+    const todayKey = currentPlanningDateKey;
     const pendingTasks = normalizedTasks.filter(t => t.status === 'pending');
     const outboundMessages = Object.values(threads).flatMap(thread =>
       (thread?.messages || [])
@@ -6248,7 +6298,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
     const outboundTodayCount = outboundMessages.filter(message => {
       const sentAt = new Date(message.date);
-      return !Number.isNaN(sentAt.getTime()) && formatDateKey(sentAt) === todayKey;
+      return !Number.isNaN(sentAt.getTime()) && formatDateKeyInTimeZone(sentAt, planningTimeZoneValue) === todayKey;
     }).length;
 
     const meetingsBookedCount = normalizedTasks.filter(task =>
@@ -9171,13 +9221,15 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
                   >
                     <option value={SYSTEM_TIMEZONE_VALUE}>System ({SYSTEM_TIMEZONE_LABEL})</option>
-                    <option value="EST">EST</option>
-                    <option value="CST">CST</option>
-                    <option value="MST">MST</option>
-                    <option value="PST">PST</option>
+                    {TIMEZONE_PRESET_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                Current planning clock: {currentPlanningDateTimeLabel} ({planningTimeZoneLabel}). Calendar highlights, task sorting, and AI scheduling prompts use this timezone.
+              </p>
               <div>
                 <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Minimum Buffer Between Timed Tasks (min)</label>
                 <input 

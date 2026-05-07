@@ -14,9 +14,11 @@ import {
   buildTaskConflictMap,
   buildTaskScheduleIssueMap,
   dateKeyToDate,
+  formatDateKeyInTimeZone,
   getTaskScheduledEnd,
   getTaskScheduledStart,
   materializeTaskTemplate,
+  normalizePlanningTimeZone,
   createMeetingPrepPack,
   parseAiContactPlan,
   parseAiIdeaOrganizer,
@@ -34,6 +36,20 @@ test('dateKeyToDate keeps date-only planner keys on the intended local calendar 
   assert.equal(date.getFullYear(), 2026);
   assert.equal(date.getMonth(), 3);
   assert.equal(date.getDate(), 12);
+});
+
+test('normalizePlanningTimeZone migrates legacy timezone abbreviations to IANA zones', () => {
+  assert.equal(normalizePlanningTimeZone('EST'), 'America/New_York');
+  assert.equal(normalizePlanningTimeZone('pst'), 'America/Los_Angeles');
+  assert.equal(normalizePlanningTimeZone('system'), 'system');
+  assert.equal(normalizePlanningTimeZone('Not/AZone'), 'system');
+});
+
+test('formatDateKeyInTimeZone uses the configured planning timezone for today calculations', () => {
+  const snapshot = '2026-04-12T01:30:00.000Z';
+
+  assert.equal(formatDateKeyInTimeZone(snapshot, 'America/New_York'), '2026-04-11');
+  assert.equal(formatDateKeyInTimeZone(snapshot, 'Europe/London'), '2026-04-12');
 });
 
 test('parseTimeToMinutes handles 12-hour and 24-hour planner times', () => {

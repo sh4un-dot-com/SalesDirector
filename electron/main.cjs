@@ -12,6 +12,14 @@ const LOCAL_DB_FILE = 'salesdirector-localdb.enc.json';
 const LOCAL_DB_VERSION = 1;
 const LOCAL_DB_ITERATIONS = 250000;
 const CI_SMOKE_TEST_FLAG = '--ci-smoke-test';
+const SESSION_DATA_DIR = path.join(app.getPath('userData'), 'session-data');
+
+app.setPath('sessionData', SESSION_DATA_DIR);
+
+if (!app.isPackaged) {
+  app.commandLine.appendSwitch('disable-http-cache');
+  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+}
 
 // --- OAuth2 (Microsoft Office 365 / Google) ---
 const OAUTH2_REDIRECT_URI = 'http://localhost';

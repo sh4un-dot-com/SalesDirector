@@ -16,6 +16,16 @@ export const PIPELINE_STAGE_WEIGHTS = {
 export const TASK_TYPE_OPTIONS = ['follow-up', 'call', 'meeting', 'proposal', 'research', 'admin'];
 export const TASK_STATUS_OPTIONS = ['pending', 'in-progress', 'waiting', 'completed'];
 export const TASK_FOCUS_OPTIONS = ['sales', 'deep-work', 'meeting', 'admin'];
+export const TIMEZONE_PRESET_OPTIONS = [
+  { value: 'America/New_York', label: 'Eastern (New York / Toronto)' },
+  { value: 'America/Chicago', label: 'Central (Chicago)' },
+  { value: 'America/Denver', label: 'Mountain (Denver)' },
+  { value: 'America/Los_Angeles', label: 'Pacific (Los Angeles)' },
+  { value: 'America/Halifax', label: 'Atlantic (Halifax)' },
+  { value: 'Europe/London', label: 'London' },
+  { value: 'Europe/Berlin', label: 'Berlin / Central Europe' },
+  { value: 'UTC', label: 'UTC' }
+];
 export const TASK_TEMPLATE_DEFINITIONS = [
   {
     id: 'morning-pipeline-sweep',
@@ -55,9 +65,42 @@ export const TASK_TEMPLATE_DEFINITIONS = [
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH_KEY_PATTERN = /^\d{4}-\d{2}$/;
+const SYSTEM_TIMEZONE_VALUE = 'system';
 
 const ensureString = (value = '') => String(value ?? '').trim();
 const padNumber = (value) => String(value).padStart(2, '0');
+const TIMEZONE_ALIAS_MAP = Object.freeze({
+  EST: 'America/New_York',
+  CST: 'America/Chicago',
+  MST: 'America/Denver',
+  PST: 'America/Los_Angeles'
+});
+
+const isValidIntlTimeZone = (value = '') => {
+  const normalized = ensureString(value);
+  if (!normalized) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: normalized }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const normalizePlanningTimeZone = (value = '') => {
+  const normalized = ensureString(value);
+  if (!normalized || normalized.toLowerCase() === SYSTEM_TIMEZONE_VALUE) {
+    return SYSTEM_TIMEZONE_VALUE;
+  }
+
+  const mapped = TIMEZONE_ALIAS_MAP[normalized.toUpperCase()] || normalized;
+  return isValidIntlTimeZone(mapped) ? mapped : SYSTEM_TIMEZONE_VALUE;
+};
+
+const resolveIntlTimeZone = (value = SYSTEM_TIMEZONE_VALUE) => {
+  const normalized = normalizePlanningTimeZone(value);
+  return normalized === SYSTEM_TIMEZONE_VALUE ? undefined : normalized;
+};
 
 const parseDateKeyParts = (value = '') => {
   const normalized = ensureString(value);
@@ -102,6 +145,51 @@ export const formatDateKey = (value) => {
   const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   return `${date.getFullYear()}-${padNumber(date.getMonth() + 1)}-${padNumber(date.getDate())}`;
+};
+
+const getZonedDateParts = (value, timeZone = SYSTEM_TIMEZONE_VALUE) => {
+  const date = value instanceof Date ? new Date(value.getTime()) : new Date(value ?? Date.now());
+  if (Number.isNaN(date.getTime())) return null;
+
+  const resolvedTimeZone = resolveIntlTimeZone(timeZone);
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    ...(resolvedTimeZone ? { timeZone: resolvedTimeZone } : {}),
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const parts = {};
+  formatter.formatToParts(date).forEach((part) => {
+    if (part.type !== 'literal') {
+      parts[part.type] = part.value;
+    }
+  });
+
+  const year = Number(parts.year);
+  const month = Number(parts.month);
+  const day = Number(parts.day);
+  if (![year, month, day].every((part) => Number.isInteger(part))) return null;
+
+  return { year, month, day };
+};
+
+export const formatDateKeyInTimeZone = (value, timeZone = SYSTEM_TIMEZONE_VALUE) => {
+  if (value == null || value === '') return '';
+  const parts = getZonedDateParts(value, timeZone);
+  if (!parts) return '';
+  return `${parts.year}-${padNumber(parts.month)}-${padNumber(parts.day)}`;
+};
+
+export const formatDateTimeInTimeZone = (value, timeZone = SYSTEM_TIMEZONE_VALUE, options = { dateStyle: 'medium', timeStyle: 'short' }) => {
+  if (value == null || value === '') return '';
+  const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+
+  const resolvedTimeZone = resolveIntlTimeZone(timeZone);
+  return new Intl.DateTimeFormat(undefined, {
+    ...(resolvedTimeZone ? { timeZone: resolvedTimeZone } : {}),
+    ...options
+  }).format(date);
 };
 
 export const dateKeyToDate = (value = '') => {
@@ -1098,9 +1186,10 @@ export const createMeetingPrepPack = (contact = {}, options = {}) => {
   ];
 };
 
-export const getTasksForDate = (tasks = [], selectedDateKey = '') => sortTasksForPlanner(
+export const getTasksForDate = (tasks = [], selectedDateKey = '', referenceDate = new Date()) => sortTasksForPlanner(
   normalizeTasks(tasks).filter((task) => getTaskCalendarDate(task) === selectedDateKey),
-  selectedDateKey
+  selectedDateKey,
+  referenceDate
 );
 
 export const buildCalendarMonth = (tasks = [], monthKey = new Date(), selectedDateKey = '', referenceDate = new Date()) => {
