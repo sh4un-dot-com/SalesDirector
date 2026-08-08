@@ -6,12 +6,31 @@ release/
 .DS_Store
 coverage/
 
-# Sales / revenue capitalization collateral (keep local, not in repo)
+# ---------------------------------------------------------------------------
+# Sales / revenue capitalization collateral — LOCAL ONLY (never commit)
+# Keep flyers, pitch prompts, monetization notes, and go-to-market playbooks
+# on this machine. Product docs (README, FEATURES, USER_MANUAL, SETUP) stay
+# tracked; this block is only for capitalization / GTM collateral.
+# ---------------------------------------------------------------------------
 SALES_FLYER_PROMPTS.md
 *SALES*PROMPTS*
 *SALES*FLYER*
-*REVENUE*
+*SALES*COLLATERAL*
+*SALES*PITCH*
+*GO*TO*MARKET*
+*GTM*PLAYBOOK*
+*CAPITALIZ*
 *MONETIZ*
+*REVENUE*
+*PRICING*STRATEGY*
+*PITCH*DECK*
+*PITCH*PROMPT*
+*MARKETING*FLYER*
+*MARKETING*COPY*
 sales-collateral/
 revenue-ideas/
 marketing-flyers/
+private-sales/
+local-sales/
+.sales-private/
+.private/
