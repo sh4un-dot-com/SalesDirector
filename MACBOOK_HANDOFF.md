@@ -25,9 +25,11 @@ Send these items together:
 1. The `SalesDirector` macOS DMG.
 2. This guide.
 3. Their sender name and reply email address.
-4. One AI setup method:
-   Direct mode: their AI provider and API key.
-   Proxy mode: the proxy URL and proxy secret if your server uses one.
+4. One AI setup method (pick exactly one and write it on a sticky note for them):
+   - **Gemini / OpenAI / Anthropic / xAI:** provider name + API key, or
+   - **OpenRouter:** API key + model id (example `openai/gpt-4o-mini`), or
+   - **Local (advanced):** only if you already installed Ollama or LM Studio for them — base URL + model name, or
+   - **Proxy mode:** proxy URL and proxy secret if your server uses one.
 5. One contact source:
    A CSV file to import, or
    HubSpot access details if you want them to sync HubSpot.
@@ -70,11 +72,17 @@ When the app opens, go to `Settings` and complete these four required steps:
 2. `Add your name and reply email`
    Fill in `Your Name` and `Reply-To Email Address`.
 3. `Connect AI`
-   Choose the AI provider and paste in the API key, or enter the proxy URL if you use proxy mode.
+   - Open **Settings → AI Routing & Provider Keys**.
+   - Choose the Active AI Provider from the sticky note you were given.
+   - Paste the API key (and model id for OpenRouter, or base URL + model for local tools).
+   - Or enter the proxy URL if your team uses proxy mode.
+   - Click **Test Active Provider** and wait until it says Passed.
 4. `Load contacts`
    Import a CSV or click `Sync HubSpot`.
 
 Mailbox setup is optional. It is only needed if the user will use Smart Inbox, IMAP, SMTP, or Graph mail features.
+
+If someone told you to use a “local” AI (Ollama / LM Studio), that only works in the desktop app with that program already running in the background. If Test fails, ask your admin — do not keep guessing URLs.
 
 ### 4. First success test
 

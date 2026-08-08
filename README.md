@@ -21,7 +21,7 @@ SalesDirector is a desktop application that combines AI email drafting, CRM cont
 | **Encrypted Local Database** | AES-256-GCM encryption with PBKDF2 key derivation. Your data stays on your machine, protected by your passphrase. |
 | **HubSpot Integration** | Two-way contact sync and automatic email engagement logging. |
 | **Persistent Settings** | AI provider keys, HubSpot token, SMTP/IMAP credentials, and proxy settings persist locally on-device until cleared. |
-| **Multi-Provider AI** | Gemini (default), OpenAI, Anthropic, xAI, and Meta provider slots, with optional proxy mode when teams want vendor secrets kept server-side. |
+| **Multi-Provider AI** | Gemini (default), OpenAI, Anthropic, xAI, OpenRouter, and local OpenAI-compatible servers (Ollama, LM Studio, etc.), with optional proxy mode when teams want vendor secrets kept server-side. |
 | **Desktop-First** | Native installers for Windows (NSIS) and macOS (DMG). Works fully offline after setup. |
 
 For the complete feature list, see [FEATURES.md](FEATURES.md).
@@ -41,11 +41,29 @@ npm run dev:desktop
 npm run dev
 ```
 
-Open the app → go to **Settings** → configure sender profile, AI provider key, and optionally HubSpot or mail credentials. Those settings persist locally on the device until cleared, so you're ready to restart and keep working.
+Open the app → go to **Settings** → configure sender profile, AI (Gemini, OpenAI, Anthropic, xAI, **OpenRouter**, or **local Ollama/LM Studio**), and optionally HubSpot or mail credentials. Those settings persist locally on the device until cleared.
 
-For full setup including proxy mode, environment configuration, and packaging, see [SETUP.md](SETUP.md).
+| Guide | Start here if you need… |
+|---|---|
+| **[SETUP.md](SETUP.md)** | Full install, first-run, AI matrix, packaging |
+| **[USER_MANUAL.md](USER_MANUAL.md)** | Every tab, workflow, and AI provider deep-dive |
+| **[ONBOARDING.md](ONBOARDING.md)** | Role-timed first day (Rep / Manager / Admin) |
+| **[MACBOOK_HANDOFF.md](MACBOOK_HANDOFF.md)** | Nontechnical Mac end-user install |
+| **[PROXY_SETUP.md](PROXY_SETUP.md)** | Server-side API keys and OpenRouter/local via proxy |
+| **[TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md)** | Symptom → fix matrix |
 
-If you need to hand the app to a nontechnical Mac user, use [MACBOOK_HANDOFF.md](MACBOOK_HANDOFF.md).
+---
+
+## AI Providers (quick)
+
+| Provider | What you configure |
+|---|---|
+| Gemini / OpenAI / Anthropic / xAI | API key for that vendor |
+| **OpenRouter** | OpenRouter API key + any OpenRouter model id |
+| **Local / OpenAI-compatible** | Base URL (e.g. Ollama `http://127.0.0.1:11434/v1`) + model id; desktop app recommended |
+| Proxy mode | Proxy Base URL (+ shared secret); keys live in server env |
+
+Use **Settings → Test Active Provider** after configuration.
 
 ---
 
@@ -151,17 +169,16 @@ vite.config.mjs            → Vite build config (base: './' for Electron)
 | Guide | Description |
 |---|---|
 | [FEATURES.md](FEATURES.md) | Complete feature list and capabilities |
-| [SETUP.md](SETUP.md) | Installation, environment, and first-run configuration |
-| [MACBOOK_HANDOFF.md](MACBOOK_HANDOFF.md) | Plain-English handoff guide for a nontechnical Mac user |
-| [USER_MANUAL.md](USER_MANUAL.md) | Day-to-day workflows and feature usage |
-| [ONBOARDING.md](ONBOARDING.md) | 15–30 minute new user onboarding |
+| [SETUP.md](SETUP.md) | **In-depth** installation, AI setup, first-run, packaging |
+| [USER_MANUAL.md](USER_MANUAL.md) | **In-depth** day-to-day workflows and provider guide |
+| [ONBOARDING.md](ONBOARDING.md) | Role-based 15–45 minute onboarding paths |
+| [MACBOOK_HANDOFF.md](MACBOOK_HANDOFF.md) | Plain-English handoff for a nontechnical Mac user |
 | [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md) | Trainer handout and onboarding runbook |
 | [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md) | HubSpot token setup, scopes, and troubleshooting |
-| [PROXY_SETUP.md](PROXY_SETUP.md) | Secure proxy server configuration |
-| [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md) | Error matrix and issue triage |
+| [PROXY_SETUP.md](PROXY_SETUP.md) | **In-depth** secure proxy, OpenRouter, local LLM env |
+| [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md) | **In-depth** error matrix and AI/mail/proxy triage |
 | [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) | Production launch and release gates |
 | [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md) | macOS code signing and notarization |
-| [SALES_FLYER_PROMPTS.md](SALES_FLYER_PROMPTS.md) | AI prompt outlines for generating sales collateral |
 
 ---
 

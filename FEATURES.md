@@ -187,12 +187,22 @@ Eight real-time status indicators for instant diagnostics:
 
 ### AI Defaults & Provider Keys
 - Default Tone and Length preferences
+- Shared generation profile: temperature, top-p, max output tokens (up to 8192) with automatic continuation stitching for length-limited replies
+- **AI Readiness Report** — ready / supported / local keys / live check counts, per-provider cards, Test Active / Test All
 - **Multi-provider support** (settings persist locally on-device; use proxy mode if you do not want provider keys stored on the client):
-  - Google Gemini (default)
-  - OpenAI (ChatGPT)
-  - Anthropic (Claude)
-  - xAI (Grok)
-  - Meta (Llama)
+
+| Provider | Key | Model | Endpoint notes |
+|---|---|---|---|
+| Google Gemini (default) | Gemini API key | Built-in flash model | Direct browser or desktop |
+| OpenAI | OpenAI API key | Built-in mini model | OpenAI Chat Completions |
+| Anthropic | Anthropic API key | Built-in Sonnet model | Messages API |
+| xAI | xAI API key | Built-in Grok model | OpenAI-compatible at `api.x.ai` |
+| **OpenRouter** | OpenRouter API key | **User-selectable model id** | `openrouter.ai/api/v1` |
+| **Local / OpenAI-compatible** | Optional | **User model id** | Ollama, LM Studio, vLLM, LocalAI, custom `/v1` base URL; desktop recommended for localhost |
+
+- One-click local presets: **Ollama** (`127.0.0.1:11434/v1`), **LM Studio** (`127.0.0.1:1234/v1`), **Custom**
+- AI action **queue** — concurrent clicks enqueue instead of dropping work
+- Proxy routing for server-side keys: see [PROXY_SETUP.md](PROXY_SETUP.md)
 
 ---
 
@@ -262,8 +272,8 @@ Supported column headers:
 | Desktop | Electron 32, electron-builder 25 |
 | Build | Vite 5 with `base: './'` for file:// compatibility |
 | Encryption | Web Crypto API (AES-256-GCM, PBKDF2) |
-| AI | Google Gemini API (default), multi-provider ready |
+| AI | Gemini, OpenAI, Anthropic, xAI, OpenRouter, OpenAI-compatible local (Ollama/LM Studio); desktop IPC + optional proxy |
 | CRM | HubSpot private app API |
-| Proxy | Node.js Express-based secure proxy server |
-| CI/CD | GitHub Actions matrix build (Windows + macOS) |
-| Testing | Node.js built-in test runner |
+| Proxy | Node.js `http` secure proxy (`proxy-server.mjs`) with rate limits and validation |
+| CI/CD | GitHub Actions matrix (Windows, macOS, Linux package variants) |
+| Testing | Node.js built-in test runner (`npm test`) |

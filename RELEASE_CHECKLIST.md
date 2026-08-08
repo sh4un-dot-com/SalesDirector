@@ -43,7 +43,10 @@ npm run build:web
 - [ ] Contact sync succeeds for at least one real account.
 - [ ] Outbound thread save works in Firestore.
 - [ ] HubSpot email logging works when composer has a hubspotId.
-- [ ] AI generation works in selected mode (direct key or proxy).
+- [ ] AI generation works for the **approved** provider path(s): Gemini / OpenAI / Anthropic / xAI / OpenRouter / local OpenAI-compatible / proxy.
+- [ ] Settings → **Test Active Provider** passes on a golden workstation.
+- [ ] If OpenRouter is approved, sample model id is documented for users.
+- [ ] If local LLMs are approved, Ollama/LM Studio base URL + model naming is documented; desktop-only localhost note is clear.
 
 ## 5. Security and Compliance
 
@@ -56,7 +59,7 @@ npm run build:web
 
 - [ ] Proxy logs include request IDs and useful error context.
 - [ ] Support team has current troubleshooting guide: [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
-- [ ] User-facing docs are current: [USER_MANUAL.md](USER_MANUAL.md), [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md), [SETUP.md](SETUP.md).
+- [ ] User-facing docs are current: [USER_MANUAL.md](USER_MANUAL.md), [SETUP.md](SETUP.md), [ONBOARDING.md](ONBOARDING.md), [PROXY_SETUP.md](PROXY_SETUP.md), [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md), [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md).
 
 ## 7. Desktop Artifacts and Signing (If Shipping Desktop)
 

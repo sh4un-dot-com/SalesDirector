@@ -50,27 +50,74 @@ const GOOGLE_OAUTH2_SCOPES = [
 ];
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
+const OPENROUTER_DEFAULT_MODEL = 'openai/gpt-4o-mini';
+const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const AI_PROVIDER_CONFIG = {
   gemini: {
     label: 'Gemini',
-    model: 'gemini-2.5-flash'
+    model: 'gemini-2.5-flash',
+    requiresApiKey: true
   },
   openai: {
     label: 'OpenAI',
-    model: 'gpt-4.1-mini'
+    model: 'gpt-4.1-mini',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    requiresApiKey: true
   },
   anthropic: {
     label: 'Anthropic',
-    model: 'claude-3-5-sonnet-latest'
+    model: 'claude-3-5-sonnet-latest',
+    requiresApiKey: true
   },
   xai: {
     label: 'xAI',
-    model: 'grok-2-latest'
+    model: 'grok-2-latest',
+    defaultBaseUrl: 'https://api.x.ai/v1',
+    requiresApiKey: true
+  },
+  openrouter: {
+    label: 'OpenRouter',
+    model: OPENROUTER_DEFAULT_MODEL,
+    defaultBaseUrl: OPENROUTER_DEFAULT_BASE_URL,
+    requiresApiKey: true
+  },
+  openai_compatible: {
+    label: 'Local / OpenAI-compatible',
+    model: '',
+    defaultBaseUrl: OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
+    requiresApiKey: false
   },
   meta: {
     label: 'Meta',
-    model: ''
+    model: '',
+    requiresApiKey: true
   }
+};
+
+const normalizeOpenAiCompatibleBaseUrl = (value = '', fallback = '') => {
+  let url = String(value || '').trim().replace(/\/+$/, '');
+  if (!url) {
+    url = String(fallback || '').trim().replace(/\/+$/, '');
+  }
+  if (!url) return '';
+
+  try {
+    const parsed = new URL(url);
+    if (!parsed.pathname || parsed.pathname === '/') {
+      return `${parsed.origin}/v1`;
+    }
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return url;
+  }
+};
+
+const buildOpenAiCompatibleChatCompletionsUrl = (baseUrl = '', fallback = '') => {
+  const normalized = normalizeOpenAiCompatibleBaseUrl(baseUrl, fallback);
+  if (!normalized) return '';
+  if (/\/chat\/completions$/i.test(normalized)) return normalized;
+  return `${normalized}/chat/completions`;
 };
 const AI_GENERATION_PROFILE_DEFAULTS = Object.freeze({
   temperature: 0.7,
@@ -875,22 +922,40 @@ const stitchAiContinuationText = (existingText, nextText) => {
   return `${base}\n${addition}`.trim();
 };
 
-const requestDesktopAiText = async ({ provider, apiKey, promptText, systemInstruction, generationProfile, signal }) => {
+const requestDesktopAiText = async ({
+  provider,
+  apiKey,
+  promptText,
+  systemInstruction,
+  generationProfile,
+  signal,
+  model,
+  baseUrl
+}) => {
   const normalizedProvider = normalizeAiProvider(provider);
   const providerConfig = AI_PROVIDER_CONFIG[normalizedProvider] || AI_PROVIDER_CONFIG.gemini;
   const systemText = getAiSystemInstructionText(systemInstruction);
   const sharedGenerationProfile = buildAiGenerationProfile(generationProfile);
+  const resolvedModel = String(model || providerConfig.model || '').trim();
+  const resolvedBaseUrl = normalizeOpenAiCompatibleBaseUrl(
+    baseUrl,
+    providerConfig.defaultBaseUrl || ''
+  );
 
   if (!promptText) {
     throw new Error('AI prompt text is required.');
   }
 
-  if (!apiKey && normalizedProvider !== 'meta') {
+  if (normalizedProvider === 'meta') {
+    throw new Error('Meta direct routing is not available yet. Use Gemini, OpenAI, Anthropic, xAI, OpenRouter, a local OpenAI-compatible server, or proxy mode.');
+  }
+
+  if (providerConfig.requiresApiKey !== false && !apiKey) {
     throw new Error(`${providerConfig.label} API key is required.`);
   }
 
-  if (normalizedProvider === 'meta') {
-    throw new Error('Meta direct routing is not available yet. Use Gemini, OpenAI, Anthropic, xAI, or proxy mode.');
+  if ((normalizedProvider === 'openrouter' || normalizedProvider === 'openai_compatible' || normalizedProvider === 'openai' || normalizedProvider === 'xai') && !resolvedModel) {
+    throw new Error(`${providerConfig.label} model id is required.`);
   }
 
   const requestSingleText = async (requestPromptText) => {
@@ -932,7 +997,7 @@ const requestDesktopAiText = async ({ provider, apiKey, promptText, systemInstru
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: providerConfig.model,
+          model: resolvedModel || providerConfig.model,
           ...buildAnthropicGenerationConfig(sharedGenerationProfile),
           system: systemText || undefined,
           messages: [
@@ -961,17 +1026,30 @@ const requestDesktopAiText = async ({ provider, apiKey, promptText, systemInstru
       };
     }
 
-    const openAiCompatibleUrl = normalizedProvider === 'xai'
-      ? 'https://api.x.ai/v1/chat/completions'
-      : 'https://api.openai.com/v1/chat/completions';
+    const openAiCompatibleUrl = buildOpenAiCompatibleChatCompletionsUrl(
+      resolvedBaseUrl,
+      providerConfig.defaultBaseUrl || (normalizedProvider === 'xai' ? 'https://api.x.ai/v1' : 'https://api.openai.com/v1')
+    );
+    if (!openAiCompatibleUrl) {
+      throw new Error(`${providerConfig.label} base URL is missing.`);
+    }
+
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    if (normalizedProvider === 'openrouter') {
+      headers['HTTP-Referer'] = 'https://www.akitaengineering.com';
+      headers['X-Title'] = 'SalesDirector';
+    }
+
     const response = await fetch(openAiCompatibleUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
+      headers,
       body: JSON.stringify({
-        model: providerConfig.model,
+        model: resolvedModel,
         ...buildOpenAiCompatibleGenerationConfig(sharedGenerationProfile),
         messages: [
           ...(systemText ? [{ role: 'system', content: systemText }] : []),
@@ -1092,11 +1170,15 @@ const registerLocalDbIpcHandlers = () => {
       const provider = normalizeAiProvider(payload.provider);
       const promptText = String(payload.promptText || '').trim();
       const apiKey = String(payload.apiKey || '').trim();
+      const model = String(payload.model || '').trim();
+      const baseUrl = String(payload.baseUrl || '').trim();
       const systemInstruction = payload.systemInstruction || '';
       const generationProfile = buildAiGenerationProfile(payload.generationProfile || {});
       const text = await requestDesktopAiText({
         provider,
         apiKey,
+        model,
+        baseUrl,
         promptText,
         systemInstruction,
         generationProfile,

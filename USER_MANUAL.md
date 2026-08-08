@@ -1,182 +1,281 @@
 # SalesDirector User Manual
 
-Your complete guide to day-to-day usage of SalesDirector.
+Complete day-to-day guide for SalesDirector — AI outreach, CRM, Smart Inbox, tasks, settings, and AI providers (cloud, OpenRouter, and local LLMs).
 
-> **First time?** Start with [ONBOARDING.md](ONBOARDING.md) for a role-based 15–30 minute setup path.
-> **Need the full feature list?** See [FEATURES.md](FEATURES.md).
-
----
-
-## Role-Based Quickstart
-
-### Sales Rep (First 10 Minutes)
-
-1. Open **Settings** → add your sender name, reply-to address, and email signature.
-2. Add your AI provider key (or confirm proxy routing is configured).
-3. Go to **CRM & Contacts** → sync HubSpot or import a CSV.
-4. Click any contact → open their dossier → click **Draft Outreach**.
-5. In **AI Outreach**, generate a draft + subject lines, then send.
-
-### Sales Manager (Pipeline & Team Hygiene)
-
-1. Verify every rep has sender profile and safety limits configured.
-2. Standardize tone/length defaults in Settings before campaigns launch.
-3. Ensure reps use contact dossiers so outbound sends stay linked to thread history.
-4. Review **Smart Inbox** scores daily to prioritize team follow-up order.
-
-### RevOps or Admin (System Owner)
-
-1. Decide direct mode vs. proxy mode for credential handling.
-2. Configure HubSpot private app token and scopes per [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md).
-3. Confirm all 7 readiness indicators show green under **Settings → System Health**.
-4. Run release validation using [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
-5. Manage incident triage with [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
+> **Installing?** Start with [SETUP.md](SETUP.md).  
+> **First day on the team?** Use [ONBOARDING.md](ONBOARDING.md).  
+> **Feature inventory:** [FEATURES.md](FEATURES.md).  
+> **Something broken?** [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
 
 ---
 
-## Main Navigation
+## Table of Contents
 
-SalesDirector has seven tabs accessible from the left sidebar:
-
-| Tab | Icon | Purpose |
-|---|---|---|
-| **Dashboard** | LayoutDashboard | KPI snapshot, action plan, recent activity |
-| **Smart Inbox** | Mail | AI-scored inbound emails with one-sentence summaries |
-| **Tasks & Calendar** | CalendarDays | AI-generated daily tasks with priority scoring and time blocks |
-| **CRM & Contacts** | Users | Contact management, CSV import, HubSpot sync, dossiers |
-| **AI Outreach** | Send | AI email composer with strategy sidebar |
-| **Settings** | Settings | Integrations, safety controls, provider keys, system health |
-| **About** | FileText | Runtime diagnostics, version info, and Akita Engineering credits |
-
-**Header controls:**
-- **Dark mode toggle** — top-right header, preference persists across restarts.
-- **Global search** — search contacts by name, email, or company from any tab. Results appear in a live dropdown; click to open the contact dossier.
-- **User avatar** — displays your initials from the sender name configured in Settings (falls back to "SD").
-
----
-
-## Daily Workflow
-
-A recommended daily flow for sales reps:
-
-1. **Unlock your database** — Settings → Encrypted Local Database → enter passphrase → Unlock.
-2. **Check Smart Inbox** — see which inbound emails scored highest. Prioritize your replies.
-3. **Review Tasks** — check AI-generated tasks or add manual ones. Follow the priority schedule.
-4. **Work contacts** — open CRM dossiers, review interaction timelines, draft outreach.
-5. **Compose & send** — use AI Outreach to draft, polish, and send emails with full context.
-6. **Log activity** — outbound messages auto-save to thread history and HubSpot (if configured).
-7. **Plan ahead** — use Tasks & Calendar to schedule tomorrow's actions.
+1. [Product Overview](#1-product-overview)
+2. [Role-Based Quickstarts](#2-role-based-quickstarts)
+3. [Interface Tour](#3-interface-tour)
+4. [Daily Operating Rhythm](#4-daily-operating-rhythm)
+5. [Dashboard](#5-dashboard)
+6. [Smart Inbox](#6-smart-inbox)
+7. [Tasks & Calendar](#7-tasks--calendar)
+8. [CRM & Contacts](#8-crm--contacts)
+9. [AI Outreach](#9-ai-outreach)
+10. [Settings](#10-settings)
+11. [AI Providers In Depth](#11-ai-providers-in-depth)
+12. [About & Diagnostics](#12-about--diagnostics)
+13. [Data, Security & Privacy](#13-data-security--privacy)
+14. [Keyboard & Interaction Tips](#14-keyboard--interaction-tips)
+15. [Common Issues](#15-common-issues)
 
 ---
 
-## Dashboard
+## 1. Product Overview
 
-Your sales command center shows:
+SalesDirector is a **desktop-first sales command center** that keeps CRM context, AI drafting, inbox prioritization, and task planning in one place so reps spend less time switching tools.
 
-- **Contact count** — total contacts in your CRM
-- **Pending tasks** — open tasks awaiting completion
-- **Emails needing response** — inbox messages flagged for follow-up
-- **Emails sent today** — your daily outbound counter
-- **Meetings booked** — scheduled meeting tally
-- **Smart Action Plan** — top 4 pending tasks with "Execute" buttons to jump to the composer
-- **Recent Activity** — last 3 outbound emails with timestamps
-
----
-
-## Smart Inbox
-
-### Filtering & Search
-
-- **Filter tabs** — toggle between All, Unread, Needs Response, and Archived emails
-- **Search bar** — search by sender, subject, or company across all inbox emails
-- Filters and search work together to narrow your view
-
-### Scoring & Prioritization
-
-Click **Analyze & Score Inbox** to run AI scoring across all inbound emails:
-
-- Each email gets a **lead score from 1 to 100** (100 = hottest lead)
-- Visual badges: **Hot** (70+), **Warm** (40–69), **Cold** (below 40)
-- **One-sentence AI summary** per email for instant context
-- **CRM-linked next best action** tells the rep whether to work the email in Outreach, create a task, push a proposal follow-up, or review CRM first
-
-### Per-Email Actions
-
-| Action | What It Does |
+| You want to… | Go here |
 |---|---|
-| **Use in Outreach** | Opens the AI Outreach composer with inbox plus CRM context pre-loaded |
-| **AI Reply** | Generates a reply draft using inbox and CRM context, then opens it in Outreach |
-| **Review CRM / Open CRM** | Opens a reviewed CRM draft for new senders or jumps into the linked contact dossier |
-| **Add Task** | Creates a follow-up task tied to the sender and the linked CRM record when available |
-| **Read / Unread** | Toggle read status — unread emails appear bold with a rose dot |
-| **Flag** | Mark or unmark an email as needing a response |
-| **Archive** | Archive an email to remove it from the default view (viewable in Archived tab) |
-| **Delete** | Permanently remove an email from the inbox |
+| See pipeline pulse and AI partner actions | **Dashboard** |
+| Prioritize inbound replies | **Smart Inbox** |
+| Plan the day and book follow-ups | **Tasks & Calendar** |
+| Manage accounts and dossiers | **CRM & Contacts** |
+| Write and send AI-assisted email | **AI Outreach** |
+| Keys, mail, proxy, database | **Settings** |
+| Version / runtime info | **About** |
+
+Built by **Akita Engineering** (Niagara Falls, Canada) · [www.akitaengineering.com](https://www.akitaengineering.com) · [support@akitaengineering.com](mailto:support@akitaengineering.com)
 
 ---
 
-## Tasks & Calendar
+## 2. Role-Based Quickstarts
 
-### Creating Tasks
+### Sales Rep (first 10–15 minutes)
 
-- **Quick-add** — type a task and press Enter
-- **AI Generate** — click "Generate Tasks from CRM" to have AI analyze your contacts and create 3 prioritized daily actions
+1. **Settings** → unlock encrypted local database.
+2. Set **name**, **reply-to**, and **signature**.
+3. Connect **AI** (Gemini key, OpenRouter, or local Ollama/LM Studio — see [§11](#11-ai-providers-in-depth)).
+4. Click **Test Active Provider** until it passes.
+5. **CRM & Contacts** → HubSpot sync, CSV import, or add a contact.
+6. Open a dossier → **Draft Outreach**.
+7. Generate draft + subjects → review → send (or copy to your mail client if SMTP is not configured).
+8. **Smart Inbox** → Analyze & Score → reply to the hottest threads first.
 
-### AI Prioritization
+**Success:** One outbound draft saved to thread history with CRM context.
 
-Click **Prioritize with AI** to:
-- Assign priority scores (1–100) with color-coded urgency
-- Suggest time blocks for your active hours
-- Provide written rationale for each scheduling decision
+### Sales Manager
 
-### Calendar View
+1. Standardize **tone/length defaults** and **sending limits** for the team.
+2. Require drafting from **contact dossiers** so history and HubSpot logging stay clean.
+3. Use **Dashboard → Revenue Brief / Rescue At-Risk Deals** in standups.
+4. Review **Smart Inbox** scoring discipline in 1:1s.
+5. Share this manual + [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
 
-- **Mini calendar** with monthly navigation and date selection
-- **Daily timeline** — hourly breakdown from your active hours start to end
-- **Schedule issue badges** — overlapping bookings and insufficient buffer windows are called out before the day gets overloaded
-- **Execute buttons** — jump from any task directly to the AI composer with context
+### RevOps / Admin
 
-### Editing Tasks
-
-Click the **edit icon** (pencil) on any task to open the task edit modal:
-
-- **Task text** — rename the task
-- **Type** — follow-up, call, meeting, proposal, research, admin
-- **Priority** — manual 1–100 score
-- **Due date** — date picker for scheduling
-- **Contact** — associate a contact name
-- **Rationale / Notes** — free-text reason or notes
-- **Status** — set to pending or completed
-
-Click **Save Changes** to persist. Tasks with due dates show a date badge in the task list.
+1. Choose **direct** vs **proxy** credential model ([SETUP.md](SETUP.md), [PROXY_SETUP.md](PROXY_SETUP.md)).
+2. Provision HubSpot private app scopes ([HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md)).
+3. Decide cloud AI vs OpenRouter vs local LLM policy.
+4. Validate System Health green path on a golden workstation.
+5. Gate releases with [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
 ---
 
-## CRM & Contacts
+## 3. Interface Tour
 
-### Adding Contacts
+### Sidebar navigation
 
-- **Manual entry** — click "Add Contact" and use the operator guidance card to apply suggested next steps, follow-up dates, and stage defaults
-- **Inbox review flow** — from Smart Inbox, use **Review CRM** to open a draft contact instead of silently creating one
-- **CSV import** — click "Import CSV" to bulk-import contacts
-- **HubSpot sync** — click "Sync HubSpot" to pull contacts from your CRM
-- **Duplicate review** — if a new draft matches an existing email, SalesDirector opens the existing record so you can review and save updates without creating a duplicate
+| Tab | Purpose |
+|---|---|
+| **Dashboard** | KPIs, AI operating partner, closing queue, recent outbound |
+| **Smart Inbox** | AI-scored inbound mail, bulk prioritization actions |
+| **Tasks & Calendar** | Planner, templates, meeting prep, schedule conflict checks |
+| **CRM & Contacts** | Pipeline board/table, CSV, HubSpot, dossiers |
+| **AI Outreach** | Resizable split workspace: strategy context + composer |
+| **Settings** | Database, AI, proxy, mail, safety limits, diagnostics |
+| **About** | Runtime facts and Akita credits |
 
-### Filtering Contacts
+On smaller screens, open the sidebar with the **menu** button; close with **X**, backdrop click, or **Escape**.
 
-Use the **stage filter bar** above the contacts table to filter by stage:
+### Header
 
-- **All Stages** — show every contact
-- **Lead, Contact, Opportunity, Proposal, Customer, Churned** — filter to a specific stage
-- A live count shows how many contacts match when a filter is active
+| Control | Behavior |
+|---|---|
+| **Page title** | Friendly name of the active tab (e.g. “AI Outreach”) |
+| **Dark mode** | Sun/moon toggle; preference persists |
+| **Search leads…** | Live contact search (name, email, company); click result → dossier; **Escape** clears |
+| **Avatar** | Initials from sender name (fallback `SD`) |
 
-### CSV Import
+### Notifications
 
-Upload a CSV file with these supported column headers:
+- Success toasts: dark/light high-contrast chips, auto-dismiss ~3s.
+- Error toasts: red styling, longer duration (~5s), dismiss with **X**.
+- Only one toast at a time; new messages replace the previous.
+
+### Modals
+
+Contact editor, task editor, delete confirm, and dossiers support:
+
+- **Escape** to close (top-most layer first)
+- **Click backdrop** to dismiss
+- Scroll lock on the body while open
+- Destructive delete confirm uses a red **Delete** button
+
+---
+
+## 4. Daily Operating Rhythm
+
+Recommended sequence for a sales day:
+
+1. **Unlock database** (Settings) if you restarted the app.
+2. **Dashboard** — skim KPIs; run **Revenue Brief** or **Rescue At-Risk Deals** if pipeline is heavy.
+3. **Smart Inbox** — sync IMAP/HubSpot if configured; **Analyze & Score**; clear hot replies first.
+4. **Tasks & Calendar** — apply a day template or **Plan Focus Day**; resolve conflict/buffer warnings.
+5. **CRM** — work attention queue / stage board; open dossiers for research.
+6. **AI Outreach** — draft from dossier or inbox; pre-send check; send or schedule tasks from sequences.
+7. **Lock database** if leaving a shared machine.
+
+---
+
+## 5. Dashboard
+
+### KPI strip
+
+| Metric | Meaning |
+|---|---|
+| Contacts | Total CRM records |
+| Pending Tasks | Open work |
+| Needs Response | Inbox items flagged for reply |
+| Sent Today | Outbound messages dated today (planning timezone) |
+| Meetings Booked | Completed tasks typed as meeting/call/demo |
+
+### AI Operating Partner
+
+| Action | Purpose |
+|---|---|
+| **Revenue Brief** | Commercial daily brief across CRM, inbox, tasks, outreach |
+| **Rescue At-Risk Deals** | Playbook for Opportunity/Proposal accounts at risk (disabled if none) |
+| **Win/Loss Tracker** | Pattern summary from outbound + stage transitions |
+
+### Closing queue
+
+Shows up to three at-risk accounts with value, open tasks, **AI Plan**, and **Open** dossier.
+
+### Idea organizer
+
+Paste a raw idea → AI turns it into tasks, CRM note, and outreach angle (when AI is ready).
+
+### Smart Action Plan & Recent Activity
+
+- Top pending tasks with **Execute** (jumps into the right workflow).
+- Last outbound emails with timestamps.
+
+---
+
+## 6. Smart Inbox
+
+### Getting mail in
+
+| Source | How |
+|---|---|
+| **IMAP Sync** | Settings mail config → **Sync IMAP** (desktop) |
+| **HubSpot emails** | HubSpot token → **Sync HubSpot** inbox action |
+| Manual / prior sessions | Restored from encrypted local DB after unlock |
+
+### Filters & search
+
+- Tabs: **All**, **Unread**, **Needs Response**, **Archived**
+- Search: sender, subject, company
+- Empty states explain next steps (sync, clear filters, etc.)
+
+### Analyze & Score
+
+**Analyze & Score Inbox** runs AI (or heuristics when offline) to attach:
+
+- Score **1–100**
+- Badges: **Hot** (70+), **Warm** (40–69), **Cold** (&lt;40)
+- One-sentence summary
+- CRM-linked next best action (reply, task, proposal follow-up, review CRM)
+
+### Bulk helpers
+
+| Control | Effect |
+|---|---|
+| Open top urgent replies | Queues hottest actionable threads into Outreach flow |
+| Create tasks from hottest | Follow-up tasks from urgent emails |
+| Mark low-priority handled | Clears noise from the working set |
+
+### Per-email actions
+
+| Action | Effect |
+|---|---|
+| Primary action (Reply / Use in Outreach) | Loads composer with reply metadata |
+| AI Reply | Generates reply draft into Outreach |
+| Open / Review CRM | Dossier or guided contact draft |
+| Add Task | Follow-up task linked to sender/CRM |
+| Read / Unread | Visual priority |
+| Flag | Needs-response toggle |
+| Archive / Unarchive | Moves between working set and archive |
+| Delete | Removes from local inbox |
+
+### Urgent reply queue
+
+When processing a multi-email urgent queue, the composer shows queue position (e.g. `2/5`) so you can work through the set without losing place.
+
+---
+
+## 7. Tasks & Calendar
+
+### Create work
+
+- **Quick-add** field — type title, Enter.
+- **Generate Tasks from CRM** — AI proposes prioritized daily actions.
+- **Prioritize with AI** — scores, time blocks, written rationale.
+- **Plan Focus Day** — packs the selected calendar day.
+- **Day templates** — inject proven operating rhythms for the selected date.
+- **Meeting Prep Pack** — contact-specific prep bundle as tasks/notes.
+
+### Filters
+
+Active, focus-day, overdue, unscheduled, completed, waiting — plus free-text search.
+
+### Calendar
+
+- Month navigator
+- Day selection drives the task list and template materialization
+- Timeline respects **active hours** and **timezone** from Settings
+- **Conflict** and **buffer** badges when bookings overlap or violate minimum spacing
+
+### Task status lifecycle
+
+Typical flow: `pending` → `in progress` → `completed` (or `waiting`).
+
+Edit modal fields: title, type, priority, date, time, duration, contact, notes, rationale, status. Save is blocked when time is invalid or conflicts exist.
+
+### Meetings queue
+
+Upcoming meetings surface call-prep AI and prep-pack shortcuts.
+
+---
+
+## 8. CRM & Contacts
+
+### Ingest paths
+
+| Method | Notes |
+|---|---|
+| **Add Contact** | Operator guidance applies stage defaults, next step, follow-up date |
+| **Import CSV** | See column map below |
+| **Sync HubSpot** | Pulls private-app contacts |
+| **Inbox → Review CRM** | Guided create/update for unknown senders |
+| **Outreach → create contact** | From a draft recipient |
+
+Duplicate emails open the **existing** record instead of creating a second one.
+
+### CSV columns
 
 | Header | Required | Aliases |
 |---|---|---|
-| `email` | Yes | `e-mail` |
+| `email` | **Yes** | `e-mail` |
 | `name` | No | `firstname` + `lastname` |
 | `company` | No | `organization` |
 | `jobtitle` | No | `title` |
@@ -185,177 +284,278 @@ Upload a CSV file with these supported column headers:
 | `linkedin` | No | — |
 | `notes` | No | — |
 
-Duplicate emails are automatically skipped during import.
+### Stages
 
-### Contact Stages
+`Lead` → `Contact` → `Opportunity` → `Proposal` → `Customer` → `Churned`
 
-Contacts progress through six lifecycle stages:
-- **Lead** → **Contact** → **Opportunity** → **Proposal** → **Customer** → **Churned**
+Filter bar + pipeline board (drag-and-drop where enabled) keep stage hygiene visible.
 
-### Contact Dossier
+### Attention / overview
 
-Click any contact to open their full dossier:
+CRM workspace surfaces:
 
-- **Detail card** — name, title, company, email, phone, LinkedIn (all clickable)
-- **Interaction timeline** — every thread message with direction arrows and timestamps
-- **Delete messages** — remove individual timeline messages via the trash icon
-- **Quick actions:**
-  - **Draft Outreach** — opens AI Outreach with this contact pre-loaded
-  - **Add Task** — create a task linked to this contact
-  - **Log Call** — record a call interaction (persists to timeline with timestamp)
-- **AI Intelligence panel:**
-  - **Research Contact** — generates a B2B sales intelligence dossier (role analysis, pain points, conversation starters, approach, deal potential)
-  - **Follow-Up Strategy** — AI recommends follow-up urgency, timing, channel, opening line, and strategic approach
-- **Stage-aware AI drafts:**
-  - **Proposal Follow-Up Draft** — for proposal-stage deals that need a commercial checkpoint
-  - **Reactivation Draft** — for stale or churned relationships that need a fresh angle
-  - **Customer Check-In Draft** — for customer-stage accounts where retention, expansion, or referrals matter
-- **Attention queue and next best action cards** — the CRM workspace surfaces urgency reasons plus the recommended action for the hottest accounts
+- Due follow-ups
+- Stale accounts
+- Pipeline value / forecast helpers
+- Next best action cards
+- Optional **AI CRM Guidance** insight panel
+
+### Contact dossier
+
+| Section | Contents |
+|---|---|
+| Header | Name, stage/status badge, title, company |
+| Contact info | Email, phone, LinkedIn, website, owner, value, follow-up, priority |
+| Next best action | Label, detail, reason chips |
+| Quick actions | Draft Outreach, Add Task, Meeting Prep Pack, Log Call, stage-aware primary action |
+| AI Intelligence | Call prep, research, follow-up strategy, AI action plan, reactivation / check-in / proposal drafts |
+| Relationship pulse | Timeline summary + refresh |
+| Interaction timeline | Expandable messages; delete individual entries |
 
 ---
 
-## AI Outreach
+## 9. AI Outreach
 
-The AI-powered email composition workspace. Split into two panels:
+Split workspace: **strategy / context (left)** and **composer (right)**. Drag the divider to resize; double-click handle to reset. Width preference is saved.
 
-### Strategy Sidebar (left)
+### Strategy / context pane
 
-- **Tone selector** — Professional, Persuasive, Friendly, Direct & Urgent, Consultative
-- **Length selector** — Concise, Standard, Detailed
-- **Outreach Play selector** — choose or accept a recommended playbook based on CRM stage and relationship state
-- **Cadence selector** — choose the rhythm for follow-up sequences
-- **Sequence Steps selector** — build between 2 and 5 steps instead of a fixed 3-step sequence
-- **Thread history** — paste or auto-load conversation context
-- **Ask Director for Strategy** — get prospect-specific sales playbooks and psychological approaches
-- **Objection Crusher** — input a prospect objection, get psychology-backed rebuttals
-- **Summarize Context** — condense long thread history into a quick summary
-- **Director's Insight** — persistent display of the AI's latest strategic recommendation
-- **AI Context Workspace** — large editable context area for CRM research, follow-up strategy, and AI instructions
-- **Linked CRM card** — open the contact record, create a follow-up task, or load the CRM snapshot into the draft
+- Tone: Professional, Persuasive, Friendly, Direct & Urgent, Consultative  
+- Length: Concise, Standard, Detailed  
+- Outreach **play** (recommended from CRM stage / relationship)  
+- Sequence **cadence** and **step count** (2–5)  
+- Thread history  
+- **Ask Director for Strategy**, **Objection Crusher**, **Summarize Context**  
+- Director’s Insight surface  
+- Large **AI Context** editor (research, instructions, proposal notes)  
+- Linked CRM card (open contact, task, load CRM snapshot)
 
-### Composer Area (right)
+### Composer
 
-- **Personalization** — Recipient Name, Job Title, Company Name fields
-- **To field** — recipient email with real-time validation
-- **Subject line** — manual entry or AI suggestions
-- **Resizable wide-screen split** — drag the divider between context and draft to give either pane more room; double-click the divider to reset
-
-**AI Actions:**
-
-| Button | What It Does |
+| Field | Notes |
 |---|---|
-| **Draft** | Generates a complete email from scratch using all available context |
-| **Polish** | Improves your existing draft's tone, clarity, and persuasiveness |
-| **Suggest Subjects** | Generates 3 subject line options — click to apply |
-| **Pitch Meeting** | Creates a meeting-request email with 15-minute CTA |
-| **Sequence** | Builds a 2–5 step drip campaign with per-step delay and goal metadata |
-| **Analyze** | Returns 3 bullet points of improvement suggestions |
-| **Pre-Send Check** | AI analyzes your email across 6 dimensions before sending (tone, clarity, personalization, CTA, length, professionalism) |
+| Recipient name / title / company | Personalization |
+| To | Validated email |
+| Subject | Manual or AI suggestions |
+| Body | Main draft |
 
-### Sequence Workspace
+**AI actions**
 
-- **Sequence step cards** — each generated step shows its subject, delay, and goal
-- **Load Into Composer** — load any step into Subject + Body for manual review or sending
-- **Create Follow-Up Tasks** — convert the generated sequence into dated planner tasks so execution does not depend on memory alone
+| Button | Result |
+|---|---|
+| Draft | Full email from context |
+| Polish | Improve existing body |
+| Suggest Subjects | Up to 3 clickable subjects |
+| Pitch Meeting | Meeting-request style CTA |
+| Sequence | Multi-step drip with delay/goal metadata |
+| Analyze | Improvement bullets |
+| Pre-Send Check | Multi-dimension QA before send |
 
-**Merge tags:** Insert `[First Name]`, `[Company Name]`, or `[Meeting Link]` placeholders via toolbar buttons.
+**Sequence workspace**
 
-**Draft auto-save:** Your composer content (to, subject, body, settings) is automatically saved to local storage every 2 seconds. If you close the app or navigate away, your draft will be recovered when you return. A "Draft auto-saved" indicator appears in the composer footer.
+- Step cards with subject / delay / goal  
+- **Load Into Composer**  
+- **Create Follow-Up Tasks** (dated planner tasks)
 
-**Sending:** Click **Send Email** to dispatch. The message is:
-- Saved to encrypted local thread history (desktop mode)
-- Saved to Firestore thread history (Firebase mode)
-- Logged as an email engagement to HubSpot (when configured)
+**Merge tags:** `[First Name]`, `[Company Name]`, `[Meeting Link]` via toolbar.
+
+**Send:** Validates recipient + body; respects loading/error state. On success, message is written to local/Firebase thread history and optionally HubSpot email engagement when `hubspotId` is present.
+
+**Best practice:** Always open Outreach from a **dossier** or **inbox** row so association and history stay correct.
 
 ---
 
-## Settings
+## 10. Settings
 
-### System Health
+Settings **auto-save** to device local storage. A short “saved” confirmation appears after edits.
 
-Eight status indicators at the top of Settings.
-All settings auto-save as you type. A **✅ Settings saved** confirmation appears in the page heading whenever a change is persisted, and dismisses after a few seconds.
+### First-run checklist
 
-| Indicator | What It Checks |
-|---|---|
-| Auth Session | Firebase auth state |
-| Local Encrypted DB | Desktop database locked/unlocked |
-| Proxy Mode | Proxy URL configured |
-| Gemini AI Access | Gemini API key available |
-| HubSpot Integration | HubSpot token present |
-| SMTP Readiness | SMTP credentials configured |
-| IMAP Readiness | IMAP settings configured |
+The Settings page includes a guided first-run list (database, sender profile, AI, contacts, optional mail). Complete the first four for a production-ready workstation.
+
+### System Health / diagnostics
+
+Readiness chips for auth, encrypted DB, proxy, **selected AI provider**, HubSpot, SMTP, IMAP. Treat yellow/red as blockers before a campaign day.
 
 ### Encrypted Local Database
 
-- **Create & Unlock** — first-time setup with passphrase
-- **Unlock Database** — returning user with existing data
-- **Lock Database** — protect data when stepping away
-- **Reset** — wipe encrypted database on this device
-- Status display shows active backend and lock state
+Create/unlock/lock/reset — see [SETUP.md §8](SETUP.md#8-encrypted-local-database).
 
-### Secure Proxy Routing
+### Secure proxy routing
 
-- **Proxy Base URL** — server address for API forwarding
-- **Proxy Shared Secret** — persists locally on-device until cleared
+- Proxy Base URL (no trailing slash required; app normalizes)
+- Proxy Shared Secret (must match server)
 
-### Company & Sender Profile
+### Company & sender
 
-- Company Website URL (enriches AI outreach context)
-- Your Name, Reply-To Address, Auto-BCC Address
-- Email Signature (multi-line, auto-appended to every outbound email)
+Company URL, name, reply-to, auto-BCC, multi-line signature.
 
-### HubSpot CRM
+### HubSpot
 
-- Private App Access Token
+Private app token field (or leave empty in pure proxy mode).
 
-### Email Server Configuration
+### Email servers
 
-- **SMTP:** Host, Port, Security (None / STARTTLS / SSL-TLS), Username, Password
-- **IMAP:** Host, Port
+SMTP + IMAP fields, auth method (password vs OAuth2), Graph API toggle for Microsoft, lookback/sync options, auto-sync interval.
 
-### Sending Safety & Limits
+### Sending safety
 
-- Max Daily Emails (1–5,000)
-- Send Delay between messages (0–3,600 seconds)
-- Active Hours Start / End Time
-- Timezone (System default, or EST / CST / MST / PST override)
+| Control | Range / notes |
+|---|---|
+| Max daily emails | 1–5,000 |
+| Send delay | 0–3,600 seconds |
+| Active hours | Start / end |
+| Schedule buffer | Minimum minutes between timed tasks |
+| Timezone | System or named presets |
 
-### AI Defaults & Provider Keys
+### AI defaults & provider keys
 
-- Default Tone and Length preferences
-- Provider keys (persist locally on-device until cleared):
-  - Google Gemini · OpenAI · Anthropic · xAI · Meta
+See the full chapter below.
+
+### Clear saved local settings
+
+Wipes **settings** from this device (keys, mail, proxy URL). Does **not** by itself wipe encrypted CRM payloads — use database **Reset** for that.
 
 ---
 
-## About
+## 11. AI Providers In Depth
 
-The About tab shows:
+### Choosing a provider
 
-- **Runtime Diagnostics** — app name, version, platform, architecture, Electron/Node/Chrome versions, storage backend, operating mode
-- **Credits** — Akita Engineering, support contact, website, "Made in Niagara Falls, Canada"
+| Situation | Recommendation |
+|---|---|
+| Fastest cloud setup | **Gemini** |
+| Prefer GPT / Claude / Grok brand models | **OpenAI / Anthropic / xAI** |
+| One bill, many models, free-tier experiments | **OpenRouter** |
+| Offline, private data, zero cloud | **Local / OpenAI-compatible** (Ollama or LM Studio) |
+| Keys must never sit on laptops | **Proxy mode** with server env keys |
+
+### Active provider
+
+The **Active AI Provider** dropdown is the single switch for all AI buttons (Draft, Score Inbox, Research, etc.). Only **supported** options are enabled for the current runtime.
+
+### OpenRouter
+
+1. Select OpenRouter.  
+2. Paste `sk-or-...` key.  
+3. Set model id (examples: `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`, free Llama variants).  
+4. Test Active Provider.
+
+### Local / OpenAI-compatible
+
+1. Prefer **desktop app** (localhost CORS blocks most browsers).  
+2. Click **Ollama**, **LM Studio**, or **Custom** preset.  
+3. Confirm base URL ends with `/v1`.  
+4. Set **exact** model id your server exposes.  
+5. API key optional (Ollama usually blank).  
+6. Test Active Provider.
+
+**Ollama defaults**
+
+- Base: `http://127.0.0.1:11434/v1`  
+- Model: e.g. `llama3.2` after `ollama pull llama3.2`
+
+**LM Studio defaults**
+
+- Base: often `http://127.0.0.1:1234/v1`  
+- Model: copy from LM Studio UI
+
+### Health checks
+
+- **Test Active Provider** — transport + auth + minimal completion  
+- **Test All Providers** — parity board  
+- Cards show Ready / Needs setup / Unsupported / Passed / Failed  
+- Failed checks use the readiness message and toast errors
+
+### Generation profile
+
+Temperature, top-p, and max tokens apply across providers. Lower temperature for compliant corporate tone; higher for creative first drafts. Raise max tokens for long sequences and research dossiers.
+
+### Queueing
+
+If you spam AI buttons, jobs **queue**. Wait for the active label to clear before assuming failure.
+
+### Failure modes (user-facing)
+
+| Message theme | What to do |
+|---|---|
+| Key missing | Paste key for that provider |
+| Model id required | Fill OpenRouter or local model field |
+| Base URL missing | Set local endpoint |
+| Localhost needs desktop | Launch `dev:desktop` or installer build |
+| Timed out | Check network, proxy, or local server load |
+| Provider returned no usable text | Safety filter, empty model, or token limit — retry / change model |
 
 ---
 
-## Data & Security
+## 12. About & Diagnostics
 
-- **Settings persist locally on-device** — provider keys, HubSpot token, mail credentials, and proxy settings survive restarts until cleared
-- **Encrypted at rest** — local data uses AES-256-GCM with PBKDF2 (250,000 iterations)
-- **Passphrase never stored** — not in memory after lock, never written to disk
-- **Proxy mode** — keeps all secrets server-side
-- **Auto-BCC** — silently copy outbound emails to a logging address
+| Fact | Source |
+|---|---|
+| Application / version | Packaged Electron app info |
+| Platform / arch | OS |
+| Runtime | Electron / Node / Chrome versions |
+| Storage backend | Firebase vs encrypted Electron file |
+| Operating mode | Local fallback vs cloud-backed |
+
+Credits and support links for Akita Engineering appear in About and the sidebar footer.
 
 ---
 
-## Common Issues
+## 13. Data, Security & Privacy
+
+| Layer | Behavior |
+|---|---|
+| Settings | Device localStorage; survive restart until cleared |
+| CRM / tasks / inbox / threads | Encrypted desktop DB after unlock |
+| Passphrase | Never written to disk |
+| AI keys | Device settings or proxy env — not committed to git |
+| Electron | Context isolation, no node integration, IPC bridge only |
+| Proxy | Optional server-side secret vault for vendor APIs |
+| Auto-BCC | Optional silent compliance copy on send |
+
+---
+
+## 14. Keyboard & Interaction Tips
+
+| Input | Effect |
+|---|---|
+| **Escape** | Close top modal, then sidebar, then clear global search |
+| **Enter** in task quick-add | Create task |
+| Click modal **backdrop** | Close that modal |
+| Drag outreach **split handle** | Resize context vs draft |
+| Double-click split handle | Reset default widths |
+| Global search **Escape** | Clear query / hide dropdown |
+
+---
+
+## 15. Common Issues
 
 | Problem | Fix |
 |---|---|
-| Invalid email warnings | Check recipient or reply-to format |
-| HubSpot errors | Verify token/scopes or proxy setup — see [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md) |
-| Proxy auth errors | Shared secret mismatch between app and server |
-| Encrypted DB controls disabled | Expected in browser preview — use `npm run dev:desktop` |
-| White screen in packaged app | Verify `base: './'` in vite.config.mjs |
+| Invalid email warnings | Fix To / reply-to format |
+| HubSpot errors | Token/scopes — [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md) |
+| Proxy 401 | Shared secret mismatch — [PROXY_SETUP.md](PROXY_SETUP.md) |
+| Encrypted DB disabled | Use desktop runtime |
+| AI fails in browser with Ollama | Use desktop app |
+| OpenRouter errors | Key + model id + credits on OpenRouter |
+| Local model 404 | Model name must match server exactly |
+| Email local but not HubSpot | Start from synced contact (hubspotId) |
+| White screen packaged | `base: './'` in Vite config |
 
-For deeper triage, see [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
+Full matrix: [TROUBLESHOOTING_FAQ.md](TROUBLESHOOTING_FAQ.md).
+
+---
+
+## Related Guides
+
+| Guide | Use when |
+|---|---|
+| [SETUP.md](SETUP.md) | Install, first run, packaging |
+| [ONBOARDING.md](ONBOARDING.md) | Timed role paths |
+| [TEAM_TRAINING_SOP.md](TEAM_TRAINING_SOP.md) | Live training session |
+| [PROXY_SETUP.md](PROXY_SETUP.md) | Server-side keys |
+| [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md) | CRM token scopes |
+| [FEATURES.md](FEATURES.md) | Exhaustive capability list |
+| [MACBOOK_HANDOFF.md](MACBOOK_HANDOFF.md) | Nontechnical Mac install |
+| [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) | Ship readiness |

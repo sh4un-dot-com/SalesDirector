@@ -14,6 +14,12 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const XAI_API_KEY = process.env.XAI_API_KEY || '';
 const META_API_KEY = process.env.META_API_KEY || '';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini';
+const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+const OPENAI_COMPATIBLE_API_KEY = process.env.OPENAI_COMPATIBLE_API_KEY || '';
+const OPENAI_COMPATIBLE_MODEL = process.env.OPENAI_COMPATIBLE_MODEL || '';
+const OPENAI_COMPATIBLE_BASE_URL = process.env.OPENAI_COMPATIBLE_BASE_URL || 'http://127.0.0.1:11434/v1';
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN || '';
 const PROXY_SHARED_SECRET = process.env.PROXY_SHARED_SECRET || '';
 const MAX_BODY_BYTES = toPositiveInt(process.env.MAX_BODY_BYTES, 1024 * 1024);
@@ -47,28 +53,74 @@ const AI_PROVIDER_CONFIG = {
   gemini: {
     label: 'Gemini',
     model: 'gemini-2.5-flash',
-    envVarName: 'GEMINI_API_KEY'
+    envVarName: 'GEMINI_API_KEY',
+    requiresApiKey: true
   },
   openai: {
     label: 'OpenAI',
     model: 'gpt-4.1-mini',
-    envVarName: 'OPENAI_API_KEY'
+    envVarName: 'OPENAI_API_KEY',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    requiresApiKey: true
   },
   anthropic: {
     label: 'Anthropic',
     model: 'claude-3-5-sonnet-latest',
-    envVarName: 'ANTHROPIC_API_KEY'
+    envVarName: 'ANTHROPIC_API_KEY',
+    requiresApiKey: true
   },
   xai: {
     label: 'xAI',
     model: 'grok-2-latest',
-    envVarName: 'XAI_API_KEY'
+    envVarName: 'XAI_API_KEY',
+    defaultBaseUrl: 'https://api.x.ai/v1',
+    requiresApiKey: true
+  },
+  openrouter: {
+    label: 'OpenRouter',
+    model: OPENROUTER_MODEL,
+    envVarName: 'OPENROUTER_API_KEY',
+    defaultBaseUrl: OPENROUTER_BASE_URL,
+    requiresApiKey: true
+  },
+  openai_compatible: {
+    label: 'Local / OpenAI-compatible',
+    model: OPENAI_COMPATIBLE_MODEL,
+    envVarName: 'OPENAI_COMPATIBLE_API_KEY',
+    defaultBaseUrl: OPENAI_COMPATIBLE_BASE_URL,
+    requiresApiKey: false
   },
   meta: {
     label: 'Meta',
     model: '',
-    envVarName: 'META_API_KEY'
+    envVarName: 'META_API_KEY',
+    requiresApiKey: true
   }
+};
+
+const normalizeOpenAiCompatibleBaseUrl = (value = '', fallback = '') => {
+  let url = String(value || '').trim().replace(/\/+$/, '');
+  if (!url) {
+    url = String(fallback || '').trim().replace(/\/+$/, '');
+  }
+  if (!url) return '';
+
+  try {
+    const parsed = new URL(url);
+    if (!parsed.pathname || parsed.pathname === '/') {
+      return `${parsed.origin}/v1`;
+    }
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return url;
+  }
+};
+
+const buildOpenAiCompatibleChatCompletionsUrl = (baseUrl = '', fallback = '') => {
+  const normalized = normalizeOpenAiCompatibleBaseUrl(baseUrl, fallback);
+  if (!normalized) return '';
+  if (/\/chat\/completions$/i.test(normalized)) return normalized;
+  return `${normalized}/chat/completions`;
 };
 const AI_GENERATION_PROFILE_DEFAULTS = Object.freeze({
   temperature: 0.7,
@@ -289,11 +341,41 @@ const getAiProviderApiKey = (provider) => {
       return ANTHROPIC_API_KEY;
     case 'xai':
       return XAI_API_KEY;
+    case 'openrouter':
+      return OPENROUTER_API_KEY;
+    case 'openai_compatible':
+      return OPENAI_COMPATIBLE_API_KEY;
     case 'meta':
       return META_API_KEY;
     case 'gemini':
     default:
       return GEMINI_API_KEY;
+  }
+};
+
+const getAiProviderDefaultModel = (provider) => {
+  switch (provider) {
+    case 'openrouter':
+      return OPENROUTER_MODEL;
+    case 'openai_compatible':
+      return OPENAI_COMPATIBLE_MODEL;
+    default:
+      return AI_PROVIDER_CONFIG[provider]?.model || '';
+  }
+};
+
+const getAiProviderDefaultBaseUrl = (provider) => {
+  switch (provider) {
+    case 'openrouter':
+      return OPENROUTER_BASE_URL;
+    case 'openai_compatible':
+      return OPENAI_COMPATIBLE_BASE_URL;
+    case 'xai':
+      return 'https://api.x.ai/v1';
+    case 'openai':
+      return 'https://api.openai.com/v1';
+    default:
+      return AI_PROVIDER_CONFIG[provider]?.defaultBaseUrl || '';
   }
 };
 
@@ -459,11 +541,44 @@ const validateAiBody = (body) => {
     });
   }
 
+  let model = '';
+  if (body.model !== undefined) {
+    if (typeof body.model !== 'string' || !body.model.trim()) {
+      throw new HttpError(400, 'model must be a non-empty string when provided.');
+    }
+    model = body.model.trim();
+  } else {
+    model = String(getAiProviderDefaultModel(provider) || '').trim();
+  }
+
+  let baseUrl = '';
+  if (body.baseUrl !== undefined) {
+    if (typeof body.baseUrl !== 'string' || !body.baseUrl.trim()) {
+      throw new HttpError(400, 'baseUrl must be a non-empty string when provided.');
+    }
+    if (!/^https?:\/\/.+/i.test(body.baseUrl.trim())) {
+      throw new HttpError(400, 'baseUrl must start with http:// or https://.');
+    }
+    baseUrl = normalizeOpenAiCompatibleBaseUrl(body.baseUrl);
+  } else {
+    baseUrl = normalizeOpenAiCompatibleBaseUrl(getAiProviderDefaultBaseUrl(provider));
+  }
+
+  if ((provider === 'openrouter' || provider === 'openai_compatible') && !model) {
+    throw new HttpError(400, `${AI_PROVIDER_CONFIG[provider].label} requires a model id (request body model or server env default).`);
+  }
+
+  if (provider === 'openai_compatible' && !baseUrl) {
+    throw new HttpError(400, 'openai_compatible requires a baseUrl (request body baseUrl or OPENAI_COMPATIBLE_BASE_URL).');
+  }
+
   const generationProfile = validateAiGenerationProfile(body.generationProfile);
 
   return {
     provider,
     promptText,
+    model,
+    baseUrl,
     systemInstruction: body.systemInstruction || {
       parts: [{ text: 'You are an elite Virtual Sales Director. No emojis.' }]
     },
@@ -556,18 +671,31 @@ const hasSecretMismatch = (req) => {
   return incoming !== PROXY_SHARED_SECRET;
 };
 
-const requestAiText = async ({ provider, promptText, systemInstruction, generationProfile }) => {
+const requestAiText = async ({ provider, promptText, systemInstruction, generationProfile, model, baseUrl }) => {
   const providerConfig = AI_PROVIDER_CONFIG[provider] || AI_PROVIDER_CONFIG.gemini;
   const apiKey = getAiProviderApiKey(provider);
   const systemText = getAiSystemInstructionText(systemInstruction);
   const sharedGenerationProfile = buildAiGenerationProfile(generationProfile);
+  const resolvedModel = String(model || getAiProviderDefaultModel(provider) || providerConfig.model || '').trim();
+  const resolvedBaseUrl = normalizeOpenAiCompatibleBaseUrl(
+    baseUrl,
+    getAiProviderDefaultBaseUrl(provider) || providerConfig.defaultBaseUrl || ''
+  );
 
-  if (!apiKey) {
+  if (providerConfig.requiresApiKey !== false && !apiKey) {
     throw new HttpError(500, `${providerConfig.envVarName} is not configured on the proxy.`);
   }
 
   if (provider === 'meta') {
     throw new HttpError(400, 'Meta proxy routing is not available yet.');
+  }
+
+  if ((provider === 'openrouter' || provider === 'openai_compatible') && !resolvedModel) {
+    throw new HttpError(400, `${providerConfig.label} model id is required.`);
+  }
+
+  if (provider === 'openai_compatible' && !resolvedBaseUrl) {
+    throw new HttpError(500, 'OPENAI_COMPATIBLE_BASE_URL is not configured on the proxy.');
   }
 
   const requestSingleText = async (requestPromptText) => {
@@ -610,7 +738,7 @@ const requestAiText = async ({ provider, promptText, systemInstruction, generati
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: providerConfig.model,
+          model: resolvedModel || providerConfig.model,
           ...buildAnthropicGenerationConfig(sharedGenerationProfile),
           system: systemText || undefined,
           messages: [
@@ -638,14 +766,30 @@ const requestAiText = async ({ provider, promptText, systemInstruction, generati
       };
     }
 
-    const response = await fetch(provider === 'xai' ? 'https://api.x.ai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
+    const openAiCompatibleUrl = buildOpenAiCompatibleChatCompletionsUrl(
+      resolvedBaseUrl,
+      getAiProviderDefaultBaseUrl(provider) || (provider === 'xai' ? 'https://api.x.ai/v1' : 'https://api.openai.com/v1')
+    );
+    if (!openAiCompatibleUrl) {
+      throw new HttpError(500, `${providerConfig.label} base URL is not configured on the proxy.`);
+    }
+
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    if (provider === 'openrouter') {
+      headers['HTTP-Referer'] = 'https://www.akitaengineering.com';
+      headers['X-Title'] = 'SalesDirector';
+    }
+
+    const response = await fetch(openAiCompatibleUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
+      headers,
       body: JSON.stringify({
-        model: providerConfig.model,
+        model: resolvedModel || providerConfig.model,
         ...buildOpenAiCompatibleGenerationConfig(sharedGenerationProfile),
         messages: [
           ...(systemText ? [{ role: 'system', content: systemText }] : []),
@@ -698,8 +842,8 @@ const requestAiText = async ({ provider, promptText, systemInstruction, generati
 
 const handleAi = async (req, res) => {
   const body = await readJsonBody(req);
-  const { provider, promptText, systemInstruction, generationProfile } = validateAiBody(body);
-  const text = await requestAiText({ provider, promptText, systemInstruction, generationProfile });
+  const { provider, promptText, systemInstruction, generationProfile, model, baseUrl } = validateAiBody(body);
+  const text = await requestAiText({ provider, promptText, systemInstruction, generationProfile, model, baseUrl });
   sendJson(res, 200, { provider, text });
 };
 

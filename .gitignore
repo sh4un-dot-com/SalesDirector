@@ -5,3 +5,13 @@ release/
 *.log
 .DS_Store
 coverage/
+
+# Sales / revenue capitalization collateral (keep local, not in repo)
+SALES_FLYER_PROMPTS.md
+*SALES*PROMPTS*
+*SALES*FLYER*
+*REVENUE*
+*MONETIZ*
+sales-collateral/
+revenue-ideas/
+marketing-flyers/

@@ -5,6 +5,9 @@
 @layer base {
   html {
     height: 100%;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   body {
@@ -14,5 +17,22 @@
 
   #root {
     min-height: 100vh;
+  }
+
+  /* Prefer native dark scrollbars when the app is in dark mode */
+  html.dark {
+    color-scheme: dark;
+  }
+
+  /* Reduce motion for users who prefer it */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }

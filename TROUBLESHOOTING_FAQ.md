@@ -1,95 +1,215 @@
-# SalesDirector Troubleshooting and FAQ
+# SalesDirector Troubleshooting & FAQ
 
-This guide maps common symptoms to likely causes and fixes.
+Symptom → cause → fix for setup, AI providers (including OpenRouter and local LLMs), HubSpot, mail, proxy, and desktop packaging.
+
+> Install: [SETUP.md](SETUP.md) · Usage: [USER_MANUAL.md](USER_MANUAL.md) · Proxy: [PROXY_SETUP.md](PROXY_SETUP.md) · HubSpot: [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md)
+
+---
 
 ## Quick Triage Matrix
 
-| Symptom | Likely Cause | Fix |
+| Symptom | Likely cause | Fix |
 |---|---|---|
-| HubSpot sync fails immediately | Missing or invalid HubSpot token | Recreate token in HubSpot private app and paste in Settings or proxy env |
-| HubSpot returns permission errors | Missing private app scopes | Add required scopes in HubSpot and rotate token |
-| AI actions fail with key error | Gemini key missing in direct mode | Add Gemini key in Settings or switch to proxy mode |
-| Proxy returns 401 Unauthorized | Shared secret mismatch | Ensure app Proxy Shared Secret matches PROXY_SHARED_SECRET |
-| Proxy returns 429 | Rate limit exceeded | Reduce request burst or increase proxy rate-limit env values |
-| CSV import loads 0 contacts | Missing or invalid email column | Ensure email or e-mail column has valid addresses |
-| Email saved locally but not in HubSpot | No hubspotId in composer | Start draft from a synced contact dossier |
-| Encrypted DB controls are disabled | Running browser preview, not desktop runtime | Launch using npm run dev:desktop or npm run start:desktop |
-| Local DB unlock fails after moving to desktop mode | Incorrect passphrase for existing encrypted payload | Retry with the original passphrase used for legacy local data |
-| Build warnings about large chunks | Bundle size threshold exceeded | Split heavy modules or configure chunking in build settings |
+| HubSpot sync fails immediately | Missing/invalid token | Recreate private app token; paste in Settings or `HUBSPOT_TOKEN` |
+| HubSpot permission errors | Missing scopes | Add contact read + email write scopes; rotate token |
+| AI “key missing” / not configured | Wrong provider selected or empty key | Match key field to **Active AI Provider** |
+| OpenRouter fails | Bad key, model, or credits | Verify `sk-or-...`, model id, OpenRouter billing |
+| Ollama/LM Studio fails in **browser** | CORS / no desktop bridge | Use `npm run dev:desktop` or packaged app |
+| Ollama/LM Studio fails in **desktop** | Server down, wrong URL/model | Confirm server, `/v1` base URL, exact model name |
+| Local provider “unsupported here” | Localhost without desktop | Launch desktop runtime |
+| Proxy 401 | Shared secret mismatch | Align Settings secret with `PROXY_SHARED_SECRET` |
+| Proxy 429 | Rate limit | Slow down or raise `RATE_LIMIT_*` |
+| Proxy 500 `*_API_KEY is not configured` | Server env missing | Export key for that provider; restart proxy |
+| CSV import 0 contacts | Bad/missing email column | Use `email` / `e-mail` with valid addresses |
+| Email saved locally, not HubSpot | No `hubspotId` on composer | Draft from synced contact dossier |
+| Encrypted DB controls disabled | Browser preview | Desktop mode only |
+| Unlock fails | Wrong passphrase | Use original passphrase; no recovery if lost |
+| White screen packaged app | Absolute asset paths | Ensure Vite `base: './'` |
+| Build fails `@rollup/rollup-*-gnu` | Optional native dep | Re-run `npm install` on that platform |
+| AI timeout toast | Slow model/network | Raise patience, switch model, check local GPU load |
+| Queue stuck / buttons busy | AI queue still draining | Wait; avoid force-refresh mid-job if possible |
 
-## FAQ
+---
 
-### Why do I see HubSpot configured but logs do not appear in HubSpot?
+## AI Providers
 
-HubSpot logging requires a contact association ID (hubspotId) in the composer. If you type an email manually without selecting a synced contact, the app can still save thread history locally but may skip HubSpot association.
+### Why did AI stop working after I switched providers?
 
-Recommended flow:
+The **Active AI Provider** is global. Switching to OpenRouter or Local without filling model/base URL marks the provider not ready. Open Settings → complete fields → **Test Active Provider**.
 
-1. Sync contacts from HubSpot.
-2. Open contact dossier.
-3. Click Draft Outreach.
+### OpenRouter returns errors
+
+Check:
+
+1. Active provider is **OpenRouter**.  
+2. OpenRouter API key is present (client or `OPENROUTER_API_KEY` on proxy).  
+3. Model id is a valid OpenRouter slug (not an OpenAI-only id unless routed by OpenRouter).  
+4. Account has credits / free model quota.  
+5. Network can reach `https://openrouter.ai`.
+
+### Ollama says connection failed
+
+```bash
+ollama list
+curl http://127.0.0.1:11434/v1/models
+```
+
+If curl fails, start Ollama. In app:
+
+- Base URL: `http://127.0.0.1:11434/v1`  
+- Model: name from `ollama list`  
+- Desktop app required  
+
+### LM Studio works in its UI but not in SalesDirector
+
+- Local server must be **started** (not only model loaded).  
+- Base URL port must match LM Studio (often `1234`).  
+- Model id must match the served model string exactly.  
+- Use desktop app.
+
+### Do local models need an API key?
+
+Usually **no**. Leave the optional key blank. Some gateways require a dummy Bearer token—paste any non-empty string if the server demands `Authorization`.
+
+### Proxy mode + local Ollama
+
+The **proxy machine** must reach the base URL. `127.0.0.1` on the proxy means Ollama on the proxy host, not the salesperson’s laptop.
+
+### Health check passed but Draft feels wrong
+
+Health checks only verify transport + minimal completion. Quality depends on model, temperature, and context you paste into AI Context / dossier fields.
+
+### AI actions seem ignored
+
+Jobs are **queued** single-file. Watch the AI queue status; do not assume the second click cancelled the first.
+
+---
+
+## Encrypted Local Database
+
+### Controls grayed out
+
+You are in browser preview. Use:
+
+```powershell
+npm run dev:desktop
+# or
+npm run start:desktop
+```
+
+### Unlock fails after moving to desktop
+
+Use the **same passphrase** as the legacy browser-encrypted payload. Successful unlock migrates data and removes the legacy payload.
+
+### I forgot the passphrase
+
+There is **no backdoor**. Settings keys may still exist in localStorage, but encrypted CRM/inbox/task payloads are unrecoverable. Create a new database (Reset) and re-import/sync contacts.
+
+---
+
+## HubSpot
+
+### Configured but emails do not appear in HubSpot
+
+Logging needs a contact association id (`hubspotId`). Flow:
+
+1. Sync contacts.  
+2. Open dossier.  
+3. **Draft Outreach**.  
 4. Send from AI Outreach.
 
-### Why do proxy calls fail even though Proxy Base URL is set?
+Manual “To” addresses without a synced contact save **local** history only.
 
-Check all of the following:
+### Scope checklist
 
-- The proxy process is running.
-- URL is correct and reachable.
-- If PROXY_SHARED_SECRET is set on server, same value is in app settings.
-- Required server env values exist, such as GEMINI_API_KEY and HUBSPOT_TOKEN.
+Minimum:
 
-Reference: [PROXY_SETUP.md](PROXY_SETUP.md)
+- `crm.objects.contacts.read`  
+- `crm.objects.emails.write`  
 
-### How do I verify HubSpot token scopes quickly?
+After scope changes, **regenerate** the token. Details: [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md).
 
-In HubSpot private app settings, verify at least:
+---
 
-- crm.objects.contacts.read
-- crm.objects.emails.write
+## Proxy
 
-Then regenerate token if scopes changed.
+### Base URL set but calls fail
 
-Reference: [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md)
+1. Process running (`node proxy-server.mjs`).  
+2. URL reachable from the client machine.  
+3. Shared secret match if enabled.  
+4. Env has keys for the active provider.  
+5. Capture `X-Request-Id` from failed responses.
 
-### Why does the app show SMTP or IMAP not ready?
+Full guide: [PROXY_SETUP.md](PROXY_SETUP.md).
 
-System Health marks readiness based on required fields:
+### CORS errors only in browser
 
-- SMTP readiness expects smtpHost, smtpUser, and smtpPass.
-- IMAP readiness expects imapHost and imapPort.
+Set `CORS_ORIGIN` to your Vite origin or use the desktop app (no browser CORS for IPC desktop AI).
 
-Fill those fields in Settings and re-check diagnostics.
+---
 
-### Why are encrypted local DB controls disabled in Settings?
+## Mail (SMTP / IMAP)
 
-Encrypted local database operations are desktop-only. Browser preview intentionally cannot access Electron local file storage.
+### System Health says SMTP/IMAP not ready
 
-Use one of these commands:
+SMTP readiness expects host, user, and password (or OAuth success).  
+IMAP readiness expects host and port (plus auth as configured).
 
-- npm run dev:desktop
-- npm run start:desktop
+Fill Settings fields and re-check. Desktop required for real IMAP sync IPC.
 
-### What happens to my old browser-encrypted local data?
+### OAuth login fails
 
-On first successful desktop unlock, if a legacy browser-encrypted payload is detected and passphrase decryption succeeds, the app migrates it into the desktop encrypted database and removes the legacy browser payload.
+OAuth mail flows need the **desktop** runtime and correct client id / tenant / Google client secret fields.
 
-If migration fails, verify the passphrase matches what was used for the previous encrypted local data.
+---
 
-### What does "Context access might be invalid" mean in signed workflow diagnostics?
+## Packaging & Build
 
-In editor diagnostics, GitHub Actions may flag custom secret names if they are not yet defined in repository secrets. Add the secrets in GitHub settings and run workflow again.
+### White screen after install
 
-Reference: [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md)
+Confirm production build uses relative base:
 
-### How can I safely reset local configuration without losing secrets in files?
+```js
+// vite.config.mjs
+base: './'
+```
 
-Use the Clear Saved Local Settings button in Settings. This removes locally persisted app settings from that device, including saved provider and mail credentials, and does not write secrets into project files.
+Rebuild installers after fixing.
+
+### Optional dependency / Rollup errors
+
+```powershell
+npm install
+```
+
+Platform-specific Rollup native packages must match your OS/arch.
+
+### macOS “app is damaged” / blocked
+
+Unsigned builds need **Open Anyway** or a signed/notarized DMG — [MAC_SIGNING_SETUP.md](MAC_SIGNING_SETUP.md).
+
+---
+
+## Settings & Config
+
+### How do I wipe settings without editing project files?
+
+Settings → **Clear Saved Local Settings**. This clears device-persisted config (keys, mail, proxy). Use encrypted DB **Reset** to wipe CRM data.
+
+### Settings not sticking
+
+Private browsing / locked-down storage can block localStorage. Use a normal desktop profile.
+
+---
 
 ## Escalation Path
 
-1. Reproduce with exact steps and capture the action being taken.
-2. Capture relevant console/proxy log snippets including request ID when available.
-3. Identify mode in use: direct mode or proxy mode.
-4. Validate against [SETUP.md](SETUP.md), [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md), and [PROXY_SETUP.md](PROXY_SETUP.md).
-5. If unresolved, open an issue with reproduction steps and observed versus expected behavior.
+1. Reproduce with exact steps, active tab, and active AI provider.  
+2. Note **direct vs proxy**, desktop vs browser.  
+3. Copy toast error text and proxy `X-Request-Id` if any.  
+4. Check [SETUP.md](SETUP.md), [PROXY_SETUP.md](PROXY_SETUP.md), [HUBSPOT_GUIDE.md](HUBSPOT_GUIDE.md).  
+5. Run `npm test` on a dev machine if you changed code.  
+6. Open an issue with expected vs actual behavior and OS/app version (About tab).
+
+Support: [support@akitaengineering.com](mailto:support@akitaengineering.com)

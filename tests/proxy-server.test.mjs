@@ -141,6 +141,74 @@ test('proxy validates generic AI route provider configuration without upstream c
   }
 });
 
+test('proxy validates OpenRouter requires configured API key', async () => {
+  const server = await startProxy();
+  try {
+    const response = await fetch(`${server.baseUrl}/api/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openrouter',
+        promptText: 'hello',
+        model: 'openai/gpt-4o-mini'
+      })
+    });
+
+    const body = await response.json();
+    assert.equal(response.status, 500);
+    assert.match(body.error, /OPENROUTER_API_KEY is not configured/i);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('proxy validates openai_compatible requires model id', async () => {
+  const server = await startProxy({
+    OPENAI_COMPATIBLE_BASE_URL: 'http://127.0.0.1:11434/v1',
+    OPENAI_COMPATIBLE_MODEL: ''
+  });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai_compatible',
+        promptText: 'hello'
+      })
+    });
+
+    const body = await response.json();
+    assert.equal(response.status, 400);
+    assert.match(body.error, /model/i);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('proxy validates openai_compatible baseUrl scheme', async () => {
+  const server = await startProxy({
+    OPENAI_COMPATIBLE_MODEL: 'llama3.2'
+  });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai_compatible',
+        promptText: 'hello',
+        model: 'llama3.2',
+        baseUrl: 'not-a-url'
+      })
+    });
+
+    const body = await response.json();
+    assert.equal(response.status, 400);
+    assert.match(body.error, /baseUrl/i);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('proxy validates AI generation profile values without upstream call', async () => {
   const server = await startProxy({ GEMINI_API_KEY: 'dummy-key' });
   try {

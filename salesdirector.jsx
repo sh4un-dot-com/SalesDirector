@@ -390,6 +390,11 @@ const PERSISTED_CONFIG_KEYS = [
   'anthropicKey',
   'xaiKey',
   'metaKey',
+  'openrouterKey',
+  'openrouterModel',
+  'openaiCompatibleKey',
+  'openaiCompatibleBaseUrl',
+  'openaiCompatibleModel',
   'senderName',
   'replyTo',
   'autoBcc',
@@ -434,17 +439,85 @@ const PERSISTED_CONFIG_KEYS = [
   'selectedAI'
 ];
 
+const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
+const OPENROUTER_DEFAULT_MODEL = 'openai/gpt-4o-mini';
+const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
+const OPENAI_COMPATIBLE_PRESETS = [
+  { id: 'ollama', label: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', modelHint: 'llama3.2' },
+  { id: 'lmstudio', label: 'LM Studio', baseUrl: 'http://127.0.0.1:1234/v1', modelHint: 'local-model' },
+  { id: 'custom', label: 'Custom OpenAI-compatible', baseUrl: 'http://127.0.0.1:8000/v1', modelHint: 'your-model-id' }
+];
+
 const AI_PROVIDER_OPTIONS = [
-  { value: 'gemini', label: 'Gemini', keyName: 'geminiKey', model: 'gemini-2.5-flash' },
-  { value: 'openai', label: 'OpenAI', keyName: 'openaiKey', model: 'gpt-4.1-mini' },
-  { value: 'anthropic', label: 'Anthropic', keyName: 'anthropicKey', model: 'claude-3-5-sonnet-latest' },
-  { value: 'xai', label: 'xAI', keyName: 'xaiKey', model: 'grok-2-latest' }
+  { value: 'gemini', label: 'Gemini', keyName: 'geminiKey', model: 'gemini-2.5-flash', apiStyle: 'gemini', requiresApiKey: true, allowsCustomModel: false, allowsCustomBaseUrl: false },
+  { value: 'openai', label: 'OpenAI', keyName: 'openaiKey', model: 'gpt-4.1-mini', apiStyle: 'openai', requiresApiKey: true, allowsCustomModel: false, allowsCustomBaseUrl: false, defaultBaseUrl: 'https://api.openai.com/v1' },
+  { value: 'anthropic', label: 'Anthropic', keyName: 'anthropicKey', model: 'claude-3-5-sonnet-latest', apiStyle: 'anthropic', requiresApiKey: true, allowsCustomModel: false, allowsCustomBaseUrl: false },
+  { value: 'xai', label: 'xAI', keyName: 'xaiKey', model: 'grok-2-latest', apiStyle: 'openai', requiresApiKey: true, allowsCustomModel: false, allowsCustomBaseUrl: false, defaultBaseUrl: 'https://api.x.ai/v1' },
+  {
+    value: 'openrouter',
+    label: 'OpenRouter',
+    keyName: 'openrouterKey',
+    modelKey: 'openrouterModel',
+    model: OPENROUTER_DEFAULT_MODEL,
+    apiStyle: 'openai',
+    requiresApiKey: true,
+    allowsCustomModel: true,
+    allowsCustomBaseUrl: false,
+    defaultBaseUrl: OPENROUTER_DEFAULT_BASE_URL
+  },
+  {
+    value: 'openai_compatible',
+    label: 'Local / OpenAI-compatible',
+    keyName: 'openaiCompatibleKey',
+    modelKey: 'openaiCompatibleModel',
+    baseUrlKey: 'openaiCompatibleBaseUrl',
+    model: '',
+    apiStyle: 'openai',
+    requiresApiKey: false,
+    allowsCustomModel: true,
+    allowsCustomBaseUrl: true,
+    defaultBaseUrl: OPENAI_COMPATIBLE_DEFAULT_BASE_URL
+  }
 ];
 
 const AI_PROVIDER_CONFIG = AI_PROVIDER_OPTIONS.reduce((accumulator, option) => {
   accumulator[option.value] = option;
   return accumulator;
 }, {});
+
+const isLocalAiBaseUrl = (value = '') => {
+  try {
+    const host = new URL(String(value || '').trim()).hostname.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1' || host === '[::1]';
+  } catch {
+    return /localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]/i.test(String(value || ''));
+  }
+};
+
+const normalizeOpenAiCompatibleBaseUrl = (value = '', fallback = '') => {
+  let url = String(value || '').trim().replace(/\/+$/, '');
+  if (!url) {
+    url = String(fallback || '').trim().replace(/\/+$/, '');
+  }
+  if (!url) return '';
+
+  try {
+    const parsed = new URL(url);
+    if (!parsed.pathname || parsed.pathname === '/') {
+      return `${parsed.origin}/v1`;
+    }
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return url;
+  }
+};
+
+const buildOpenAiCompatibleChatCompletionsUrl = (baseUrl = '', fallback = '') => {
+  const normalized = normalizeOpenAiCompatibleBaseUrl(baseUrl, fallback);
+  if (!normalized) return '';
+  if (/\/chat\/completions$/i.test(normalized)) return normalized;
+  return `${normalized}/chat/completions`;
+};
 
 const AI_GENERATION_PROFILE_DEFAULTS = Object.freeze({
   temperature: 0.7,
@@ -627,12 +700,30 @@ const stitchAiContinuationText = (existingText, nextText) => {
   return `${base}\n${addition}`.trim();
 };
 
-const getAiProviderRuntimeInfo = ({ provider, apiBaseUrl, hasDesktopAiApi, hasApiKey }) => {
+const getAiProviderRuntimeInfo = ({
+  provider,
+  apiBaseUrl,
+  hasDesktopAiApi,
+  hasApiKey,
+  model = '',
+  providerBaseUrl = ''
+}) => {
   const normalizedProvider = normalizeAiProvider(provider);
   const providerConfig = AI_PROVIDER_CONFIG[normalizedProvider] || AI_PROVIDER_CONFIG.gemini;
   const usingProxy = Boolean(String(apiBaseUrl || '').trim());
-  const requiresDesktop = false;
-  const supported = usingProxy || normalizedProvider !== 'meta';
+  const resolvedBaseUrl = normalizeOpenAiCompatibleBaseUrl(
+    providerBaseUrl,
+    providerConfig.defaultBaseUrl || ''
+  );
+  const resolvedModel = String(model || providerConfig.model || '').trim();
+  const requiresApiKey = providerConfig.requiresApiKey !== false;
+  const allowsCustomModel = Boolean(providerConfig.allowsCustomModel);
+  const allowsCustomBaseUrl = Boolean(providerConfig.allowsCustomBaseUrl);
+  const isLocalEndpoint = allowsCustomBaseUrl && isLocalAiBaseUrl(resolvedBaseUrl);
+  const requiresDesktop = isLocalEndpoint && !usingProxy;
+  const supported = usingProxy
+    || (normalizedProvider !== 'meta' && (!requiresDesktop || hasDesktopAiApi));
+
   const routeLabel = usingProxy
     ? `${providerConfig.label} via proxy`
     : (hasDesktopAiApi
@@ -641,26 +732,45 @@ const getAiProviderRuntimeInfo = ({ provider, apiBaseUrl, hasDesktopAiApi, hasAp
 
   let supportDetail = '';
   if (!supported) {
-    supportDetail = `${providerConfig.label} direct routing is not available yet.`;
-  } else if (!usingProxy && !hasApiKey) {
-    supportDetail = `${providerConfig.label} key is missing.`;
+    if (requiresDesktop && !hasDesktopAiApi) {
+      supportDetail = `${providerConfig.label} points at a local endpoint. Launch the desktop app (or use proxy mode) so localhost requests are not blocked by browser CORS.`;
+    } else {
+      supportDetail = `${providerConfig.label} direct routing is not available yet.`;
+    }
   } else if (usingProxy) {
     supportDetail = 'Proxy mode will validate this provider against the server configuration.';
+  } else if (allowsCustomBaseUrl && !resolvedBaseUrl) {
+    supportDetail = 'Set an OpenAI-compatible base URL (for example Ollama or LM Studio).';
+  } else if (allowsCustomModel && !resolvedModel) {
+    supportDetail = `Enter a model id for ${providerConfig.label}.`;
+  } else if (requiresApiKey && !hasApiKey) {
+    supportDetail = `${providerConfig.label} key is missing.`;
   } else if (hasDesktopAiApi) {
     supportDetail = 'Ready via the desktop runtime.';
   } else {
     supportDetail = 'Ready for direct browser calls.';
   }
 
+  const configReady = usingProxy || (
+    (!allowsCustomBaseUrl || Boolean(resolvedBaseUrl))
+    && (!allowsCustomModel || Boolean(resolvedModel))
+    && (!requiresApiKey || Boolean(hasApiKey))
+  );
+
   return {
     provider: normalizedProvider,
     keyName: providerConfig.keyName,
     label: providerConfig.label,
+    model: resolvedModel,
+    baseUrl: resolvedBaseUrl,
     usingProxy,
     requiresDesktop,
+    requiresApiKey,
+    allowsCustomModel,
+    allowsCustomBaseUrl,
     supported,
     hasApiKey: Boolean(hasApiKey),
-    ready: supported && (usingProxy || Boolean(hasApiKey)),
+    ready: supported && configReady,
     routeLabel,
     supportDetail
   };
@@ -815,7 +925,12 @@ export default function App() {
     openaiKey: '',
     anthropicKey: '',
     xaiKey: '',
-    metaKey: ''
+    metaKey: '',
+    openrouterKey: '',
+    openrouterModel: OPENROUTER_DEFAULT_MODEL,
+    openaiCompatibleKey: '',
+    openaiCompatibleBaseUrl: OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
+    openaiCompatibleModel: ''
   });
 
   const [composerState, setComposerState] = useState({
@@ -1146,6 +1261,8 @@ export default function App() {
     } catch {
       // Ignore local storage write failures.
     }
+    document.documentElement.classList.toggle('dark', isDarkMode);
+    document.documentElement.style.colorScheme = isDarkMode ? 'dark' : 'light';
   }, [isDarkMode]);
 
   useEffect(() => {
@@ -1202,9 +1319,6 @@ export default function App() {
     if (!hasHydratedConfig) return;
 
     const runtime = getAiProviderRuntime();
-    const missingKeyMessage = !runtime.usingProxy && !runtime.hasApiKey
-      ? `Add your ${runtime.label} API key in Settings before using AI features.`
-      : '';
     const nextReadiness = !runtime.supported
       ? {
           level: 'error',
@@ -1212,12 +1326,12 @@ export default function App() {
           message: runtime.supportDetail,
           key: `unsupported:${runtime.provider}:${runtime.routeLabel}`
         }
-      : (missingKeyMessage
+      : (!runtime.ready
         ? {
             level: 'warn',
             title: `${runtime.label} is selected but not configured`,
-            message: missingKeyMessage,
-            key: `missing-key:${runtime.provider}`
+            message: runtime.supportDetail || `Finish ${runtime.label} setup in Settings before using AI features.`,
+            key: `needs-setup:${runtime.provider}:${runtime.supportDetail || 'incomplete'}`
           }
         : {
             level: 'ok',
@@ -1246,7 +1360,12 @@ export default function App() {
     config.geminiKey,
     config.openaiKey,
     config.anthropicKey,
-    config.xaiKey
+    config.xaiKey,
+    config.openrouterKey,
+    config.openrouterModel,
+    config.openaiCompatibleKey,
+    config.openaiCompatibleBaseUrl,
+    config.openaiCompatibleModel
   ]);
 
   useEffect(() => {
@@ -1262,6 +1381,14 @@ export default function App() {
     };
   }, []);
 
+  const dismissNotification = useCallback(() => {
+    if (notificationTimerRef.current) {
+      clearTimeout(notificationTimerRef.current);
+      notificationTimerRef.current = null;
+    }
+    setNotification(null);
+  }, []);
+
   const showNotification = (message, type = 'success') => {
     if (notificationTimerRef.current) {
       clearTimeout(notificationTimerRef.current);
@@ -1270,8 +1397,68 @@ export default function App() {
     notificationTimerRef.current = setTimeout(() => {
       setNotification(null);
       notificationTimerRef.current = null;
-    }, 3000);
+    }, type === 'error' ? 5000 : 3200);
   };
+
+  const TAB_LABELS = useMemo(() => ({
+    dashboard: 'Dashboard',
+    inbox: 'Smart Inbox',
+    tasks: 'Tasks & Calendar',
+    contacts: 'CRM & Contacts',
+    outreach: 'AI Outreach',
+    settings: 'Settings',
+    about: 'About'
+  }), []);
+
+  // Close overlays / search with Escape; lock body scroll while a modal is open.
+  useEffect(() => {
+    const anyModalOpen = Boolean(
+      isContactModalOpen || isTaskModalOpen || contactToDelete || selectedContact
+    );
+    const shouldListen = anyModalOpen || sidebarOpen || Boolean(globalSearch);
+
+    if (!shouldListen) return undefined;
+
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      // Prefer closing the top-most UI layer first.
+      if (contactToDelete) {
+        setContactToDelete(null);
+        return;
+      }
+      if (isTaskModalOpen) {
+        setIsTaskModalOpen(false);
+        setEditingTask(null);
+        return;
+      }
+      if (isContactModalOpen) {
+        setIsContactModalOpen(false);
+        setEditingContact(null);
+        return;
+      }
+      if (selectedContact) {
+        setSelectedContact(null);
+        return;
+      }
+      if (sidebarOpen) {
+        setSidebarOpen(false);
+        return;
+      }
+      if (globalSearch) {
+        setGlobalSearch('');
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    if (anyModalOpen) {
+      document.body.style.overflow = 'hidden';
+    }
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isContactModalOpen, isTaskModalOpen, contactToDelete, selectedContact, sidebarOpen, globalSearch]);
 
   const getApiBaseUrl = () => (config.apiBaseUrl || '').trim().replace(/\/+$/, '');
 
@@ -1287,14 +1474,36 @@ export default function App() {
 
   const getSelectedAiApiKey = (provider = getSelectedAiProvider()) => {
     const providerConfig = getSelectedAiProviderConfig(provider);
+    if (!providerConfig.keyName) return '';
     return String(config[providerConfig.keyName] || '').trim();
+  };
+
+  const getSelectedAiModel = (provider = getSelectedAiProvider()) => {
+    const providerConfig = getSelectedAiProviderConfig(provider);
+    if (providerConfig.modelKey) {
+      return String(config[providerConfig.modelKey] || providerConfig.model || '').trim();
+    }
+    return String(providerConfig.model || '').trim();
+  };
+
+  const getSelectedAiBaseUrl = (provider = getSelectedAiProvider()) => {
+    const providerConfig = getSelectedAiProviderConfig(provider);
+    if (providerConfig.baseUrlKey) {
+      return normalizeOpenAiCompatibleBaseUrl(
+        config[providerConfig.baseUrlKey],
+        providerConfig.defaultBaseUrl || ''
+      );
+    }
+    return normalizeOpenAiCompatibleBaseUrl(providerConfig.defaultBaseUrl || '');
   };
 
   const getAiProviderRuntime = (provider = getSelectedAiProvider()) => getAiProviderRuntimeInfo({
     provider,
     apiBaseUrl: getApiBaseUrl(),
     hasDesktopAiApi: Boolean(getDesktopAiApi()),
-    hasApiKey: Boolean(getSelectedAiApiKey(provider))
+    hasApiKey: Boolean(getSelectedAiApiKey(provider)),
+    model: getSelectedAiModel(provider),
+    providerBaseUrl: getSelectedAiBaseUrl(provider)
   });
 
   const getAiProviderBlockMessage = (provider = getSelectedAiProvider(), options = {}) => {
@@ -1302,12 +1511,37 @@ export default function App() {
     if (!runtime.supported) {
       return runtime.supportDetail;
     }
-    if (!runtime.usingProxy && !runtime.hasApiKey) {
+    if (runtime.usingProxy) {
+      return '';
+    }
+    if (runtime.allowsCustomBaseUrl && !runtime.baseUrl) {
+      return options.forHealthCheck
+        ? `Set the ${runtime.label} base URL in Settings before running the health check.`
+        : `Set the ${runtime.label} base URL in Settings before using AI features.`;
+    }
+    if (runtime.allowsCustomModel && !runtime.model) {
+      return options.forHealthCheck
+        ? `Set a ${runtime.label} model id in Settings before running the health check.`
+        : `Set a ${runtime.label} model id in Settings before using AI features.`;
+    }
+    if (runtime.requiresApiKey && !runtime.hasApiKey) {
       return options.forHealthCheck
         ? `Add your ${runtime.label} API key in Settings before running the health check.`
         : `Add your ${runtime.label} API key in Settings before using AI features.`;
     }
     return '';
+  };
+
+  const applyOpenAiCompatiblePreset = (presetId) => {
+    const preset = OPENAI_COMPATIBLE_PRESETS.find((item) => item.id === presetId);
+    if (!preset) return;
+    setConfig((prev) => ({
+      ...prev,
+      selectedAI: 'openai_compatible',
+      openaiCompatibleBaseUrl: preset.baseUrl,
+      openaiCompatibleModel: prev.openaiCompatibleModel || preset.modelHint || ''
+    }));
+    showNotification(`${preset.label} endpoint loaded. Confirm the model id matches what is running locally.`);
   };
 
   const setAiProviderTestResult = (provider, nextResult) => {
@@ -2300,7 +2534,7 @@ export default function App() {
     } else if (name === 'useGraphApi') {
       nextValue = String(nextValue || '').trim().toLowerCase() === 'true' ? 'true' : 'false';
     }
-    if (['apiBaseUrl', 'proxySecret', 'selectedAI', 'geminiKey', 'openaiKey', 'anthropicKey', 'xaiKey', 'aiTemperature', 'aiTopP', 'aiMaxOutputTokens'].includes(name)) {
+    if (['apiBaseUrl', 'proxySecret', 'selectedAI', 'geminiKey', 'openaiKey', 'anthropicKey', 'xaiKey', 'openrouterKey', 'openrouterModel', 'openaiCompatibleKey', 'openaiCompatibleBaseUrl', 'openaiCompatibleModel', 'aiTemperature', 'aiTopP', 'aiMaxOutputTokens'].includes(name)) {
       setAiProviderTestResults({});
     }
     setConfig(prev => {
@@ -4390,6 +4624,8 @@ No emojis.`;
     const proxyBaseUrl = getApiBaseUrl();
     const usingProxy = providerRuntime.usingProxy;
     const apiKey = getSelectedAiApiKey(provider);
+    const providerModel = getSelectedAiModel(provider);
+    const providerBaseUrl = getSelectedAiBaseUrl(provider);
     const desktopAiApi = getDesktopAiApi();
     const providerConfig = getSelectedAiProviderConfig(provider);
     const generationProfile = aiGenerationProfile;
@@ -4422,7 +4658,9 @@ No emojis.`;
       provider,
       promptText,
       systemInstruction,
-      generationProfile
+      generationProfile,
+      model: providerModel || undefined,
+      baseUrl: provider === 'openai_compatible' ? providerBaseUrl : undefined
     };
     const requestDirectProviderText = async (requestPromptText) => {
       if (provider === 'gemini') {
@@ -4478,7 +4716,7 @@ No emojis.`;
             'anthropic-version': '2023-06-01'
           },
           body: JSON.stringify({
-            model: providerConfig.model,
+            model: providerModel || providerConfig.model,
             temperature: generationProfile.temperature,
             top_p: generationProfile.topP,
             max_tokens: generationProfile.maxOutputTokens,
@@ -4513,14 +4751,33 @@ No emojis.`;
         };
       }
 
-      const response = await fetch(provider === 'xai' ? 'https://api.x.ai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
+      const openAiCompatibleUrl = buildOpenAiCompatibleChatCompletionsUrl(
+        providerBaseUrl,
+        providerConfig.defaultBaseUrl || (provider === 'xai' ? 'https://api.x.ai/v1' : 'https://api.openai.com/v1')
+      );
+      if (!openAiCompatibleUrl) {
+        throw new Error(`${providerLabel} base URL is missing.`);
+      }
+      if (!providerModel) {
+        throw new Error(`${providerLabel} model id is required.`);
+      }
+
+      const openAiHeaders = {
+        'Content-Type': 'application/json'
+      };
+      if (apiKey) {
+        openAiHeaders.Authorization = `Bearer ${apiKey}`;
+      }
+      if (provider === 'openrouter') {
+        openAiHeaders['HTTP-Referer'] = AKITA_CREDITS.website;
+        openAiHeaders['X-Title'] = 'SalesDirector';
+      }
+
+      const response = await fetch(openAiCompatibleUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`
-        },
+        headers: openAiHeaders,
         body: JSON.stringify({
-          model: providerConfig.model,
+          model: providerModel,
           temperature: generationProfile.temperature,
           top_p: generationProfile.topP,
           max_tokens: generationProfile.maxOutputTokens,
@@ -4569,6 +4826,8 @@ No emojis.`;
               requestId,
               provider,
               apiKey,
+              model: providerModel,
+              baseUrl: providerBaseUrl,
               promptText,
               systemInstruction,
               generationProfile
@@ -6830,7 +7089,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <button onClick={() => openEditTask(task)} className="text-zinc-400 hover:text-black dark:hover:text-white transition" title="Edit Task">
                         <Edit3 className="w-4 h-4" />
                       </button>
-                      <button onClick={() => deleteTask(task.id)} className="text-zinc-400 hover:text-blue-900 dark:hover:text-blue-500 transition">
+                      <button onClick={() => deleteTask(task.id)} className="text-zinc-400 hover:text-red-600 dark:hover:text-red-400 transition" title="Delete task" aria-label="Delete task">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -6909,7 +7168,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               </div>
             )})}
             {filteredTasks.length === 0 && (
-              <div className="p-8 text-center text-zinc-500 dark:text-zinc-400">No tasks currently. Generate some from the CRM or add manually.</div>
+              <div className="p-10 text-center rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40">
+                <CheckSquare className="w-8 h-8 mx-auto mb-3 text-zinc-400" />
+                <p className="text-sm font-bold text-zinc-700 dark:text-zinc-300">No tasks for this view</p>
+                <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400 max-w-sm mx-auto">Generate a focus plan from CRM, apply a day template, or add a task manually to get the day moving.</p>
+              </div>
             )}
           </div>
         </div>
@@ -7370,8 +7633,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </button>
                 <button
                   onClick={() => deleteInboxEmail(email.id)}
-                  className="text-xs text-zinc-400 hover:text-blue-900 dark:hover:text-blue-500 px-2 py-2 rounded transition"
-                  title="Delete"
+                  className="text-xs text-zinc-400 hover:text-red-600 dark:hover:text-red-400 px-2 py-2 rounded transition"
+                  title="Delete email"
+                  aria-label="Delete email"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -7379,8 +7643,18 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             </div>
           )})}
           {filteredInboxEmails.length === 0 && (
-            <div className="p-12 text-center text-zinc-500 dark:text-zinc-400">
-              {inboxSearch ? 'No emails match your search.' : inboxFilter === 'archived' ? 'No archived emails.' : 'Inbox is empty.'}
+            <div className="p-12 text-center rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40">
+              <Inbox className="w-8 h-8 mx-auto mb-3 text-zinc-400" />
+              <p className="text-sm font-bold text-zinc-700 dark:text-zinc-300">
+                {inboxSearch ? 'No emails match your search' : inboxFilter === 'archived' ? 'No archived emails' : 'Inbox is empty'}
+              </p>
+              <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400 max-w-md mx-auto">
+                {inboxSearch
+                  ? 'Try a different sender, subject, or company keyword.'
+                  : inboxFilter === 'archived'
+                    ? 'Archived messages will show up here after you clear or archive them.'
+                    : 'Sync IMAP or HubSpot in Settings, then pull mail with Sync Inbox to start scoring leads.'}
+              </p>
             </div>
           )}
         </div>
@@ -7697,7 +7971,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       <button onClick={(e) => openEditContact(contact, e)} className="p-1.5 text-zinc-500 hover:text-black dark:text-zinc-400 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Edit Contact">
                         <Edit3 className="w-4 h-4" />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); setContactToDelete(contact); }} className="p-1.5 text-zinc-500 hover:text-blue-900 dark:text-zinc-400 dark:hover:text-blue-500 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Delete Contact">
+                      <button onClick={(e) => { e.stopPropagation(); setContactToDelete(contact); }} className="p-1.5 text-zinc-500 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Delete Contact" aria-label="Delete contact">
                         <Trash2 className="w-4 h-4" />
                       </button>
                       <button onClick={(e) => { e.stopPropagation(); createTaskForContact(contact); }} className="p-1.5 text-zinc-500 hover:text-amber-600 dark:text-zinc-400 dark:hover:text-amber-400 bg-zinc-100 dark:bg-zinc-800 rounded transition" title="Create follow-up task">
@@ -7722,7 +7996,19 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               </tr>
             )})}
             {filteredContacts.length === 0 && (
-               <tr><td colSpan="5" className="p-8 text-center text-zinc-500 dark:text-zinc-400">{contactStageFilter !== 'all' ? `No contacts in "${contactStageFilter}" stage.` : 'No contacts found. Please sync from HubSpot, import a CSV, or Add a contact manually.'}</td></tr>
+               <tr>
+                 <td colSpan="5" className="p-10 text-center">
+                   <Users className="w-8 h-8 mx-auto mb-3 text-zinc-400" />
+                   <p className="text-sm font-bold text-zinc-700 dark:text-zinc-300">
+                     {contactStageFilter !== 'all' ? `No contacts in “${contactStageFilter}”` : 'No contacts yet'}
+                   </p>
+                   <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400 max-w-md mx-auto">
+                     {contactStageFilter !== 'all'
+                       ? 'Switch stage filter to All, or move contacts into this stage from the pipeline board.'
+                       : 'Sync HubSpot, import a CSV, or add a contact manually to start building your pipeline.'}
+                   </p>
+                 </td>
+               </tr>
             )}
           </tbody>
         </table>
@@ -8440,7 +8726,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         ok: selectedAiReady,
         detail: selectedAiUsesProxy
           ? 'Add the Proxy Base URL. If your proxy uses a secret, enter that too.'
-          : 'Choose your AI provider and paste its API key in Settings.'
+          : selectedAiProvider === 'openai_compatible'
+            ? 'Choose Local / OpenAI-compatible, set base URL + model (desktop recommended for localhost).'
+            : selectedAiProvider === 'openrouter'
+              ? 'Choose OpenRouter, paste your OpenRouter key, and set a model id.'
+              : 'Choose your AI provider and paste its API key in Settings.'
       },
       {
         label: 'Load contacts',
@@ -9340,7 +9630,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
               <h3 className="text-lg font-bold">AI Routing & Provider Keys</h3>
             </div>
             <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">
-              Choose the active AI provider, then add the matching API key below. Direct routing now supports Gemini, OpenAI, Anthropic, and xAI in browser mode, while the desktop app can still route the same providers through the preload bridge. Proxy mode can route server-side.
+              Choose the active AI provider, then add credentials and model settings below. Cloud providers work in browser or desktop mode. OpenRouter routes through OpenRouter’s OpenAI-compatible API. Local / OpenAI-compatible covers Ollama, LM Studio, and any server that exposes `/v1/chat/completions` (desktop recommended for localhost).
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
@@ -9358,6 +9648,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </select>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
                   Current route: {selectedAiRuntime.routeLabel}
+                  {selectedAiRuntime.model ? ` · model ${selectedAiRuntime.model}` : ''}
                 </p>
                 {aiStartupReadiness.key && (
                   <div className={`mt-3 rounded-lg border p-3 text-xs ${aiStartupReadiness.level === 'error'
@@ -9386,7 +9677,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                   AI actions now run one at a time. If you click another AI button while one is running, it is queued instead of being dropped or cancelling the current job.
                 </p>
                 <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                  Supported providers in this build are Gemini, OpenAI, Anthropic, and xAI.
+                  Supported: Gemini, OpenAI, Anthropic, xAI, OpenRouter, and local OpenAI-compatible servers (Ollama, LM Studio, etc.).
                 </p>
               </div>
             </div>
@@ -9441,7 +9732,17 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     Shared profile: {formatAiGenerationProfileSummary(aiGenerationProfile)}
                   </div>
                 </div>
-                <p className="mt-2">Credential source: {selectedAiUsesProxy ? 'Proxy-managed on the server' : (selectedAiRuntime.hasApiKey ? 'Saved locally on this device' : 'Missing local key')}</p>
+                <p className="mt-2">Credential source: {selectedAiUsesProxy
+                  ? 'Proxy-managed on the server'
+                  : (selectedAiRuntime.requiresApiKey
+                    ? (selectedAiRuntime.hasApiKey ? 'Saved locally on this device' : 'Missing local key')
+                    : (selectedAiRuntime.hasApiKey ? 'Optional local key saved' : 'No API key required for this endpoint'))}</p>
+                {(selectedAiRuntime.model || selectedAiRuntime.baseUrl) && (
+                  <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {selectedAiRuntime.model ? `Model: ${selectedAiRuntime.model}` : 'Model not set'}
+                    {selectedAiRuntime.baseUrl ? ` · Endpoint: ${selectedAiRuntime.baseUrl}` : ''}
+                  </p>
+                )}
               </div>
 
               <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -9453,10 +9754,14 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     : status === 'running'
                       ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
                       : status === 'failed'
-                        ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
+                        ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
                         : status === 'unsupported'
                           ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-300'
                           : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300';
+                  const isSelectedProvider = provider.provider === selectedAiProvider;
+                  const cardRingClass = isSelectedProvider
+                    ? 'ring-2 ring-blue-900/30 dark:ring-blue-500/40 border-blue-300 dark:border-blue-800'
+                    : 'border-zinc-200 dark:border-zinc-800';
                   const statusLabel = status === 'passed'
                     ? 'Passed'
                     : status === 'running'
@@ -9473,15 +9778,29 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                       ? provider.supportDetail
                       : (provider.ready
                         ? `Ready via ${provider.routeLabel}.`
-                        : `Add the ${provider.label} key to verify direct mode.`));
+                        : provider.supportDetail || `Finish ${provider.label} setup to verify direct mode.`));
 
                   return (
-                    <div key={provider.provider} className="rounded-lg border border-zinc-200 bg-white p-4 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+                    <div key={provider.provider} className={`rounded-lg border bg-white p-4 text-sm dark:bg-zinc-900 transition-shadow ${cardRingClass}`}>
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="font-bold text-zinc-900 dark:text-white">{provider.label}</p>
+                          <p className="font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+                            {provider.label}
+                            {isSelectedProvider && (
+                              <span className="rounded-full bg-blue-900 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white dark:bg-blue-500 dark:text-zinc-950">
+                                Active
+                              </span>
+                            )}
+                          </p>
                           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{provider.routeLabel}</p>
-                          <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">{provider.usingProxy ? 'Proxy-managed credentials' : (provider.hasApiKey ? 'Local key saved' : 'Local key missing')}</p>
+                          <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                            {provider.usingProxy
+                              ? 'Proxy-managed credentials'
+                              : provider.requiresApiKey
+                                ? (provider.hasApiKey ? 'Local key saved' : 'Local key missing')
+                                : (provider.hasApiKey ? 'Optional key saved' : 'API key optional')}
+                            {provider.model ? ` · ${provider.model}` : ''}
+                          </p>
                         </div>
                         <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ${badgeClass}`}>
                           {statusLabel}
@@ -9513,10 +9832,11 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {[
-                { label: 'Gemini API Key (Google AI Studio)', name: 'geminiKey' },
-                { label: 'OpenAI API Key (ChatGPT)', name: 'openaiKey' },
-                { label: 'Anthropic API Key (Claude)', name: 'anthropicKey' },
-                { label: 'xAI API Key (Grok)', name: 'xaiKey' },
+                { label: 'Gemini API Key (Google AI Studio)', name: 'geminiKey', placeholder: 'AIza...' },
+                { label: 'OpenAI API Key (ChatGPT)', name: 'openaiKey', placeholder: 'sk-...' },
+                { label: 'Anthropic API Key (Claude)', name: 'anthropicKey', placeholder: 'sk-ant-...' },
+                { label: 'xAI API Key (Grok)', name: 'xaiKey', placeholder: 'xai-...' },
+                { label: 'OpenRouter API Key', name: 'openrouterKey', placeholder: 'sk-or-...' },
               ].map((provider) => (
                 <div key={provider.name}>
                   <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">{provider.label}</label>
@@ -9526,10 +9846,116 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                     value={config[provider.name]}
                     onChange={handleConfigChange}
                     className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
-                    placeholder="sk-..."
+                    placeholder={provider.placeholder}
+                    autoComplete="off"
                   />
                 </div>
               ))}
+            </div>
+
+            <div className={`mt-6 grid grid-cols-1 md:grid-cols-2 gap-6 rounded-xl p-4 transition-colors ${
+              selectedAiProvider === 'openrouter'
+                ? 'border border-blue-300 bg-blue-50/60 dark:border-blue-800 dark:bg-blue-950/20'
+                : 'border border-transparent'
+            }`}>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">
+                  OpenRouter Model
+                  {selectedAiProvider === 'openrouter' && (
+                    <span className="ml-2 rounded-full bg-blue-900 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white dark:bg-blue-500 dark:text-zinc-950">
+                      Active path
+                    </span>
+                  )}
+                </label>
+                <input
+                  type="text"
+                  name="openrouterModel"
+                  value={config.openrouterModel}
+                  onChange={handleConfigChange}
+                  className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors font-mono"
+                  placeholder={OPENROUTER_DEFAULT_MODEL}
+                  autoComplete="off"
+                />
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  Use any OpenRouter model id (for example <code className="font-mono">anthropic/claude-3.5-sonnet</code> or <code className="font-mono">meta-llama/llama-3.1-8b-instruct:free</code>).
+                </p>
+              </div>
+            </div>
+
+            <div className={`mt-6 rounded-xl border p-5 space-y-4 transition-colors ${
+              selectedAiProvider === 'openai_compatible'
+                ? 'border-blue-300 bg-blue-50/60 dark:border-blue-800 dark:bg-blue-950/20'
+                : 'border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40'
+            }`}>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h4 className="text-sm font-bold text-black dark:text-white flex items-center gap-2">
+                    Local / OpenAI-compatible endpoint
+                    {selectedAiProvider === 'openai_compatible' && (
+                      <span className="rounded-full bg-blue-900 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white dark:bg-blue-500 dark:text-zinc-950">
+                        Active path
+                      </span>
+                    )}
+                  </h4>
+                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 max-w-2xl">
+                    Point SalesDirector at Ollama, LM Studio, vLLM, LocalAI, or any OpenAI-compatible server. Localhost endpoints work best in the desktop app.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {OPENAI_COMPATIBLE_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => applyOpenAiCompatiblePreset(preset.id)}
+                      className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-bold text-zinc-800 transition hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Base URL</label>
+                  <input
+                    type="url"
+                    name="openaiCompatibleBaseUrl"
+                    value={config.openaiCompatibleBaseUrl}
+                    onChange={handleConfigChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors font-mono"
+                    placeholder="http://127.0.0.1:11434/v1"
+                    autoComplete="off"
+                  />
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    Should end with <code className="font-mono">/v1</code>. Ollama default is <code className="font-mono">http://127.0.0.1:11434/v1</code>; LM Studio is often <code className="font-mono">http://127.0.0.1:1234/v1</code>.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">Model ID</label>
+                  <input
+                    type="text"
+                    name="openaiCompatibleModel"
+                    value={config.openaiCompatibleModel}
+                    onChange={handleConfigChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    placeholder="llama3.2"
+                    autoComplete="off"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-zinc-700 dark:text-zinc-300 mb-1">API Key (optional)</label>
+                  <input
+                    type="password"
+                    name="openaiCompatibleKey"
+                    value={config.openaiCompatibleKey}
+                    onChange={handleConfigChange}
+                    className="w-full border border-zinc-300 dark:border-zinc-700 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-900 outline-none text-black dark:text-white bg-white dark:bg-zinc-800 transition-colors"
+                    placeholder="Leave blank for Ollama / many local servers"
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
@@ -9665,7 +10091,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
             </div>
             Sales Director
           </h1>
-          <button onClick={() => setSidebarOpen(false)} className="xl:hidden p-1 text-zinc-400 hover:text-white transition-colors">
+          <button onClick={() => setSidebarOpen(false)} className="xl:hidden p-1 text-zinc-400 hover:text-white transition-colors" aria-label="Close navigation">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -9714,28 +10140,31 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         {/* Header bar */}
         <header className="min-h-16 xl:h-16 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-3 px-4 py-3 md:px-8 z-10 transition-colors">
           <div className="flex items-center gap-3 min-w-0">
-            <button onClick={() => setSidebarOpen(true)} className="xl:hidden p-2 -ml-2 rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
+            <button onClick={() => setSidebarOpen(true)} className="xl:hidden p-2 -ml-2 rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors" aria-label="Open navigation">
               <Menu className="w-5 h-5" />
             </button>
-            <h2 className="text-lg font-bold text-black dark:text-white capitalize truncate">
-              {activeTab.replace('-', ' ')}
+            <h2 className="text-lg font-bold text-black dark:text-white truncate">
+              {TAB_LABELS[activeTab] || activeTab}
             </h2>
           </div>
           <div className="ml-auto flex items-center gap-2 md:gap-4 flex-wrap justify-end">
             <button 
               onClick={() => setIsDarkMode(!isDarkMode)}
               className="p-2 rounded-full text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
-              title="Toggle Dark Mode"
+              title={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
             >
               {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-zinc-400" />
               <input 
-                type="text"
+                type="search"
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
-                placeholder="Search leads..." 
+                onKeyDown={(e) => { if (e.key === 'Escape') setGlobalSearch(''); }}
+                placeholder="Search leads..."
+                aria-label="Search contacts"
                 className="pl-9 pr-4 py-1.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-full text-sm outline-none focus:ring-2 focus:ring-blue-900 w-32 sm:w-40 md:w-56 xl:w-64 transition-all text-black dark:text-white"
               />
               {globalSearchResults && globalSearchResults.length > 0 && (
@@ -9783,19 +10212,32 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
           {activeTab === 'about' && renderAbout()}
         </main>
 
-        {/* Global Notifications Notification */}
+        {/* Global toast notifications */}
         {notification && (
-          <div className="fixed bottom-6 right-6 z-[100] animate-fade-in-up">
-            <div className={`flex items-center px-4 py-3 rounded-lg shadow-lg border ${
+          <div className="fixed bottom-6 right-6 left-6 sm:left-auto z-[100] animate-fade-in-up" role="status" aria-live="polite">
+            <div className={`flex items-start gap-3 px-4 py-3 rounded-xl shadow-xl border max-w-md ml-auto ${
               notification.type === 'error' 
-                ? 'bg-white dark:bg-zinc-900 border-blue-900 text-blue-900 dark:text-blue-500 font-bold'
-                : 'bg-black dark:bg-white border-zinc-800 dark:border-zinc-200 text-white dark:text-black font-bold'
+                ? 'bg-red-50 dark:bg-red-950/90 border-red-300 dark:border-red-800 text-red-900 dark:text-red-200 font-semibold'
+                : 'bg-zinc-900 dark:bg-white border-zinc-800 dark:border-zinc-200 text-white dark:text-black font-semibold'
             }`}>
               {notification.type === 'error' 
-                ? <AlertCircle className="w-5 h-5 mr-3 text-blue-900 dark:text-blue-500" />
-                : <CheckCircle className="w-5 h-5 mr-3 text-white dark:text-black" />
+                ? <AlertCircle className="w-5 h-5 mt-0.5 flex-shrink-0 text-red-600 dark:text-red-400" />
+                : <CheckCircle className="w-5 h-5 mt-0.5 flex-shrink-0 text-emerald-400 dark:text-emerald-600" />
               }
-              <span className="text-sm">{notification.message}</span>
+              <span className="text-sm leading-snug flex-1">{notification.message}</span>
+              <button
+                type="button"
+                onClick={dismissNotification}
+                className={`p-1 rounded-md flex-shrink-0 transition-colors ${
+                  notification.type === 'error'
+                    ? 'text-red-700/70 hover:text-red-900 dark:text-red-300/70 dark:hover:text-red-100'
+                    : 'text-white/60 hover:text-white dark:text-black/50 dark:hover:text-black'
+                }`}
+                aria-label="Dismiss notification"
+                title="Dismiss"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           </div>
         )}
@@ -9803,11 +10245,17 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
       {/* CRM Create/Edit Modal Overlay */}
       {isContactModalOpen && editingContact && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingContact._isNew ? 'Add Contact' : 'Edit Contact'}
+          onClick={(e) => { if (e.target === e.currentTarget) closeContactModal(); }}
+        >
           <div className="bg-white dark:bg-zinc-900 w-full max-w-3xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
             <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center bg-zinc-50 dark:bg-zinc-950/50">
               <h2 className="text-xl font-bold text-black dark:text-white">{editingContact._isNew ? 'Add Contact' : 'Edit Contact'}</h2>
-              <button onClick={closeContactModal} className="text-zinc-400 hover:text-black dark:hover:text-white transition">
+              <button onClick={closeContactModal} className="text-zinc-400 hover:text-black dark:hover:text-white transition" aria-label="Close">
                 <X className="w-6 h-6" />
               </button>
             </div>
@@ -9962,14 +10410,24 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
         </div>
       )}
 
-      {/* Delete Confirmation Modal Overlay */}
       {/* Task Edit Modal */}
       {isTaskModalOpen && editingTask && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Edit Task"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setIsTaskModalOpen(false);
+              setEditingTask(null);
+            }
+          }}
+        >
           <div className="bg-white dark:bg-zinc-900 w-full max-w-lg rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
             <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center">
               <h2 className="text-xl font-bold text-black dark:text-white">Edit Task</h2>
-              <button onClick={() => { setIsTaskModalOpen(false); setEditingTask(null); }} className="text-zinc-400 hover:text-black dark:hover:text-white transition">
+              <button onClick={() => { setIsTaskModalOpen(false); setEditingTask(null); }} className="text-zinc-400 hover:text-black dark:hover:text-white transition" aria-label="Close">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -10121,13 +10579,19 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
       )}
 
       {contactToDelete && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Delete Contact"
+          onClick={(e) => { if (e.target === e.currentTarget) setContactToDelete(null); }}
+        >
           <div className="bg-white dark:bg-zinc-900 w-full max-w-sm rounded-xl shadow-2xl p-6 border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
              <h2 className="text-xl font-bold text-black dark:text-white mb-2">Delete Contact</h2>
              <p className="text-zinc-600 dark:text-zinc-400 text-sm mb-6">Are you sure you want to permanently delete <strong className="text-black dark:text-white">{contactToDelete.name}</strong>? This action cannot be undone.</p>
              <div className="flex justify-end space-x-3">
                <button onClick={() => setContactToDelete(null)} className="px-4 py-2 text-sm font-bold text-zinc-600 dark:text-zinc-400 hover:text-black dark:hover:text-white transition">Cancel</button>
-               <button onClick={deleteContact} disabled={loading} className="px-6 py-2 bg-blue-900 text-white rounded-lg text-sm font-bold hover:bg-blue-950 transition disabled:opacity-50">Delete</button>
+               <button onClick={deleteContact} disabled={loading} className="px-6 py-2 bg-red-600 text-white rounded-lg text-sm font-bold hover:bg-red-700 transition disabled:opacity-50">Delete</button>
              </div>
           </div>
         </div>
@@ -10135,7 +10599,13 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
 
       {/* Lead Dossier Modal Overlay */}
       {selectedContact && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Contact dossier for ${selectedContact.name || 'contact'}`}
+          onClick={(e) => { if (e.target === e.currentTarget) setSelectedContact(null); }}
+        >
           <div className="bg-white dark:bg-zinc-900 w-full max-w-4xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden border border-zinc-200 dark:border-zinc-800 animate-fade-in-up">
             
             {/* Modal Header */}
@@ -10153,7 +10623,7 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                 </h2>
                 <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">{selectedContact.jobTitle ? `${selectedContact.jobTitle} at ` : ''}<strong className="text-black dark:text-white">{selectedContact.company}</strong></p>
               </div>
-              <button onClick={() => setSelectedContact(null)} className="text-zinc-400 hover:text-black dark:hover:text-white transition">
+              <button onClick={() => setSelectedContact(null)} className="text-zinc-400 hover:text-black dark:hover:text-white transition" aria-label="Close dossier">
                 <X className="w-6 h-6" />
               </button>
             </div>
@@ -10399,8 +10869,9 @@ Keep it sharp and actionable. CRITICAL: NO EMOJIS.`;
                              <span className="text-xs mr-3">{new Date(msg.date).toLocaleString()}</span>
                              <button 
                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); deleteThreadMessage(selectedContact.email, idx); }}
-                               className="p-1 text-zinc-400 hover:text-blue-900 dark:hover:text-blue-500 rounded transition mr-2"
+                               className="p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400 rounded transition mr-2"
                                title="Delete message"
+                               aria-label="Delete message"
                              >
                                <Trash2 className="w-3.5 h-3.5" />
                              </button>

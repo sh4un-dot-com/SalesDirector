@@ -14,7 +14,8 @@ Purpose: Run a repeatable 30-minute onboarding session for Sales Reps, Managers,
 - Launch app in desktop mode (npm run dev:desktop).
 - Confirm demo user can access Settings, Contacts, Outreach, and Inbox.
 - Prepare one valid HubSpot contact or a CSV sample with email column.
-- Decide whether demo uses direct mode or proxy mode.
+- Decide whether demo uses direct mode, OpenRouter, local LLM (desktop), or proxy mode.
+- If demoing local AI, start Ollama or LM Studio and note the model id before class.
 
 ## 30-Minute Agenda
 
@@ -22,7 +23,7 @@ Purpose: Run a repeatable 30-minute onboarding session for Sales Reps, Managers,
 
 - Launch app.
 - Show Settings and System Health indicators.
-- Confirm Auth, AI access, and HubSpot readiness state.
+- Confirm Auth, AI access (active provider + Test button), and HubSpot readiness state.
 
 Pass criteria:
 - User can open app and view all main tabs.
@@ -30,11 +31,16 @@ Pass criteria:
 ### 5 to 12 minutes: Configuration Basics
 
 - Configure sender name, reply-to, and signature.
-- Set AI access (Gemini key or proxy base URL).
+- Set AI access using one approved path:
+  - Cloud key (Gemini / OpenAI / Anthropic / xAI), or
+  - OpenRouter key + model id, or
+  - Local / OpenAI-compatible base URL + model (desktop only for localhost), or
+  - Proxy Base URL (+ shared secret).
+- Click **Test Active Provider** and show a Passed badge.
 - Explain security rule: settings persist locally on the device until cleared; use proxy mode when vendor API keys must stay server-side.
 
 Pass criteria:
-- User can save valid sender profile and AI access path.
+- User can save valid sender profile and a green/ready AI path.
 
 ### 12 to 20 minutes: Contacts and Outreach Workflow
 
